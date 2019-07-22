@@ -7,6 +7,10 @@ authors = ["aleontiev <alonetiev@gmail.com>"]
 [tool.poetry.dependencies]
 python = "^3.6"
 asyncpg = "^0.18.3"
+cached_property = "^1.5.1"
+DeepDiff = "^4.0.7"
+aioconsole = "^0.1.14"
+ipython = "^7.6.1"
 
 [tool.poetry.dev-dependencies]
 pytest = "^3.0"

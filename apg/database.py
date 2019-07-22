@@ -9,81 +9,68 @@ from .namespace import Namespace
 class Database(ParentStore):
     def __init__(
         self,
-        name,
+        name=None,
         host=None,
+        url=None,
         only_namespaces=None,
         only_tables=None,
         exclude_namespaces=None,
-        exclude_tables=None
+        exclude_tables=None,
     ):
+        if url and not host:
+            from .host import Host
+            host = Host(url)
+            if not name:
+                name = host.dbname
+
         self.name = name
         self.host = host
         self.only_namespaces = only_namespaces
         self.only_tables = only_tables
-        self.exclude_namespaces = self.exclude_namespaces
+        self.exclude_namespaces = exclude_namespaces
         self.exclude_tables = exclude_tables
 
-    def __new__(
-        cls,
-        *args,
-        **kwargs
-    ):
-        if 'url' in kwargs:
-            # create host
-            from .host import Host
-            host = Host(kwargs.pop('url'))
-            kwargs['host'] = host
-
-        return super(
-            Database,
-            cls
-        ).__new__(cls, host.dbname, **kwargs)
-
     async def get_children(self):
-        return self.namespaces
+        namespaces = await self.namespaces
+        return namespaces
 
     def get_namespaces_query(self):
-        table = 'pg_namespace'
-        column = 'nspname'
-        args = []
+        table = "pg_namespace"
+        column = "nspname"
         query, args = build_include_exclude(
-            table,
-            column,
-            self.only_databases,
-            self.exclude_databases
+            table, column, self.only_namespaces, self.exclude_namespaces
         )
         if query:
-            query = 'WHERE {}'.format(query)
-        args.insert(
-            0,
-            'SELECT "{}" FROM "{}" {}'.format(
-                column,
-                table,
-                query
-            )
-        )
+            query = "WHERE {}".format(query)
+        args.insert(0, 'SELECT "{}" FROM "{}" {}'.format(column, table, query))
         return args
 
     async def get_pool(self):
-        return asyncpg.pool(self.url)
+        pool = await asyncpg.create_pool(dsn=self.host.url)
+        return pool
 
     async def get_namespaces(self):
-        with self.pool.acquire() as connection:
-            for row in connection.fetch(*self.get_namespaces_query()):
-                await self.get_namespace(row[0])
+        query = self.get_namespaces_query()
+        pool = await self.pool
+        namespaces = []
+        async with pool.acquire() as connection:
+            for row in await connection.fetch(*query):
+                namespace = self.get_namespace(row[0])
+                namespaces.append(namespace)
+        return namespaces
 
-    async def get_namespace(self, name):
-        await Namespace(
+    def get_namespace(self, name):
+        return Namespace(
             name,
             database=self,
             exclude_tables=self.exclude_tables,
-            only_tables=self.only_tables
+            only_tables=self.only_tables,
         )
 
     @cached_property
     async def pool(self):
-        await self.get_pool()
+        return await self.get_pool()
 
     @cached_property
     async def namespaces(self):
-        return self.get_namespaces()
+        return await self.get_namespaces()

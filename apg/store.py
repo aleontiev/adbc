@@ -1,5 +1,6 @@
 from hashlib import md5
 
+
 class Store(object):
     async def push(self, other):
         raise NotImplementedError()
@@ -20,30 +21,52 @@ class Store(object):
         raise NotImplementedError()
 
     async def get_signature(self):
-        return f"{self.data_hash()}-{self.schema_hash()}-{self.count()}"
+        data_hash = self.get_data_hash()
+        schema_hash = self.get_schema_hash()
+        count = self.get_count()
+
+        data_hash = await data_hash
+        schema_hash = await schema_hash
+        count = await count
+        return f"{data_hash}-{schema_hash}-{count}"
 
 
 class WithChildren(object):
     async def get_children(self):
-        raise NotImplemented()
+        raise NotImplementedError()
 
     async def get_count(self):
-        return sum([c.get_count() for c in self.get_children()])
+        s = []
+        for c in await self.get_children():
+            # get counts in parallel
+            s.append(c.get_count())
+
+        return sum([await c for c in s])
 
     async def get_data_hash(self):
-        return md5(
-            ','.join([
-                '{}-{}'.format(c.name, c.get_data_hash()) for c in self.get_children()
-            ])
-        )
+        s = []
+        for c in await self.get_children():
+            # get hashes in parallel
+            data_hash = c.get_data_hash()
+            s.append((data_hash, c.name))
+
+        return md5(",".join([
+            "-".format(await ss[0], ss[1])
+            for ss in s
+        ]))
 
     async def get_schema_hash(self):
-        return md5(
-            ','.join([
-                '{}-{}'.format(c.name, c.get_schema_hash()) for c in self.get_children()
-            ])
-        )
+        s = []
+        for c in await self.get_children():
+            # get hashes in parallel
+            schema_hash = c.get_schema_hash()
+            s.append((schema_hash, c.name))
+
+        return md5(",".join([
+            "-".format(await ss[0], ss[1])
+            for ss in s
+        ]))
 
 
-class ParentStore(Store, WithChildren):
+class ParentStore(WithChildren, Store):
     pass
