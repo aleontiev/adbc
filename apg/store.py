@@ -1,3 +1,4 @@
+from cached_property import cached_property
 from hashlib import md5
 
 
@@ -30,6 +31,10 @@ class Store(object):
         count = await count
         return f"{data_hash}-{schema_hash}-{count}"
 
+    @cached_property
+    async def signature(self):
+        return self.get_signature()
+
 
 class WithChildren(object):
     async def get_children(self):
@@ -51,9 +56,9 @@ class WithChildren(object):
             s.append((data_hash, c.name))
 
         return md5(",".join([
-            "-".format(await ss[0], ss[1])
+            "{}-{}".format(await ss[0], ss[1])
             for ss in s
-        ]))
+        ]).encode('utf-8')).hexdigest()
 
     async def get_schema_hash(self):
         s = []
@@ -63,9 +68,9 @@ class WithChildren(object):
             s.append((schema_hash, c.name))
 
         return md5(",".join([
-            "-".format(await ss[0], ss[1])
+            "{}-{}".format(await ss[0], ss[1])
             for ss in s
-        ]))
+        ]).encode('utf-8')).hexdigest()
 
 
 class ParentStore(WithChildren, Store):
