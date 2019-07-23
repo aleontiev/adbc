@@ -33,7 +33,7 @@ class Store(object):
 
     @cached_property
     async def signature(self):
-        return self.get_signature()
+        return await self.get_signature()
 
 
 class WithChildren(object):
