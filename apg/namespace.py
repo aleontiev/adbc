@@ -1,4 +1,3 @@
-from collections import OrderedDict
 from cached_property import cached_property
 import json
 
@@ -17,9 +16,8 @@ FROM (
         R.relname as name,
         json_agg(json_build_object(
             'name', A.attname,
-            'order', A.attnum,
             'type', pg_catalog.format_type(A.atttypid, A.atttypmod),
-            'default', D.adsrc,
+            'default', CASE WHEN D.adsrc LIKE 'nextval%' THEN NULL ELSE D.adsrc END,
             'nullable', NOT A.attnotnull
         )) as result
     FROM pg_attribute A
@@ -27,7 +25,7 @@ FROM (
     INNER JOIN pg_namespace N ON R.relnamespace = N.oid
     LEFT JOIN pg_attrdef D ON A.atthasdef = true AND D.adrelid = R.oid AND
         D.adnum = A.attnum
-    WHERE N.nspname = '{namespace}' and A.attnum > 0 and R.relkind = 'r' {query}
+    WHERE N.nspname = '{namespace}' and A.attnum > 0 and R.relkind = 'r' {query} and NOT A.attisdropped
     GROUP BY R.relname
 ) Attributes
 LEFT JOIN (
@@ -114,6 +112,7 @@ class Namespace(ParentStore):
                 decoder=json.loads,
                 schema='pg_catalog'
             )
+            print("-> namespace.{}.tables".format(self.name, row[0])
             for row in await connection.fetch(*query):
                 tables.append(self.get_table(
                     row[0],
@@ -121,6 +120,7 @@ class Namespace(ParentStore):
                     row[2],
                     row[3]
                 ))
+            print("<- namespace.{}.tables = {}".format(self.name, len(tables)))
         return tables
 
     def get_table(self, name, attributes, constraints, indexes):

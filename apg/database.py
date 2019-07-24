@@ -55,7 +55,7 @@ class Database(ParentStore):
         return args
 
     async def get_pool(self):
-        pool = await asyncpg.create_pool(dsn=self.host.url)
+        pool = await asyncpg.create_pool(dsn=self.host.url, max_size=20)
         return pool
 
     async def get_namespaces(self):
@@ -63,9 +63,11 @@ class Database(ParentStore):
         pool = await self.pool
         namespaces = []
         async with pool.acquire() as connection:
+            print("-> database.{}.namespaces", self.name)
             for row in await connection.fetch(*query):
                 namespace = self.get_namespace(row[0])
                 namespaces.append(namespace)
+            print("<- database.{}.namespaces = {}".format(self.name, len(namespaces)))
         return namespaces
 
     def get_namespace(self, name):

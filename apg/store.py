@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from cached_property import cached_property
 from hashlib import md5
 
@@ -74,7 +75,7 @@ class WithChildren(object):
 
     async def get_diff_data(self):
         children = await self.get_children()
-        data = {}
+        data = OrderedDict()
         for child in children:
             data[child.name] = child.get_diff_data()
 

@@ -24,7 +24,7 @@ class Table(Store):
         self.name = name
         self.namespace = namespace
         self.database = namespace.database
-        self.attributes = list(sorted(attributes or [], key=lambda c: c['order']))
+        self.attributes = list(sorted(attributes or [], key=lambda c: c['name']))
         self.constraints = list(sorted(constraints or [], key=lambda c: c['name']))
         self.indexes = list(sorted(indexes or [], key=lambda c: c['name']))
         self.pks = next(
@@ -38,20 +38,22 @@ class Table(Store):
     async def get_diff_data(self):
         data_hash = self.get_data_hash()
         count = self.get_count()
-        schema_hash = self.get_schema_hash()
         return {
             'data_hash': await data_hash,
             'count': await count,
-            'schema_hash': await schema_hash
+            'schema': self.get_schema()
         }
 
-    async def get_schema_hash(self):
-        schema = {
+    def get_schema(self):
+        return {
             'name': self.name,
             'attributes': self.attributes,
             'constraints': self.constraints,
             'indexes': self.indexes
         }
+
+    async def get_schema_hash(self):
+        schema = self.get_schema()
         return DeepHash(schema)[schema]
 
     def get_data_hash_query(self):
@@ -76,13 +78,19 @@ class Table(Store):
         pool = await self.database.pool
         query = self.get_data_hash_query()
         async with pool.acquire() as connection:
-            return await connection.fetchval(*query)
+            print("-> table.{}.data_hash".format(self.name))
+            result = await connection.fetchval(*query)
+            print("<- table.{}.data_hash = {}".format(self.name, result))
+            return result
 
     async def get_count(self):
         pool = await self.database.pool
         query = self.get_count_query()
         async with pool.acquire() as connection:
-            return await connection.fetchval(*query)
+            print("-> table.{}.count".format(self.name))
+            result = await connection.fetchval(*query)
+            print("<- table.{}.count = {}".format(self.name, result))
+            return result
 
     @cached_property
     async def count(self):
