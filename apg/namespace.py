@@ -79,11 +79,21 @@ LEFT JOIN (
 
 
 class Namespace(ParentStore):
-    def __init__(self, name, database=None, only_tables=None, exclude_tables=None):
+    def __init__(
+        self,
+        name,
+        database=None,
+        only_tables=None,
+        exclude_tables=None,
+        verbose=False,
+        tag=None,
+    ):
         self.name = name
         self.database = database
         self.only_tables = only_tables
         self.exclude_tables = exclude_tables
+        self.verbose = verbose
+        self.tag = tag
 
     async def get_children(self):
         tables = await self.tables
@@ -107,20 +117,13 @@ class Namespace(ParentStore):
         tables = []
         async with pool.acquire() as connection:
             await connection.set_type_codec(
-                'json',
-                encoder=json.dumps,
-                decoder=json.loads,
-                schema='pg_catalog'
+                "json", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
             )
-            print("-> namespace.{}.tables".format(self.name, row[0])
             for row in await connection.fetch(*query):
-                tables.append(self.get_table(
-                    row[0],
-                    row[1],
-                    row[2],
-                    row[3]
-                ))
-            print("<- namespace.{}.tables = {}".format(self.name, len(tables)))
+                tables.append(self.get_table(row[0], row[1], row[2], row[3]))
+            self.print("<- {}.namespace.{}.tables = {}".format(
+                self.tag or '',
+                self.name, len(tables)))
         return tables
 
     def get_table(self, name, attributes, constraints, indexes):
@@ -129,7 +132,9 @@ class Namespace(ParentStore):
             namespace=self,
             attributes=attributes,
             constraints=constraints,
-            indexes=indexes
+            indexes=indexes,
+            verbose=self.verbose,
+            tag=self.tag
         )
 
     @cached_property

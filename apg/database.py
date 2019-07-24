@@ -1,5 +1,5 @@
-from collections import OrderedDict
 import asyncpg
+import asyncio
 from cached_property import cached_property
 
 from deepdiff import DeepDiff
@@ -18,9 +18,12 @@ class Database(ParentStore):
         only_tables=None,
         exclude_namespaces=None,
         exclude_tables=None,
+        tag=None,
+        verbose=False,
     ):
         if url and not host:
             from .host import Host
+
             host = Host(url)
             if not name:
                 name = host.dbname
@@ -31,12 +34,13 @@ class Database(ParentStore):
         self.only_tables = only_tables
         self.exclude_namespaces = exclude_namespaces
         self.exclude_tables = exclude_tables
+        self.verbose = verbose
+        self.tag = tag
 
     async def diff(self, other):
         data = self.get_diff_data()
         other_data = other.get_diff_data()
-        data = await data
-        other_data = await other_data
+        data, other_data = await asyncio.gather(data, other_data)
         return DeepDiff(data, other_data)
 
     async def get_children(self):
@@ -63,11 +67,14 @@ class Database(ParentStore):
         pool = await self.pool
         namespaces = []
         async with pool.acquire() as connection:
-            print("-> database.{}.namespaces", self.name)
             for row in await connection.fetch(*query):
                 namespace = self.get_namespace(row[0])
                 namespaces.append(namespace)
-            print("<- database.{}.namespaces = {}".format(self.name, len(namespaces)))
+            self.print(
+                "<- {}.database.{}.namespaces = {}".format(
+                    self.tag or '',
+                    self.name, len(namespaces))
+            )
         return namespaces
 
     def get_namespace(self, name):
@@ -76,6 +83,8 @@ class Database(ParentStore):
             database=self,
             exclude_tables=self.exclude_tables,
             only_tables=self.only_tables,
+            verbose=self.verbose,
+            tag=self.tag
         )
 
     @cached_property
