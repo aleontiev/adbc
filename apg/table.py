@@ -35,6 +35,16 @@ class Table(Store):
             None
         )
 
+    async def get_diff_data(self):
+        data_hash = self.get_data_hash()
+        count = self.get_count()
+        schema_hash = self.get_schema_hash()
+        return {
+            'data_hash': await data_hash,
+            'count': await count,
+            'schema_hash': await schema_hash
+        }
+
     async def get_schema_hash(self):
         schema = {
             'name': self.name,

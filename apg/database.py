@@ -1,6 +1,8 @@
+from collections import OrderedDict
 import asyncpg
 from cached_property import cached_property
 
+from deepdiff import DeepDiff
 from .store import ParentStore
 from .query import build_include_exclude
 from .namespace import Namespace
@@ -29,6 +31,13 @@ class Database(ParentStore):
         self.only_tables = only_tables
         self.exclude_namespaces = exclude_namespaces
         self.exclude_tables = exclude_tables
+
+    async def diff(self, other):
+        data = self.get_diff_data()
+        other_data = other.get_diff_data()
+        data = await data
+        other_data = await other_data
+        return DeepDiff(data, other_data)
 
     async def get_children(self):
         namespaces = await self.namespaces

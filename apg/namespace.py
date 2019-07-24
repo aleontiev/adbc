@@ -1,4 +1,4 @@
-import asyncpg
+from collections import OrderedDict
 from cached_property import cached_property
 import json
 

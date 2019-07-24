@@ -72,6 +72,17 @@ class WithChildren(object):
             for ss in s
         ]).encode('utf-8')).hexdigest()
 
+    async def get_diff_data(self):
+        children = await self.get_children()
+        data = {}
+        for child in children:
+            data[child.name] = child.get_diff_data()
+
+        for k, v in data.items():
+            data[k] = await v
+
+        return data
+
 
 class ParentStore(WithChildren, Store):
     pass
