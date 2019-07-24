@@ -1,6 +1,6 @@
 from cleo import Command
 from apg.database import Database
-from .utils import get_include_exclude
+from apg.utils import get_include_exclude_args
 import asyncio
 from pprint import pprint
 
@@ -22,10 +22,10 @@ class DiffCommand(Command):
         namespaces = self.option('namespaces') or 'public'
         tables = self.option('tables') or '!awsdms*'
 
-        include_namespaces, exclude_namespaces = get_include_exclude(
+        include_namespaces, exclude_namespaces = get_include_exclude_args(
             namespaces
         )
-        include_tables, exclude_tables = get_include_exclude(
+        include_tables, exclude_tables = get_include_exclude_args(
             tables
         )
         source = Database(

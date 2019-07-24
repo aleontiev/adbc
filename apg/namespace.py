@@ -2,7 +2,7 @@ from cached_property import cached_property
 import json
 
 from .store import ParentStore
-from .query import build_include_exclude
+from .utils import get_include_exclude_query
 from .table import Table
 
 
@@ -103,7 +103,7 @@ class Namespace(ParentStore):
         table = "R"
         column = "relname"
         args = []
-        query, args = build_include_exclude(
+        query, args = get_include_exclude_query(
             table, column, self.only_tables, self.exclude_tables
         )
         if query:

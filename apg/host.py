@@ -4,7 +4,7 @@ from cached_property import cached_property
 
 from .database import Database
 from .store import ParentStore
-from .query import build_include_exclude
+from .utils import get_include_exclude_query
 
 
 class Host(ParentStore):
@@ -34,7 +34,7 @@ class Host(ParentStore):
         table = 'pg_database'
         column = 'datname'
         args = []
-        query, args = build_include_exclude(
+        query, args = get_include_exclude_query(
             table,
             column,
             self.only_databases,

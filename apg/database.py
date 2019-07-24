@@ -4,7 +4,7 @@ from cached_property import cached_property
 
 from deepdiff import DeepDiff
 from .store import ParentStore
-from .query import build_include_exclude
+from .utils import get_include_exclude_query
 from .namespace import Namespace
 
 
@@ -50,7 +50,7 @@ class Database(ParentStore):
     def get_namespaces_query(self):
         table = "pg_namespace"
         column = "nspname"
-        query, args = build_include_exclude(
+        query, args = get_include_exclude_query(
             table, column, self.only_namespaces, self.exclude_namespaces
         )
         if query:
