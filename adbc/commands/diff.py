@@ -1,4 +1,6 @@
 import asyncio
+import uvloop
+
 from cleo import Command
 from adbc.database import Database
 from adbc.utils import get_inex_args
@@ -45,4 +47,6 @@ class DiffCommand(Command):
             include_namespaces=include_namespaces,
             verbose=verbose
         )
+
+        uvloop.install()
         pprint(asyncio.run(source.diff(target)))
