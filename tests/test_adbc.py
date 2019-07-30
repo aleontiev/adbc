@@ -1,4 +1,4 @@
-from apg import __version__
+from adbc import __version__
 
 
 def test_version():

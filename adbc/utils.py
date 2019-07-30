@@ -1,21 +1,22 @@
-def get_include_exclude_args(value):
-    parts = value.split(',')
+def get_inex_args(value):
+    """Get command args that in/exclude based on a value"""
     includes = []
     excludes = []
-    for part in parts:
-        if part.startswith('!'):
+    for part in value:
+        if part.startswith('~'):
             excludes.append(part[1:])
         else:
             includes.append(part)
     return includes, excludes
 
 
-def get_include_exclude_query(
+def get_inex_query(
     table,
     column,
     includes,
     excludes
 ):
+    """Get query args that in/exclude based on a particular column"""
     if not includes and not excludes:
         return ('', [])
 

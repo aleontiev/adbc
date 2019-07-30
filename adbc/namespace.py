@@ -2,7 +2,7 @@ from cached_property import cached_property
 import json
 
 from .store import ParentStore
-from .utils import get_include_exclude_query
+from .utils import get_inex_query
 from .table import Table
 
 
@@ -79,54 +79,38 @@ LEFT JOIN (
 
 
 class Namespace(ParentStore):
+    type = 'ns'
+
     def __init__(
         self,
         name,
         database=None,
-        only_tables=None,
+        include_tables=None,
         exclude_tables=None,
         verbose=False,
         tag=None,
     ):
         self.name = name
-        self.database = database
-        self.only_tables = only_tables
+        self.parent = self.database = database
+        self.include_tables = include_tables
         self.exclude_tables = exclude_tables
         self.verbose = verbose
         self.tag = tag
-
-    async def get_children(self):
-        tables = await self.tables
-        return tables
 
     def get_tables_query(self):
         table = "R"
         column = "relname"
         args = []
-        query, args = get_include_exclude_query(
-            table, column, self.only_tables, self.exclude_tables
+        query, args = get_inex_query(
+            table, column, self.include_tables, self.exclude_tables
         )
         if query:
             query = " AND {}".format(query)
         args.insert(0, GET_TABLES_QUERY.format(namespace=self.name, query=query))
         return args
 
-    async def get_tables(self):
-        pool = await self.database.pool
-        query = self.get_tables_query()
-        tables = []
-        async with pool.acquire() as connection:
-            await connection.set_type_codec(
-                "json", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
-            )
-            for row in await connection.fetch(*query):
-                tables.append(self.get_table(row[0], row[1], row[2], row[3]))
-            self.print("<- {}.namespace.{}.tables = {}".format(
-                self.tag or '',
-                self.name, len(tables)))
-        return tables
-
     def get_table(self, name, attributes, constraints, indexes):
+        self.print('ns.{}.table.{}.init'.format(self.name, name))
         return Table(
             name,
             namespace=self,
@@ -137,6 +121,25 @@ class Namespace(ParentStore):
             tag=self.tag
         )
 
+    async def get_children(self):
+        query = self.get_tables_query()
+        pool = await self.database.pool
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.set_type_codec(
+                    "json",
+                    encoder=json.dumps,
+                    decoder=json.loads,
+                    schema="pg_catalog"
+                )
+                async for row in connection.cursor(*query):
+                    yield self.get_table(
+                        row[0],
+                        row[1],
+                        row[2],
+                        row[3]
+                    )
+
     @cached_property
     async def tables(self):
-        return await self.get_tables()
+        return await self.get_children()

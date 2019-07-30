@@ -1,5 +1,5 @@
+import asyncio
 from .store import Store
-from deepdiff import DeepHash
 from cached_property import cached_property
 
 
@@ -12,6 +12,8 @@ def get_by_name(l, name, key):
 
 
 class Table(Store):
+    type = 'table'
+
     def __init__(
         self,
         name,
@@ -22,10 +24,9 @@ class Table(Store):
         verbose=False,
         tag=None,
     ):
-        assert namespace
         self.name = name
         self.verbose = verbose
-        self.namespace = namespace
+        self.parent = self.namespace = namespace
         self.database = namespace.database
         self.attributes = list(sorted(attributes or [], key=lambda c: c["name"]))
         self.constraints = list(sorted(constraints or [], key=lambda c: c["name"]))
@@ -43,10 +44,12 @@ class Table(Store):
     async def get_diff_data(self):
         data_hash = self.get_data_hash()
         count = self.get_count()
+        schema = self.get_schema()
+        data_hash, count = await asyncio.gather(data_hash, count)
         return {
-            "data_hash": await data_hash,
-            "count": await count,
-            "schema": self.get_schema(),
+            "hash": data_hash,
+            "count": count,
+            "schema": schema
         }
 
     def get_schema(self):
@@ -56,10 +59,6 @@ class Table(Store):
             "constraints": self.constraints,
             "indexes": self.indexes,
         }
-
-    async def get_schema_hash(self):
-        schema = self.get_schema()
-        return DeepHash(schema)[schema]
 
     def get_data_hash_query(self):
         return [
@@ -78,24 +77,14 @@ class Table(Store):
         pool = await self.database.pool
         query = self.get_data_hash_query()
         async with pool.acquire() as connection:
-            result = await connection.fetchval(*query)
-            self.print(
-                "<- {}.table.{}.data_hash = {}".format(
-                    self.tag or "", self.name, result
-                )
-            )
-            return result
+            return await connection.fetchval(*query)
 
     async def get_count(self):
         pool = await self.database.pool
         query = self.get_count_query()
         async with pool.acquire() as connection:
-            result = await connection.fetchval(*query)
-            self.print(
-                "<- {}.table.{}.count = {}".format(self.tag or "", self.name, result)
-            )
-            return result
+            return await connection.fetchval(*query)
 
     @cached_property
     async def count(self):
-        return await self.get_count()
+        return self.get_count()
