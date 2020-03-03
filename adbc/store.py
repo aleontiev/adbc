@@ -1,22 +1,22 @@
 from collections import OrderedDict
 from hashlib import md5
+from fnmatch import fnmatch
 import asyncio
 
 
 def _hash(s, n):
-    return md5(",".join([
-        "{}-{}".format(s[i], n[i])
-        for i in range(len(s))
-    ]).encode('utf-8')).hexdigest()
+    return md5(
+        ",".join(["{}-{}".format(s[i], n[i]) for i in range(len(s))]).encode("utf-8")
+    ).hexdigest()
 
 
-class Printable(object):
-    def print(self, *args, **kwargs):
+class Loggable(object):
+    def log(self, *args, **kwargs):
         if self.verbose:
             print(*args, **kwargs)
 
 
-class Store(Printable):
+class Store(Loggable):
     async def push(self, other):
         raise NotImplementedError()
 
@@ -70,11 +70,7 @@ class WithChildren(object):
         return _hash(s, n)
 
     async def get_diff_data(self):
-        self.print(
-            '{}.{}.diff'.format(
-            self.type,
-            self.name)
-        )
+        self.log("{}.{}.diff".format(self.type, self.name))
         data = OrderedDict()
         async for child in self.get_children():
             data[child.name] = child.get_diff_data()
@@ -82,6 +78,26 @@ class WithChildren(object):
         keys, values = data.keys(), data.values()
         values = await asyncio.gather(*values)
         return dict(zip(keys, values))
+
+
+class WithInclude(object):
+    def get_include(self, name):
+        include = self.include
+        if include is True:
+            # assumes all included
+            return True
+
+        if name in include:
+            return include[name]
+
+        else:
+            for key, should in include.items():
+                if "*" in key:
+                    match = fnmatch(name, key)
+                    if (match and should) or (not match and not should):
+                        return True if not should else should
+
+        return False
 
 
 class ParentStore(WithChildren, Store):

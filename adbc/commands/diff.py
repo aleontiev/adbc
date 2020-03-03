@@ -3,13 +3,13 @@ import uvloop
 
 from cleo import Command
 from adbc.database import Database
-from adbc.utils import get_inex_args
+from adbc.utils import get_include_args
 from pprint import pprint
 
 
 class DiffCommand(Command):
     """
-    Diffs two databases
+    Diffs two databases (simple version)
 
     diff
         {source : Source URL}
@@ -21,31 +21,26 @@ class DiffCommand(Command):
     def handle(self):
         source = self.argument('source')
         target = self.argument('target')
-        namespaces = self.option('namespaces') or ['public']
-        tables = self.option('tables') or ['~awsdms*']
-        verbose = self.option('verbose')
+        namespaces = self.option('namespaces') or '*'
+        tables = self.option('tables')
+        if not tables:
+            tables = True
+        else:
+            tables = get_include_args(tables)
+        include = get_include_args(namespaces, truth=tables)
 
-        include_namespaces, exclude_namespaces = get_inex_args(
-            namespaces
-        )
-        include_tables, exclude_tables = get_inex_args(
-            tables
-        )
+        verbose = self.option('verbose')
+        if verbose:
+            print(f'include: {include}')
         source = Database(
             url=source,
-            exclude_namespaces=exclude_namespaces,
-            exclude_tables=exclude_tables,
-            include_tables=include_tables,
-            include_namespaces=include_namespaces,
             verbose=verbose,
+            include=include
         )
         target = Database(
             url=target,
-            exclude_namespaces=exclude_namespaces,
-            exclude_tables=exclude_tables,
-            include_tables=include_tables,
-            include_namespaces=include_namespaces,
-            verbose=verbose
+            verbose=verbose,
+            include=include
         )
 
         uvloop.install()

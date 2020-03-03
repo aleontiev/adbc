@@ -3,12 +3,11 @@ from .store import Store
 from cached_property import cached_property
 
 
-def get_by_name(l, name, key):
-    value = next((x for x in l if x["name"] == name), None)
-    if value:
-        return value[key]
-    else:
-        return None
+def get_first(items, fn, then=None):
+    for item in items:
+        if fn(item):
+            return item[then] if then else item
+    return None
 
 
 class Table(Store):
@@ -29,17 +28,14 @@ class Table(Store):
         self.parent = self.namespace = namespace
         self.database = namespace.database
         self.attributes = list(sorted(attributes or [], key=lambda c: c["name"]))
+        self.columns = [c['name'] for c in self.attributes]
         self.constraints = list(sorted(constraints or [], key=lambda c: c["name"]))
         self.indexes = list(sorted(indexes or [], key=lambda c: c["name"]))
         self.tag = tag
-        self.pks = next(
-            (
-                get_by_name(self.indexes, c["index_name"], "keys")
-                for c in self.constraints
-                if c["type"] == "p"
-            ),
-            None,
-        )
+        self.pks = get_first(self.indexes, lambda item: item['primary'], 'columns')
+        if not self.pks:
+            # full-row pks
+            self.pks = self.columns
 
     async def get_diff_data(self):
         data_hash = self.get_data_hash()
@@ -60,14 +56,28 @@ class Table(Store):
             "indexes": self.indexes,
         }
 
-    def get_data_hash_query(self):
+    async def get_data_hash_query(self):
+        version = await self.database.version
+        if version < '9':
+            # TODO: fix, technically this applies to Redshift, not Postgres <9
+            # in practice, nobody else is running Postgres 8 anymore...
+            aggregator = 'listagg'
+            end = ", ',')) "
+        else:
+            aggregator = 'array_to_string(array_agg'
+            end = "), ',')) "
+
+        # concatenate all column names and values in pseudo-json
+        aggregate = " || ".join([
+            f"'{c}' || " f'T."{c}"' for c in self.columns
+        ])
+        order = ", ".join([
+            f'"{c}"' for c in self.pks
+        ])
+        namespace = self.namespace.name
         return [
-            "SELECT md5(array_agg(md5((t.*)::varchar))::varchar)"
-            "FROM (SELECT * FROM {}.{} ORDER BY {}) AS t".format(
-                self.namespace.name,
-                self.name,
-                ", ".join(['"{}"'.format(x) for x in self.pks]),
-            )
+            f"SELECT md5({aggregator}({aggregate}{end}"
+            f"FROM (SELECT * FROM {namespace}.{self.name} ORDER BY {order}) AS T"
         ]
 
     def get_count_query(self):
@@ -75,7 +85,7 @@ class Table(Store):
 
     async def get_data_hash(self):
         pool = await self.database.pool
-        query = self.get_data_hash_query()
+        query = await self.get_data_hash_query()
         async with pool.acquire() as connection:
             return await connection.fetchval(*query)
 

@@ -1,0 +1,11 @@
+adbc:
+    version: 1
+
+databases:
+    master:
+        url: '{{ vault.kv.get.secret.environments.master.read_only_url._data_ }}'
+
+workflows:
+    master-info:
+        source: master
+        method: info

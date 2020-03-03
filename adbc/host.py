@@ -1,35 +1,24 @@
 from urllib.parse import urlparse
-
 from cached_property import cached_property
 
 from .database import Database
-from .store import ParentStore
-from .utils import get_inex_query
+from .store import ParentStore, WithInclude
+from .utils import get_include_query
 
 
-class Host(ParentStore):
+class Host(WithInclude, ParentStore):
     type = 'host'
 
     def __init__(
         self,
         url,
-        exclude_databases=None,
-        exclude_namespaces=None,
-        exclude_tables=None,
-        include_databases=None,
-        include_namespaces=None,
-        include_tables=None
+        include=True
     ):
         self.url = url
         self.parsed_url = urlparse(url)
         self.dbname = self.parsed_url.path.replace('/', '')
         self.name = self.parsed_url.netloc
-        self.exclude_databases = exclude_databases
-        self.exclude_namespaces = exclude_namespaces
-        self.exclude_tables = exclude_tables
-        self.include_databases = include_databases
-        self.include_namespaces = include_namespaces
-        self.include_tables = include_tables
+        self.include = include
 
     async def get_children(self):
         yield self.databases
@@ -38,11 +27,10 @@ class Host(ParentStore):
         table = 'pg_database'
         column = 'datname'
         args = []
-        query, args = get_inex_query(
+        query, args = get_include_query(
+            self.include,
             table,
             column,
-            self.include_databases,
-            self.exclude_databases
         )
         if query:
             query = ' AND {}'.format(query)
@@ -62,13 +50,14 @@ class Host(ParentStore):
                 yield self.get_database(row[0])
 
     async def get_database(self, name):
-        self.print('host.{}.db.{}.init'.format(self.name, name))
+        self.log('host.{}.db.{}.init'.format(self.name, name))
+        include = self.get_include(name)
+        if not include:
+            raise Exception(f'{self}: database {name} is not included')
+
         yield Database(
             host=self,
-            exclude_namespaces=self.exclude_namespaces,
-            include_namespaces=self.include_namespaces,
-            exclude_tables=self.exclude_tables,
-            include_tables=self.include_tables
+            include=include
         )
 
     @cached_property
