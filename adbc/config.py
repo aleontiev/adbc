@@ -103,7 +103,7 @@ class VaultConfig(object):
             # still in context mode
             return self.__end_context_mode__().__produce__()
         # TODO: vault integration here
-        return "".join(self.__args__)
+        return " ".join(self.__args__)
 
     def __clone__(self, **kwargs):
         for field in self.__FIELDS__:

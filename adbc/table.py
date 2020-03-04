@@ -84,16 +84,12 @@ class Table(Store):
         return ['SELECT COUNT(*) FROM "{}"."{}"'.format(self.namespace.name, self.name)]
 
     async def get_data_hash(self):
-        pool = await self.database.pool
         query = await self.get_data_hash_query()
-        async with pool.acquire() as connection:
-            return await connection.fetchval(*query)
+        return await self.database.query_one_value(*query)
 
     async def get_count(self):
-        pool = await self.database.pool
         query = self.get_count_query()
-        async with pool.acquire() as connection:
-            return await connection.fetchval(*query)
+        return await self.database.query_one_value(*query)
 
     @cached_property
     async def count(self):

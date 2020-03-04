@@ -157,6 +157,19 @@ def get(context, path, null=None):
 def is_dsn(url):
     from asyncpg.connect_utils import _parse_connect_dsn_and_args
     try:
-        _parse_connect_dsn_and_args(url)
+        _parse_connect_dsn_and_args(
+            dsn=url,
+            host=None,
+            port=None,
+            user=None,
+            password=None,
+            passfile=None,
+            database=None,
+            ssl=None,
+            connect_timeout=None,
+            server_settings=None
+        )
     except Exception:
-        return False
+        raise
+    else:
+        return True

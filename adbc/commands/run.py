@@ -1,3 +1,6 @@
+import uvloop
+import asyncio
+from pprint import pprint
 from cleo import Command
 from adbc.config import read_config_file, hydrate_config, get_initial_context
 from adbc.workflow import Workflow
@@ -7,12 +10,12 @@ class RunCommand(Command):
     """Runs a workflow.
 
     run
-        {command : command name}
+        {workflow : workflow name}
         {--c|config=adbc.yml : config filename}
     """
 
     def handle(self):
-        command_name = self.argument('command')
+        workflow_name = self.argument('workflow')
         config_file = self.option('config')
         config = hydrate_config(
             read_config_file(config_file),
@@ -20,9 +23,13 @@ class RunCommand(Command):
         )
         workflows = config.get('workflows', {})
         databases = config.get('databases', {})
-        workflow_data = workflows.get(command_name, None)
+        workflow_data = workflows.get(workflow_name, None)
         if not workflow_data:
-            raise Exception(f'No workflow data for "{command_name}"')
+            raise Exception(f'No workflow config for "{workflow_name}"')
 
-        workflow = Workflow(workflow_data, databases)
-        workflow.execute()
+        workflow = Workflow(workflow_name, workflow_data, databases)
+        uvloop.install()
+        result = asyncio.run(
+            workflow.execute()
+        )
+        pprint(result)

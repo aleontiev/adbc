@@ -30,8 +30,6 @@ class DiffCommand(Command):
         include = get_include_args(namespaces, truth=tables)
 
         verbose = self.option('verbose')
-        if verbose:
-            print(f'include: {include}')
         source = Database(
             url=source,
             verbose=verbose,

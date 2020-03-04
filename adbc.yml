@@ -3,9 +3,14 @@ adbc:
 
 databases:
     master:
-        url: '{{ vault.kv.get.secret.environments.master.read_only_url._data_ }}'
+        url: postgres://ant:ant@localhost:5432/empty
+        schemas:
+            public:
+                auth_*: True
+                auth_user_user_permissions: False
 
 workflows:
     master-info:
-        source: master
-        method: info
+        steps:
+            - source: master
+              command: info

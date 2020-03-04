@@ -8,6 +8,9 @@ from .utils import get_include_query, get_server_version
 from .namespace import Namespace
 
 
+DATABASE_VERSION_QUERY = 'SELECT version()'
+
+
 class Database(WithInclude, ParentStore):
     type = 'db'
 
@@ -37,13 +40,33 @@ class Database(WithInclude, ParentStore):
     async def version(self):
         return await self.get_version()
 
-    async def get_version(self):
-        query = ['SELECT version()']
+    async def stream(self, *query):
         pool = await self.pool
         async with pool.acquire() as connection:
             async with connection.transaction():
                 async for row in connection.cursor(*query):
-                    return get_server_version(row[0])
+                    yield row
+
+    async def query(self, *query, many=True, columns=True):
+        pool = await self.pool
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                results = await connection.fetch(*query)
+                if many:
+                    return results if columns else [r[0] for r in results]
+                else:
+                    result = results[0]
+                    return result if columns else result[0]
+
+    async def query_one_row(self, *query):
+        return await self.query(*query, many=False, columns=True)
+
+    async def query_one_value(self, *query):
+        return await self.query(*query, many=False, columns=False)
+
+    async def get_version(self):
+        version = await self.query_one_value(DATABASE_VERSION_QUERY)
+        return get_server_version(version)
 
     def get_namespaces_query(self):
         table = "pg_namespace"
@@ -83,11 +106,8 @@ class Database(WithInclude, ParentStore):
 
     async def get_children(self):
         query = self.get_namespaces_query()
-        pool = await self.pool
-        async with pool.acquire() as connection:
-            async with connection.transaction():
-                async for row in connection.cursor(*query):
-                    yield self.get_namespace(row[0])
+        async for row in self.stream(*query):
+            yield self.get_namespace(row[0])
 
     @cached_property
     async def pool(self):
