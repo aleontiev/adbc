@@ -1,5 +1,6 @@
 import uvloop
 import asyncio
+from pyaml import pprint as yaml_pprint
 from pprint import pprint
 from cleo import Command
 from adbc.config import read_config_file, hydrate_config, get_initial_context
@@ -32,4 +33,9 @@ class RunCommand(Command):
         result = asyncio.run(
             workflow.execute()
         )
-        pprint(result)
+        result = {'data': result}
+        try:
+            yaml_pprint(result)
+        except Exception as e:
+            print(e)
+            pprint(result)

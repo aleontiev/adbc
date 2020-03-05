@@ -266,6 +266,17 @@ version = "1.8.0"
 
 [[package]]
 category = "main"
+description = "PyYAML-based module to produce pretty and readable YAML-serialized data"
+name = "pyaml"
+optional = false
+python-versions = "*"
+version = "19.12.0"
+
+[package.dependencies]
+PyYAML = "*"
+
+[[package]]
+category = "main"
 description = "Pygments is a syntax highlighting package written in Python."
 name = "pygments"
 optional = false
@@ -359,7 +370,7 @@ docs = ["sphinx", "jaraco.packaging (>=3.2)", "rst.linker (>=1.9)"]
 testing = ["pathlib2", "contextlib2", "unittest2"]
 
 [metadata]
-content-hash = "4d5829ce17ebecdd438b791e2ec1bc03ef843c0afd78abcb63479ec4d5cf8577"
+content-hash = "333778259682552daf26b0cfc4e94e5d9e773638d84210873f683d52d6ed9829"
 python-versions = "^3.7"
 
 [metadata.files]
@@ -472,6 +483,10 @@ ptyprocess = [
 py = [
     {file = "py-1.8.0-py2.py3-none-any.whl", hash = "sha256:64f65755aee5b381cea27766a3a147c3f15b9b6b9ac88676de66ba2ae36793fa"},
     {file = "py-1.8.0.tar.gz", hash = "sha256:dc639b046a6e2cff5bbe40194ad65936d6ba360b52b3c3fe1d08a82dd50b5e53"},
+]
+pyaml = [
+    {file = "pyaml-19.12.0-py2.py3-none-any.whl", hash = "sha256:10b7406f4d29dceca1bc4540713363e07c18886ac9a44edd3d7720314bdcb0ff"},
+    {file = "pyaml-19.12.0.tar.gz", hash = "sha256:b3f636b467864319d7ded1558f86bb305b8612a274f5d443a62dc5eceb1b7176"},
 ]
 pygments = [
     {file = "Pygments-2.4.2-py2.py3-none-any.whl", hash = "sha256:71e430bc85c88a430f000ac1d9b331d2407f681d6f6aec95e8bcfbc3df5b0127"},

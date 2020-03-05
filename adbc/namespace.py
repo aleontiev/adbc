@@ -287,7 +287,7 @@ class Namespace(WithInclude, ParentStore):
                                 'name': constraint,
                                 'deferrable': record[2],
                                 'deferred': record[3],
-                                'type': record[4],
+                                'type': str(record[4]),
                                 'related_name': record[5],
                                 'check': record[6],
                                 'related_attributes': related_attributes

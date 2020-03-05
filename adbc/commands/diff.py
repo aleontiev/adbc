@@ -4,7 +4,7 @@ import uvloop
 from cleo import Command
 from adbc.database import Database
 from adbc.utils import get_include_args
-from pprint import pprint
+from pyaml import pprint
 
 
 class DiffCommand(Command):

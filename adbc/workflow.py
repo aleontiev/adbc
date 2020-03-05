@@ -77,22 +77,27 @@ class WorkflowStep(object):
         # if schemas is None/undefined, assume include all
         return schemas if schemas is not None else True
 
+    def _validate(self, name, read=False, write=False):
+        config = self.config
+        datasource = config.get(name)
+        setattr(self, name, datasource)
+        if not datasource:
+            raise Exception(f'"{name}" is required')
+
+        url = self.validate_database_url(datasource)
+        setattr(self, f'{name}_url', url)
+        setattr(self, f'{name}_schemas', self.validate_database_schemas(datasource))
+        self.validate_credentials(url, read=read, write=write)
+
     def validate_credentials(self, url, read=False, write=False):
+        # TODO: actually validate credentials
         pass
 
 
 class CopyStep(WorkflowStep):
     def validate(self):
-        config = self.config
-        source = config.get("source")
-        target = config.get("target")
-        if not source or not target:
-            raise Exception('"source" and "target" are required')
-
-        self.source_url = self.validate_database_url(source)
-        self.target_url = self.validate_database_url(target)
-        self.validate_credentials(self.source_url, read=True)
-        self.validate_credentials(self.target_url, read=True, write=True)
+        self._validate('source', read=True)
+        self._validate('target', read=True, write=True)
 
     async def execute(self):
         # copy
@@ -104,14 +109,7 @@ class CopyStep(WorkflowStep):
 
 class InfoStep(WorkflowStep):
     def validate(self):
-        config = self.config
-        self.source = source = config.get("source")
-        if not source:
-            raise Exception('"source" is required')
-
-        self.source_url = self.validate_database_url(source)
-        self.source_schemas = self.validate_database_schemas(source)
-        self.validate_credentials(self.source_url, read=True)
+        self._validate('source', read=True)
 
     async def execute(self):
         database = Database(
@@ -123,4 +121,19 @@ class InfoStep(WorkflowStep):
 
 
 class DiffStep(WorkflowStep):
-    pass
+    def validate(self):
+        self._validate('source', read=True)
+        self._validate('target', read=True)
+
+    async def execute(self):
+        source = Database(
+            name=self.source,
+            url=self.source_url,
+            include=self.source_schemas
+        )
+        target = Database(
+            name=self.target,
+            url=self.target_url,
+            include=self.target_schemas
+        )
+        return await source.diff(target)

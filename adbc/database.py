@@ -1,5 +1,6 @@
 import asyncpg
 import asyncio
+import json
 from cached_property import cached_property
 
 from jsondiff import diff
@@ -9,6 +10,8 @@ from .namespace import Namespace
 
 
 DATABASE_VERSION_QUERY = 'SELECT version()'
+
+DIFF_NO_SYMBOLS = True
 
 
 class Database(WithInclude, ParentStore):
@@ -58,8 +61,10 @@ class Database(WithInclude, ParentStore):
                     result = results[0]
                     return result if columns else result[0]
 
-    async def query_one_row(self, *query):
-        return await self.query(*query, many=False, columns=True)
+    async def query_one_row(self, *query, as_=None):
+        result = await self.query(*query, many=False, columns=True)
+        if as_:
+            return as_(result)
 
     async def query_one_value(self, *query):
         return await self.query(*query, many=False, columns=False)
@@ -99,7 +104,10 @@ class Database(WithInclude, ParentStore):
         data = self.get_diff_data()
         other_data = other.get_diff_data()
         data, other_data = await asyncio.gather(data, other_data)
-        return diff(data, other_data, syntax='symmetric')
+        if DIFF_NO_SYMBOLS:
+            return json.loads(diff(data, other_data, syntax='symmetric', dump=True))
+        else:
+            return diff(data, other_data, syntax='symmetric')
 
     async def get_pool(self):
         return await asyncpg.create_pool(dsn=self.host.url, max_size=20)
