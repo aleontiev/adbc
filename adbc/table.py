@@ -66,13 +66,15 @@ class Table(Store):
             }
 
         self.tag = tag
+        self.pks = []
         if self.indexes:
             self.pks = get_first(
                 self.indexes,
                 lambda item: item["primary"],
                 "attributes"
             )
-        else:
+
+        if not self.pks and self.constraints:
             self.pks = get_first(
                 self.constraints,
                 lambda item: item['type'] == 'p',
@@ -97,10 +99,12 @@ class Table(Store):
             data_range, data_hash, count
         )
         return {
-            "hash": data_hash,
-            "count": count,
+            "data": {
+                "hash": data_hash,
+                "count": count,
+                "range": data_range,
+            },
             "schema": schema,
-            "range": data_range,
         }
 
     def get_schema(self):
@@ -149,7 +153,7 @@ class Table(Store):
                 aggregator = "listagg"
             pks = " || '/' || ".join([f'"{pk}"' for pk in pks])
             return [
-                f"SELECT MIN(T.pks), MAX(T.pks) FROM"
+                f"SELECT MIN(T.pks) as \"from\", MAX(T.pks) as \"to\" FROM"
                 f'(SELECT {aggregator}({pks}) as pks '
                 f'FROM "{self.namespace.name}"."{self.name}") AS T'
             ]

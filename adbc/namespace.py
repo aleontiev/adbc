@@ -33,7 +33,7 @@ GET_TABLE_CONSTRAINTS_QUERY = """SELECT
     C.conname as constraint,
     C.condeferrable as deferrable,
     C.condeferred as deferred,
-    C.contype as type,
+    C.contype::varchar as type,
     F.relname as related_name,
     C.consrc as check,
     Rel.attname as related_attributes,
@@ -43,7 +43,7 @@ JOIN pg_constraint C ON C.conrelid = R.oid
 JOIN pg_namespace N ON N.oid = R.relnamespace
 LEFT JOIN pg_class F ON F.oid = C.confrelid
 LEFT JOIN pg_attribute Rel ON F.oid = Rel.attrelid AND Rel.attnum = ANY(C.confkey)
-LEFT JOIN pg_attribute A ON F.oid = A.attrelid AND A.attnum = ANY(C.conkey)
+LEFT JOIN pg_attribute A ON R.oid = A.attrelid AND A.attnum = ANY(C.conkey)
 WHERE N.nspname = '{namespace}' and R.relkind = 'r' {query}
 """
 
@@ -294,11 +294,11 @@ class Namespace(WithConfig, ParentStore):
                         else:
                             related_attributes = [related_attributes]
 
-                        attributes = record[8]
-                        if not attributes:
-                            attributes = []
+                        attrs = record[8]
+                        if not attrs:
+                            attrs = []
                         else:
-                            attributes = [attributes]
+                            attrs = [attrs]
 
                         cs = tables[name]['constraints']
                         if constraint not in cs:
@@ -310,7 +310,7 @@ class Namespace(WithConfig, ParentStore):
                                 'related_name': record[5],
                                 'check': record[6],
                                 'related_attributes': related_attributes,
-                                'attributes': attributes
+                                'attributes': attrs
                             }
                         else:
                             if related_attributes:
@@ -318,9 +318,9 @@ class Namespace(WithConfig, ParentStore):
                                 constraints[name]['related_attributes'].extend(
                                     related_attributes
                                 )
-                            if attributes:
+                            if attrs:
                                 constraints[name]['attributes'].extend(
-                                    attributes
+                                    attrs
                                 )
 
                     for record in indexes:
@@ -335,7 +335,7 @@ class Namespace(WithConfig, ParentStore):
 
                         index = record[1]
                         inds = tables[name]['indexes']
-                        columns = self.parse_index_columns(record[5])
+                        columns = self.parse_index_attributes(record[5])
                         if index not in inds:
                             inds[index] = {
                                 'name': index,

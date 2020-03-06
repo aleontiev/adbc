@@ -121,6 +121,7 @@ class DiffStep(WorkflowStep):
     def validate(self):
         self._validate('source', read=True)
         self._validate('target', read=True)
+        self.translate = self.config.get('translate', None)
 
     async def execute(self):
         source = Database(
@@ -128,9 +129,10 @@ class DiffStep(WorkflowStep):
             url=self.source_url,
             config=self.source_config
         )
+        translate = self.translate
         target = Database(
             name=self.target,
             url=self.target_url,
             config=self.target_config
         )
-        return await source.diff(target)
+        return await source.diff(target, translate=translate)

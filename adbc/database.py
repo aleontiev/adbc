@@ -99,10 +99,19 @@ class Database(WithConfig, ParentStore):
             tag=self.tag
         )
 
-    async def diff(self, other):
+    async def diff(self, other, translate=None):
         data = self.get_diff_data()
         other_data = other.get_diff_data()
         data, other_data = await asyncio.gather(data, other_data)
+
+        if translate:
+            # translate after both diffs have already been captured
+            for key, value in translate.items():
+                # source schema "key" is the same as target schema "value"
+                if key in data:
+                    data[value] = data[key]
+                    data.pop(key)
+
         return diff(data, other_data, syntax='symmetric')
 
     async def get_pool(self):
