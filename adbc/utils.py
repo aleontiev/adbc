@@ -37,6 +37,14 @@ def get_include_query(
     for key, should in include.items():
         if isinstance(should, dict) and 'enabled' in should:
             should = should['enabled']
+        if not should:
+            # disabled config block, skip
+            continue
+
+        should = True
+        if key.startswith('~'):
+            should = not should
+            key = key[1:]
 
         if '*' in key:
             operator = '~~' if should else '!~~'

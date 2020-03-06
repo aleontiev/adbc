@@ -1,17 +1,14 @@
 import asyncpg
 import asyncio
-import json
 from cached_property import cached_property
 
-from jsondiff import diff
+from pyaml import add_representer, UnsafePrettyYAMLDumper
+from jsondiff import diff, Symbol
 from .store import ParentStore, WithConfig
 from .utils import get_include_query, get_server_version
 from .namespace import Namespace
 
-
 DATABASE_VERSION_QUERY = 'SELECT version()'
-
-DIFF_NO_SYMBOLS = True
 
 
 class Database(WithConfig, ParentStore):
@@ -106,10 +103,7 @@ class Database(WithConfig, ParentStore):
         data = self.get_diff_data()
         other_data = other.get_diff_data()
         data, other_data = await asyncio.gather(data, other_data)
-        if DIFF_NO_SYMBOLS:
-            return json.loads(diff(data, other_data, syntax='symmetric', dump=True))
-        else:
-            return diff(data, other_data, syntax='symmetric')
+        return diff(data, other_data, syntax='symmetric')
 
     async def get_pool(self):
         return await asyncpg.create_pool(dsn=self.host.url, max_size=20)

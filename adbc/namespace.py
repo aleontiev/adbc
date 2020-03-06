@@ -9,7 +9,7 @@ from .utils import get_include_query
 from .table import Table
 
 
-INDEX_COLUMNS_REGEX = re.compile('.*USING [a-z_]+ [(]([A-Za-z_, ]+)[)]$')
+INDEX_ATTRIBUTES_REGEX = re.compile('.*USING [a-z_]+ [(]([A-Za-z_, ]+)[)]$')
 
 GET_TABLE_ATTRIBUTES_QUERY = """
 SELECT
@@ -36,12 +36,14 @@ GET_TABLE_CONSTRAINTS_QUERY = """SELECT
     C.contype as type,
     F.relname as related_name,
     C.consrc as check,
-    A.attname as related_attributes
+    Rel.attname as related_attributes,
+    A.attname as attributes
 FROM pg_class R
 JOIN pg_constraint C ON C.conrelid = R.oid
 JOIN pg_namespace N ON N.oid = R.relnamespace
 LEFT JOIN pg_class F ON F.oid = C.confrelid
-LEFT JOIN pg_attribute A ON F.oid = A.attrelid AND A.attnum = ANY(C.confkey)
+LEFT JOIN pg_attribute Rel ON F.oid = Rel.attrelid AND Rel.attnum = ANY(C.confkey)
+LEFT JOIN pg_attribute A ON F.oid = A.attrelid AND A.attnum = ANY(C.conkey)
 WHERE N.nspname = '{namespace}' and R.relkind = 'r' {query}
 """
 
@@ -73,8 +75,7 @@ FROM (
             'name', A.attname,
             'type', pg_catalog.format_type(A.atttypid, A.atttypmod),
             'default', D.adsrc,
-            'null', NOT A.attnotnull,
-            'number', A.attnum
+            'null', NOT A.attnotnull
         )) as result
     FROM pg_attribute A
     INNER JOIN pg_class R ON R.oid = A.attrelid
@@ -97,6 +98,10 @@ LEFT JOIN (
                 SELECT attname FROM pg_attribute
                 WHERE attnum = ANY(C.confkey) AND attrelid = F.oid
             )),
+            'attributes', array_to_json(array(
+                SELECT attname FROM pg_attribute
+                WHERE attnum = ANY(C.conkey) AND attrelid = R.oid
+            )),
             'related_name', F.relname,
             'check', C.consrc
         )) as result
@@ -116,7 +121,7 @@ LEFT JOIN (
             'type', IA.amname,
             'primary', I.indisprimary,
             'unique', I.indisunique,
-            'columns', array_to_json(array(
+            'attributes', array_to_json(array(
                 SELECT attname FROM pg_attribute
                 WHERE attnum = ANY(I.indkey) AND attrelid = R.oid
             ))
@@ -212,8 +217,11 @@ class Namespace(WithConfig, ParentStore):
         return args
 
     def get_table(self, name, attributes, constraints, indexes):
+        config = self.get_child_config(name)
+
         return Table(
             name,
+            config=config,
             namespace=self,
             attributes=attributes,
             constraints=constraints,
@@ -222,8 +230,8 @@ class Namespace(WithConfig, ParentStore):
             tag=self.tag
         )
 
-    def parse_index_columns(self, definition):
-        match = INDEX_COLUMNS_REGEX.match(definition)
+    def parse_index_attributes(self, definition):
+        match = INDEX_ATTRIBUTES_REGEX.match(definition)
         if match:
             return [x.strip() for x in match.group(1).split(',')]
         raise Exception(f'invalid index definition: "{definition}"')
@@ -269,7 +277,7 @@ class Namespace(WithConfig, ParentStore):
                     for record in constraints:
                         # name, deferrable, deferred, type,
                         # related_name, check
-                        # +related_attributes (name)
+                        # +related_attributes (name), attributes
 
                         name = record[0]
                         if 'name' not in tables[name]:
@@ -286,6 +294,12 @@ class Namespace(WithConfig, ParentStore):
                         else:
                             related_attributes = [related_attributes]
 
+                        attributes = record[8]
+                        if not attributes:
+                            attributes = []
+                        else:
+                            attributes = [attributes]
+
                         cs = tables[name]['constraints']
                         if constraint not in cs:
                             cs[constraint] = {
@@ -295,13 +309,19 @@ class Namespace(WithConfig, ParentStore):
                                 'type': str(record[4]),
                                 'related_name': record[5],
                                 'check': record[6],
-                                'related_attributes': related_attributes
+                                'related_attributes': related_attributes,
+                                'attributes': attributes
                             }
-                        elif related_attributes:
-                            # merge single-attribute join column
-                            constraints[name]['related_attributes'].extend(
-                                related_attributes
-                            )
+                        else:
+                            if related_attributes:
+                                # merge single-attribute join column
+                                constraints[name]['related_attributes'].extend(
+                                    related_attributes
+                                )
+                            if attributes:
+                                constraints[name]['attributes'].extend(
+                                    attributes
+                                )
 
                     for record in indexes:
                         # name, type, primary, unique, def

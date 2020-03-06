@@ -35,7 +35,8 @@ class RunCommand(Command):
         )
         result = {'data': result}
         try:
-            yaml_pprint(result)
+            yaml_pprint(result, safe=False)
         except Exception as e:
-            print(e)
+            print(f'{e.__class__}: {e}')
+            raise
             pprint(result)

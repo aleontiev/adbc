@@ -25,6 +25,7 @@ class Table(Store):
     def __init__(
         self,
         name,
+        config=None,
         namespace=None,
         attributes=None,
         constraints=None,
@@ -32,6 +33,11 @@ class Table(Store):
         verbose=False,
         tag=None,
     ):
+        if not isinstance(config, dict):
+            self.config = {}
+        else:
+            self.config = config
+
         self.name = name
         self.verbose = verbose
         self.parent = self.namespace = namespace
@@ -42,7 +48,6 @@ class Table(Store):
                 sorted(attributes or [], key=lambda c: c["name"]), "name"
             )
         }
-        print(self.name, self.attributes)
         self.columns = list(self.attributes.keys())
         self.constraints = {
             k: v
@@ -50,17 +55,38 @@ class Table(Store):
                 sorted(constraints or [], key=lambda c: c["name"]), "name"
             )
         }
-        self.indexes = {
-            k: v
-            for k, v in split_field(
-                sorted(indexes or [], key=lambda c: c["name"]), "name"
-            )
-        }
+        if not self.config.get('indexes', True):
+            self.indexes = {}
+        else:
+            self.indexes = {
+                k: v
+                for k, v in split_field(
+                    sorted(indexes or [], key=lambda c: c["name"]), "name"
+                )
+            }
+
         self.tag = tag
-        self.pks = get_first(self.indexes, lambda item: item["primary"], "columns")
+        if self.indexes:
+            self.pks = get_first(
+                self.indexes,
+                lambda item: item["primary"],
+                "attributes"
+            )
+        else:
+            self.pks = get_first(
+                self.constraints,
+                lambda item: item['type'] == 'p',
+                'attributes'
+            )
+
         if not self.pks:
             # full-row pks
             self.pks = self.columns
+
+        if not self.config.get('constraints', True):
+            # if constraints are disabled, we still try to read the pk fields
+            # and only then wipe the field
+            self.constraints = {}
 
     async def get_diff_data(self):
         data_range = self.get_data_range()
@@ -113,7 +139,7 @@ class Table(Store):
         if len(pks) == 1:
             pk = pks[0]
             return [
-                f'SELECT MIN("{pk}"), MAX("{pk}") '
+                f'SELECT MIN("{pk}") as "from", MAX("{pk}") as "to" '
                 f'FROM "{self.namespace.name}"."{self.name}"'
             ]
         else:
@@ -123,13 +149,14 @@ class Table(Store):
                 aggregator = "listagg"
             pks = " || '/' || ".join([f'"{pk}"' for pk in pks])
             return [
-                f"SELECT MIN({aggregator}({pks})), MAX({aggregator}({pks})) "
-                f'FROM "{self.namespace.name}"."{self.name}"'
+                f"SELECT MIN(T.pks), MAX(T.pks) FROM"
+                f'(SELECT {aggregator}({pks}) as pks '
+                f'FROM "{self.namespace.name}"."{self.name}") AS T'
             ]
 
     async def get_data_range(self):
         query = await self.get_data_range_query()
-        return await self.database.query_one_row(*query, as_=list)
+        return await self.database.query_one_row(*query, as_=dict)
 
     async def get_data_hash(self):
         query = await self.get_data_hash_query()
