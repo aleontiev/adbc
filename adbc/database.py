@@ -4,7 +4,7 @@ import json
 from cached_property import cached_property
 
 from jsondiff import diff
-from .store import ParentStore, WithInclude
+from .store import ParentStore, WithConfig
 from .utils import get_include_query, get_server_version
 from .namespace import Namespace
 
@@ -14,7 +14,8 @@ DATABASE_VERSION_QUERY = 'SELECT version()'
 DIFF_NO_SYMBOLS = True
 
 
-class Database(WithInclude, ParentStore):
+class Database(WithConfig, ParentStore):
+    child_key = 'schemas'
     type = 'db'
 
     def __init__(
@@ -22,7 +23,7 @@ class Database(WithInclude, ParentStore):
         name=None,
         host=None,
         url=None,
-        include=None,
+        config=None,
         tag=None,
         verbose=False,
     ):
@@ -35,7 +36,7 @@ class Database(WithInclude, ParentStore):
 
         self.name = name
         self.parent = self.host = host
-        self.include = include
+        self.config = config
         self.verbose = verbose
         self.tag = tag
 
@@ -54,7 +55,10 @@ class Database(WithInclude, ParentStore):
         pool = await self.pool
         async with pool.acquire() as connection:
             async with connection.transaction():
-                results = await connection.fetch(*query)
+                try:
+                    results = await connection.fetch(*query)
+                except Exception as e:
+                    raise Exception(f'query failed: {query}\n{e.__class__}: {e}')
                 if many:
                     return results if columns else [r[0] for r in results]
                 else:
@@ -76,8 +80,9 @@ class Database(WithInclude, ParentStore):
     def get_namespaces_query(self):
         table = "pg_namespace"
         column = "nspname"
+        include = self.get_child_include()
         query, args = get_include_query(
-            self.include, table, column
+            include, table, column
         )
         if query:
             query = "WHERE {}".format(query)
@@ -85,17 +90,14 @@ class Database(WithInclude, ParentStore):
         return args
 
     def get_namespace(self, name):
-        include = self.get_include(name)
-        if not include:
+        config = self.get_child_config(name)
+        if not config:
             raise Exception(f'{self}: namespace "{name}" is not included')
 
-        self.log(
-            'db.{}.ns.{}.init({})'.format(self.name, name, include)
-        )
         return Namespace(
             name,
             database=self,
-            include=include,
+            config=config,
             verbose=self.verbose,
             tag=self.tag
         )

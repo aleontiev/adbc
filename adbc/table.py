@@ -42,6 +42,7 @@ class Table(Store):
                 sorted(attributes or [], key=lambda c: c["name"]), "name"
             )
         }
+        print(self.name, self.attributes)
         self.columns = list(self.attributes.keys())
         self.constraints = {
             k: v

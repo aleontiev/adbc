@@ -2,23 +2,24 @@ from urllib.parse import urlparse
 from cached_property import cached_property
 
 from .database import Database
-from .store import ParentStore, WithInclude
+from .store import ParentStore, WithConfig
 from .utils import get_include_query
 
 
-class Host(WithInclude, ParentStore):
+class Host(WithConfig, ParentStore):
     type = 'host'
+    child_key = 'databases'
 
     def __init__(
         self,
         url,
-        include=True
+        config=None
     ):
         self.url = url
         self.parsed_url = urlparse(url)
         self.dbname = self.parsed_url.path.replace('/', '')
         self.name = self.parsed_url.netloc
-        self.include = include
+        self.config = config
 
     async def get_children(self):
         yield self.databases
@@ -27,8 +28,9 @@ class Host(WithInclude, ParentStore):
         table = 'pg_database'
         column = 'datname'
         args = []
+        include = self.get_child_include()
         query, args = get_include_query(
-            self.include,
+            include,
             table,
             column,
         )
@@ -50,14 +52,13 @@ class Host(WithInclude, ParentStore):
                 yield self.get_database(row[0])
 
     async def get_database(self, name):
-        self.log('host.{}.db.{}.init'.format(self.name, name))
-        include = self.get_include(name)
-        if not include:
-            raise Exception(f'{self}: database {name} is not included')
+        config = self.get_child_config(name)
+        if not config:
+            raise Exception(f'{self}: database "{name}" is not included')
 
         yield Database(
             host=self,
-            include=include
+            config=config
         )
 
     @cached_property

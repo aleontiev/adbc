@@ -4,7 +4,7 @@ from collections import defaultdict
 import re
 import json
 
-from .store import ParentStore, WithInclude
+from .store import ParentStore, WithConfig
 from .utils import get_include_query
 from .table import Table
 
@@ -16,7 +16,7 @@ SELECT
     R.relname as name,
     A.attname as attribute,
     pg_catalog.format_type(A.atttypid, A.atttypmod) as type,
-    CASE WHEN D.adsrc LIKE 'nextval%' THEN NULL ELSE D.adsrc END as default,
+    D.adsrc as default,
     NOT A.attnotnull AS null
 FROM pg_attribute A
 INNER JOIN pg_class R ON R.oid = A.attrelid
@@ -24,7 +24,7 @@ INNER JOIN pg_namespace N ON R.relnamespace = N.oid
 LEFT JOIN pg_attrdef D ON A.atthasdef = true AND D.adrelid = R.oid AND
     D.adnum = A.attnum
 WHERE N.nspname = '{namespace}' AND A.attnum > 0 AND R.relkind = 'r'
-    {query} AND NOT A.attisdropped
+ AND NOT A.attisdropped {query}
 """
 
 
@@ -72,15 +72,16 @@ FROM (
         json_agg(json_build_object(
             'name', A.attname,
             'type', pg_catalog.format_type(A.atttypid, A.atttypmod),
-            'default', CASE WHEN D.adsrc LIKE 'nextval%' THEN NULL ELSE D.adsrc END,
-            'null', NOT A.attnotnull
+            'default', D.adsrc,
+            'null', NOT A.attnotnull,
+            'number', A.attnum
         )) as result
     FROM pg_attribute A
     INNER JOIN pg_class R ON R.oid = A.attrelid
     INNER JOIN pg_namespace N ON R.relnamespace = N.oid
     LEFT JOIN pg_attrdef D ON A.atthasdef = true AND D.adrelid = R.oid AND
         D.adnum = A.attnum
-    WHERE N.nspname = '{namespace}' and A.attnum > 0 AND R.relkind = 'r'
+    WHERE A.attnum > 0 AND N.nspname = '{namespace}' AND R.relkind = 'r'
           {query} AND NOT A.attisdropped
     GROUP BY R.relname
 ) Attributes
@@ -131,20 +132,21 @@ LEFT JOIN (
 """
 
 
-class Namespace(WithInclude, ParentStore):
+class Namespace(WithConfig, ParentStore):
     type = 'ns'
+    child_key = 'tables'
 
     def __init__(
         self,
         name,
         database=None,
-        include=None,
+        config=None,
         verbose=False,
         tag=None,
     ):
         self.name = name
         self.parent = self.database = database
-        self.include = include
+        self.config = config
         self.verbose = verbose
         self.tag = tag
 
@@ -152,11 +154,12 @@ class Namespace(WithInclude, ParentStore):
         table = "R"
         column = "relname"
         args = []
+        include = self.get_child_include()
         query, args = get_include_query(
-            self.include, table, column
+            include, table, column
         )
         if query:
-            query = f" AND {query}"
+            query = f" AND ({query})"
         args.insert(0, GET_TABLES_QUERY.format(namespace=self.name, query=query))
         return args
 
@@ -164,9 +167,10 @@ class Namespace(WithInclude, ParentStore):
         table = "R"
         column = "relname"
         args = []
-        query, args = get_include_query(self.include, table, column)
+        include = self.get_child_include()
+        query, args = get_include_query(include, table, column)
         if query:
-            query = f" AND {query}"
+            query = f" AND ({query})"
         args.insert(
             0,
             GET_TABLE_INDEXES_QUERY.format(
@@ -179,9 +183,10 @@ class Namespace(WithInclude, ParentStore):
         table = "R"
         column = "relname"
         args = []
-        query, args = get_include_query(self.include, table, column)
+        include = self.get_child_include()
+        query, args = get_include_query(include, table, column)
         if query:
-            query = f" AND {query}"
+            query = f" AND ({query})"
         args.insert(
             0,
             GET_TABLE_CONSTRAINTS_QUERY.format(
@@ -194,9 +199,10 @@ class Namespace(WithInclude, ParentStore):
         table = "R"
         column = "relname"
         args = []
-        query, args = get_include_query(self.include, table, column)
+        include = self.get_child_include()
+        query, args = get_include_query(include, table, column)
         if query:
-            query = f" AND {query}"
+            query = f" AND ({query})"
         args.insert(
             0,
             GET_TABLE_ATTRIBUTES_QUERY.format(
@@ -206,7 +212,6 @@ class Namespace(WithInclude, ParentStore):
         return args
 
     def get_table(self, name, attributes, constraints, indexes):
-        self.log('ns.{}.table.{}.init'.format(self.name, name))
         return Table(
             name,
             namespace=self,

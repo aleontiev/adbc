@@ -1,5 +1,7 @@
 import re
 import inspect
+import collections
+from cached_property import cached_property  # noqa
 
 
 def get_include_args(args, truth=True):
@@ -33,6 +35,9 @@ def get_include_query(
     count = 1
     includes = excludes = False
     for key, should in include.items():
+        if isinstance(should, dict) and 'enabled' in should:
+            should = should['enabled']
+
         if '*' in key:
             operator = '~~' if should else '!~~'
             key = key.replace('*', '%')
@@ -57,7 +62,8 @@ def get_include_query(
         union = 'OR'
     else:
         union = 'AND'
-    return ' {} '.format(union).join(query), args
+    result = ' {} '.format(union).join(query), args
+    return result
 
 
 SERVER_VERSION_REGEX = re.compile('^[A-Za-z]+ ([0-9.]+)')
@@ -173,3 +179,12 @@ def is_dsn(url):
         raise
     else:
         return True
+
+
+def merge(dictionary, other):
+    for k, v in other.items():
+        if isinstance(v, collections.abc.Mapping):
+            dictionary[k] = merge(dictionary.get(k, {}), v)
+        else:
+            dictionary[k] = v
+    return dictionary

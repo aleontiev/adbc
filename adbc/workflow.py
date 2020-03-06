@@ -66,16 +66,13 @@ class WorkflowStep(object):
 
         return url
 
-    def validate_database_schemas(self, name):
+    def validate_database_config(self, name):
         databases = self.workflow.databases
         if name not in databases:
             raise Exception(
                 f'The provided name "{name}" is not defined in "databases"'
             )
-
-        schemas = databases[name].get("schemas")
-        # if schemas is None/undefined, assume include all
-        return schemas if schemas is not None else True
+        return databases[name]
 
     def _validate(self, name, read=False, write=False):
         config = self.config
@@ -86,7 +83,7 @@ class WorkflowStep(object):
 
         url = self.validate_database_url(datasource)
         setattr(self, f'{name}_url', url)
-        setattr(self, f'{name}_schemas', self.validate_database_schemas(datasource))
+        setattr(self, f'{name}_config', self.validate_database_config(datasource))
         self.validate_credentials(url, read=read, write=write)
 
     def validate_credentials(self, url, read=False, write=False):
@@ -115,7 +112,7 @@ class InfoStep(WorkflowStep):
         database = Database(
             name=self.source,
             url=self.source_url,
-            include=self.source_schemas
+            config=self.source_config
         )
         return await database.get_diff_data()
 
@@ -129,11 +126,11 @@ class DiffStep(WorkflowStep):
         source = Database(
             name=self.source,
             url=self.source_url,
-            include=self.source_schemas
+            config=self.source_config
         )
         target = Database(
             name=self.target,
             url=self.target_url,
-            include=self.target_schemas
+            config=self.target_config
         )
         return await source.diff(target)
