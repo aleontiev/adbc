@@ -41,7 +41,7 @@ def get_include_query(
             # disabled config block, skip
             continue
 
-        should = True
+        should = bool(should)
         if key.startswith('~'):
             should = not should
             key = key[1:]

@@ -107,6 +107,9 @@ class Database(WithConfig, ParentStore):
         if translate:
             # translate after both diffs have already been captured
             for key, value in translate.items():
+                if key == value:
+                    continue
+
                 # source schema "key" is the same as target schema "value"
                 if key in data:
                     data[value] = data[key]

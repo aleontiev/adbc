@@ -16,7 +16,7 @@ SELECT
     R.relname as name,
     A.attname as attribute,
     pg_catalog.format_type(A.atttypid, A.atttypmod) as type,
-    D.adsrc as default,
+    pg_get_expr(D.adbin, D.adrelid) as default,
     NOT A.attnotnull AS null
 FROM pg_attribute A
 INNER JOIN pg_class R ON R.oid = A.attrelid
@@ -74,7 +74,7 @@ FROM (
         json_agg(json_build_object(
             'name', A.attname,
             'type', pg_catalog.format_type(A.atttypid, A.atttypmod),
-            'default', D.adsrc,
+            'default', pg_get_expr(D.adbin, D.adrelid),
             'null', NOT A.attnotnull
         )) as result
     FROM pg_attribute A
@@ -335,14 +335,14 @@ class Namespace(WithConfig, ParentStore):
 
                         index = record[1]
                         inds = tables[name]['indexes']
-                        columns = self.parse_index_attributes(record[5])
+                        attributes = self.parse_index_attributes(record[5])
                         if index not in inds:
                             inds[index] = {
                                 'name': index,
                                 'type': record[2],
                                 'primary': record[3],
                                 'unique': record[4],
-                                'columns': columns
+                                'attributes': attributes
                             }
                 else:
                     query = self.get_tables_query()

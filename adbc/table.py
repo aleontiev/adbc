@@ -48,6 +48,13 @@ class Table(Store):
                 sorted(attributes or [], key=lambda c: c["name"]), "name"
             )
         }
+        if not self.config.get('sequences', True):
+            # ignore nextval / sequence-based default values
+            for attribute in self.attributes.values():
+                default = attribute.get('default', None)
+                if isinstance(default, str) and default.startswith("nextval("):
+                    attribute['default'] = None
+
         self.columns = list(self.attributes.keys())
         self.constraints = {
             k: v
@@ -55,15 +62,12 @@ class Table(Store):
                 sorted(constraints or [], key=lambda c: c["name"]), "name"
             )
         }
-        if not self.config.get('indexes', True):
-            self.indexes = {}
-        else:
-            self.indexes = {
-                k: v
-                for k, v in split_field(
-                    sorted(indexes or [], key=lambda c: c["name"]), "name"
-                )
-            }
+        self.indexes = {
+            k: v
+            for k, v in split_field(
+                sorted(indexes or [], key=lambda c: c["name"]), "name"
+            )
+        }
 
         self.tag = tag
         self.pks = []
@@ -85,10 +89,20 @@ class Table(Store):
             # full-row pks
             self.pks = self.columns
 
-        if not self.config.get('constraints', True):
-            # if constraints are disabled, we still try to read the pk fields
-            # and only then wipe the field
-            self.constraints = {}
+        # if disabled, remove constraints/indexes
+        # but only after they are used to determine possible primary key
+        constraints = self.config.get('constraints', True)
+        if not constraints:
+            self.constraints = None
+        elif isinstance(constraints, str):
+            self.constraints = {
+                k: v
+                for k, v in self.constraints.items()
+                if v['type'] in constraints
+            }
+
+        if not self.config.get('indexes', True):
+            self.indexes = None
 
     async def get_diff_data(self):
         data_range = self.get_data_range()
@@ -108,12 +122,15 @@ class Table(Store):
         }
 
     def get_schema(self):
-        return {
+        result = {
             "name": self.name,
             "attributes": self.attributes,
-            "constraints": self.constraints,
-            "indexes": self.indexes,
         }
+        if self.constraints is not None:
+            result['constraints'] = self.constraints
+        if self.indexes is not None:
+            result['indexes'] = self.indexes
+        return result
 
     async def get_data_hash_query(self):
         version = await self.database.version
