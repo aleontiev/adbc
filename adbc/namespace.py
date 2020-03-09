@@ -4,12 +4,13 @@ from collections import defaultdict
 import re
 import json
 
+from .exceptions import NotIncluded
 from .store import ParentStore, WithConfig
 from .utils import get_include_query
 from .table import Table
 
 
-INDEX_ATTRIBUTES_REGEX = re.compile('.*USING [a-z_]+ [(]([A-Za-z_, ]+)[)]$')
+INDEX_ATTRIBUTES_REGEX = re.compile('.*USING [a-z_]+ [(](["A-Za-z_, ]+)[)]$')
 
 GET_TABLE_ATTRIBUTES_QUERY = """
 SELECT
@@ -218,7 +219,6 @@ class Namespace(WithConfig, ParentStore):
 
     def get_table(self, name, attributes, constraints, indexes):
         config = self.get_child_config(name)
-
         return Table(
             name,
             config=config,
@@ -233,7 +233,7 @@ class Namespace(WithConfig, ParentStore):
     def parse_index_attributes(self, definition):
         match = INDEX_ATTRIBUTES_REGEX.match(definition)
         if match:
-            return [x.strip() for x in match.group(1).split(',')]
+            return [x.strip().replace('"', '') for x in match.group(1).split(',')]
         raise Exception(f'invalid index definition: "{definition}"')
 
     async def get_children(self):
@@ -353,20 +353,28 @@ class Namespace(WithConfig, ParentStore):
                         schema="pg_catalog"
                     )
                     async for row in connection.cursor(*query):
-                        yield self.get_table(
-                            row[0],
-                            row[1],
-                            row[2],
-                            row[3]
-                        )
+                        try:
+                            table = self.get_table(
+                                row[0],
+                                row[1],
+                                row[2],
+                                row[3]
+                            )
+                        except NotIncluded:
+                            pass
+                        else:
+                            yield table
 
         for table in tables.values():
-            yield self.get_table(
-                table['name'],
-                table.get('attributes', []),
-                list(table.get('constraints', {}).values()),
-                list(table.get('indexes', {}).values())
-            )
+            try:
+                yield self.get_table(
+                    table['name'],
+                    table.get('attributes', []),
+                    list(table.get('constraints', {}).values()),
+                    list(table.get('indexes', {}).values())
+                )
+            except NotIncluded:
+                pass
 
     @cached_property
     async def tables(self):

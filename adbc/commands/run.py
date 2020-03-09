@@ -37,6 +37,5 @@ class RunCommand(Command):
         try:
             yaml_pprint(result, safe=False)
         except Exception as e:
-            print(f'{e.__class__}: {e}')
-            raise
+            print(f'{e.__class__} while formatting: {e}')
             pprint(result)

@@ -1,0 +1,2 @@
+class NotIncluded(Exception):
+    pass

@@ -2,8 +2,9 @@ import asyncpg
 import asyncio
 from cached_property import cached_property
 
-from pyaml import add_representer, UnsafePrettyYAMLDumper
-from jsondiff import diff, Symbol
+from jsondiff import diff
+
+from .exceptions import NotIncluded
 from .store import ParentStore, WithConfig
 from .utils import get_include_query, get_server_version
 from .namespace import Namespace
@@ -55,7 +56,12 @@ class Database(WithConfig, ParentStore):
                 try:
                     results = await connection.fetch(*query)
                 except Exception as e:
-                    raise Exception(f'query failed: {query}\n{e.__class__}: {e}')
+                    if len(query) == 1:
+                        query = query[0]
+                    raise Exception(
+                        f'query failed:\n======\n{query}\n======\n'
+                        f'{e.__class__}: {e}'
+                    )
                 if many:
                     return results if columns else [r[0] for r in results]
                 else:
@@ -83,14 +89,11 @@ class Database(WithConfig, ParentStore):
         )
         if query:
             query = "WHERE {}".format(query)
-        args.insert(0, 'SELECT "{}" FROM "{}" {}'.format(column, table, query))
+        args.insert(0, 'SELECT "{}"\nFROM "{}" {}'.format(column, table, query))
         return args
 
     def get_namespace(self, name):
         config = self.get_child_config(name)
-        if not config:
-            raise Exception(f'{self}: namespace "{name}" is not included')
-
         return Namespace(
             name,
             database=self,
@@ -123,7 +126,10 @@ class Database(WithConfig, ParentStore):
     async def get_children(self):
         query = self.get_namespaces_query()
         async for row in self.stream(*query):
-            yield self.get_namespace(row[0])
+            try:
+                yield self.get_namespace(row[0])
+            except NotIncluded:
+                pass
 
     @cached_property
     async def pool(self):

@@ -3,6 +3,15 @@ from .store import Store
 from cached_property import cached_property
 
 
+NO_ORDER_TYPES = {
+    'xid',
+    'anyarray',
+}
+INTERNAL_SCHEMAS = {
+    'pg_catalog',
+    'information_schema'
+}
+
 def get_first(items, fn, then=None):
     if isinstance(items, dict):
         items = items.values()
@@ -138,48 +147,102 @@ class Table(Store):
             # TODO: fix, technically this applies to Redshift, not Postgres <9
             # in practice, nobody else is running Postgres 8 anymore...
             aggregator = "listagg"
-            end = ", ',')) "
+            end = ", ',')"
         else:
             aggregator = "array_to_string(array_agg"
-            end = "), ',')) "
+            end = "), ',')"
+
+        columns = self.columns
 
         # concatenate all column names and values in pseudo-json
-        aggregate = " || ".join([f"'{c}' || " f'T."{c}"' for c in self.columns])
-        order = ", ".join([f'"{c}"' for c in self.pks])
+        aggregate = " ||\n ".join([
+            (f"'{c}:' || " f'T."{c}"::varchar')
+            for c in self.columns
+        ])
+        pks = self.pks
         namespace = self.namespace.name
+        order = ",\n    ".join([
+            f'"{c}"' for c in pks if self.can_order(c)
+        ])
+        cols = ",\n    ".join([
+            f'"{column}"' if not self.is_array_column(column)
+            else f'array_to_string("{column}", \',\') as {column}'
+            for column in columns
+        ])
         return [
-            f"SELECT md5({aggregator}({aggregate}{end}"
-            f"FROM (SELECT * FROM {namespace}.{self.name} ORDER BY {order}) AS T"
+            f"SELECT MD5(\n"
+            f'  {aggregator}({aggregate}{end}\n'
+            f')\n'
+            f'FROM (\n'
+            f'  SELECT {cols}\n'
+            f'  FROM "{namespace}"."{self.name}"\n'
+            f'  ORDER BY {order}'
+            f') AS T'
         ]
+
+    def can_order(self, column):
+        attribute = self.attributes[column]
+        return attribute['type'] not in NO_ORDER_TYPES
+
+    def is_array_column(self, column):
+        attribute = self.attributes[column]
+        type = attribute['type']
+        return '[]' in type or 'vector' in type
+
+    def is_short_column(self, column):
+        attribute = self.attributes[column]
+        return attribute['type'] != 'pg_node_tree'
 
     def get_count_query(self):
         return ['SELECT COUNT(*) FROM "{}"."{}"'.format(self.namespace.name, self.name)]
 
     async def get_data_range_query(self):
         pks = self.pks
+        columns = self.columns
+
         if len(pks) == 1:
             pk = pks[0]
             return [
-                f'SELECT MIN("{pk}") as "from", MAX("{pk}") as "to" '
+                f'SELECT MIN("{pk}") as "from", MAX("{pk}") as "to"\n'
                 f'FROM "{self.namespace.name}"."{self.name}"'
             ]
         else:
             version = await self.database.version
-            aggregator = "array_agg"
+            aggregator = "array_to_string(array_agg"
+            end = "), ',')"
             if version < "9":
                 aggregator = "listagg"
-            pks = " || '/' || ".join([f'"{pk}"' for pk in pks])
-            return [
-                f"SELECT MIN(T.pks) as \"from\", MAX(T.pks) as \"to\" FROM"
-                f'(SELECT {aggregator}({pks}) as pks '
-                f'FROM "{self.namespace.name}"."{self.name}") AS T'
-            ]
+                end = ", ',')"
+            pks = " || ':' || ".join([
+                f'T2."{pk}"::varchar' for pk in pks if self.is_short_column(pk)
+            ])
+            cols = ",\n    ".join([
+                f'"{column}"' if not self.is_array_column(column)
+                else f'array_to_string("{column}", \',\') as {column}'
+                for column in columns if self.is_short_column(column)
+            ])
+            return [(
+                'SELECT MIN(T.pks) as "from", MAX(T.pks) as "to"\n'
+                'FROM (\n'
+                f'  SELECT {aggregator}({pks}{end} as pks\n'
+                f'  FROM (\n'
+                f'    SELECT {cols}\n'
+                f'    FROM "{self.namespace.name}"."{self.name}"\n'
+                f'  ) AS T2\n'
+                ') AS T'
+            )]
 
     async def get_data_range(self):
+        if len(self.pks) > 1:
+            return None
+
         query = await self.get_data_range_query()
         return await self.database.query_one_row(*query, as_=dict)
 
     async def get_data_hash(self):
+        version = await self.database.version
+        if self.namespace.name in INTERNAL_SCHEMAS and version < '9':
+            return None
         query = await self.get_data_hash_query()
         return await self.database.query_one_value(*query)
 

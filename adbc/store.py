@@ -1,8 +1,10 @@
+from asyncio import gather
 from collections import OrderedDict
-from hashlib import md5
 from fnmatch import fnmatch
+from hashlib import md5
+
 from .utils import cached_property, merge
-import asyncio
+from .exceptions import NotIncluded
 
 
 def hash_(s, n):
@@ -52,7 +54,7 @@ class WithChildren(object):
             # get counts in parallel
             s.append(c.get_count())
 
-        return sum(await asyncio.gather(*s))
+        return sum(await gather(*s))
 
     async def get_data_hash(self):
         s = []
@@ -63,7 +65,7 @@ class WithChildren(object):
             s.append(data_hash)
             n.append(c.name)
 
-        s = await asyncio.gather(*s)
+        s = await gather(*s)
         return hash_(s, n)
 
     async def get_schema_hash(self):
@@ -75,7 +77,7 @@ class WithChildren(object):
             s.append(schema_hash)
             n.append(c.name)
 
-        s = await asyncio.gather(*s)
+        s = await gather(*s)
         return hash_(s, n)
 
     async def get_diff_data(self):
@@ -85,7 +87,7 @@ class WithChildren(object):
             data[child.name] = child.get_diff_data()
 
         keys, values = data.keys(), data.values()
-        values = await asyncio.gather(*values)
+        values = await gather(*values)
         return dict(zip(keys, values))
 
 
@@ -135,6 +137,13 @@ class WithConfig(object):
 
         if not config:
             return True
+
+        if (
+            not config or (
+                isinstance(config, dict) and not config.get('enabled', True)
+            )
+        ):
+            raise NotIncluded()
 
         return config
 
