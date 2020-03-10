@@ -12,6 +12,7 @@ INTERNAL_SCHEMAS = {
     'information_schema'
 }
 
+
 def get_first(items, fn, then=None):
     if isinstance(items, dict):
         items = items.values()
@@ -36,7 +37,7 @@ class Table(Store):
         name,
         config=None,
         namespace=None,
-        attributes=None,
+        columns=None,
         constraints=None,
         indexes=None,
         verbose=False,
@@ -51,20 +52,20 @@ class Table(Store):
         self.verbose = verbose
         self.parent = self.namespace = namespace
         self.database = namespace.database
-        self.attributes = {
+        self.columns = {
             k: v
             for k, v in split_field(
-                sorted(attributes or [], key=lambda c: c["name"]), "name"
+                sorted(columns or [], key=lambda c: c["name"]), "name"
             )
         }
         if not self.config.get('sequences', True):
             # ignore nextval / sequence-based default values
-            for attribute in self.attributes.values():
-                default = attribute.get('default', None)
+            for column in self.columns.values():
+                default = column.get('default', None)
                 if isinstance(default, str) and default.startswith("nextval("):
-                    attribute['default'] = None
+                    column['default'] = None
 
-        self.columns = list(self.attributes.keys())
+        self.column_names = list(self.columns.keys())
         self.constraints = {
             k: v
             for k, v in split_field(
@@ -84,19 +85,19 @@ class Table(Store):
             self.pks = get_first(
                 self.indexes,
                 lambda item: item["primary"],
-                "attributes"
+                "columns"
             )
 
         if not self.pks and self.constraints:
             self.pks = get_first(
                 self.constraints,
                 lambda item: item['type'] == 'p',
-                'attributes'
+                'columns'
             )
 
         if not self.pks:
             # full-row pks
-            self.pks = self.columns
+            self.pks = self.column_names
 
         # if disabled, remove constraints/indexes
         # but only after they are used to determine possible primary key
@@ -133,7 +134,7 @@ class Table(Store):
     def get_schema(self):
         result = {
             "name": self.name,
-            "attributes": self.attributes,
+            "columns": self.columns,
         }
         if self.constraints is not None:
             result['constraints'] = self.constraints
@@ -180,25 +181,25 @@ class Table(Store):
             f') AS T'
         ]
 
-    def can_order(self, column):
-        attribute = self.attributes[column]
-        return attribute['type'] not in NO_ORDER_TYPES
+    def can_order(self, column_name):
+        column = self.columns[column_name]
+        return column['type'] not in NO_ORDER_TYPES
 
-    def is_array_column(self, column):
-        attribute = self.attributes[column]
-        type = attribute['type']
+    def is_array_column(self, column_name):
+        column = self.columns[column_name]
+        type = column['type']
         return '[]' in type or 'vector' in type
 
-    def is_short_column(self, column):
-        attribute = self.attributes[column]
-        return attribute['type'] != 'pg_node_tree'
+    def is_short_column(self, column_name):
+        column = self.columns[column_name]
+        return column['type'] != 'pg_node_tree'
 
     def get_count_query(self):
         return ['SELECT COUNT(*) FROM "{}"."{}"'.format(self.namespace.name, self.name)]
 
     async def get_data_range_query(self):
         pks = self.pks
-        columns = self.columns
+        columns = self.column_names
 
         if len(pks) == 1:
             pk = pks[0]

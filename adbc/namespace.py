@@ -10,12 +10,12 @@ from .utils import get_include_query
 from .table import Table
 
 
-INDEX_ATTRIBUTES_REGEX = re.compile('.*USING [a-z_]+ [(](["A-Za-z_, ]+)[)]$')
+INDEX_COLUMNS_REGEX = re.compile('.*USING [a-z_]+ [(](["A-Za-z_, ]+)[)]$')
 
-GET_TABLE_ATTRIBUTES_QUERY = """
+GET_TABLE_COLUMNS_QUERY = """
 SELECT
     R.relname as name,
-    A.attname as attribute,
+    A.attname as column,
     pg_catalog.format_type(A.atttypid, A.atttypmod) as type,
     pg_get_expr(D.adbin, D.adrelid) as default,
     NOT A.attnotnull AS null
@@ -37,8 +37,8 @@ GET_TABLE_CONSTRAINTS_QUERY = """SELECT
     C.contype::varchar as type,
     F.relname as related_name,
     C.consrc as check,
-    Rel.attname as related_attributes,
-    A.attname as attributes
+    Rel.attname as related_columns,
+    A.attname as columns
 FROM pg_class R
 JOIN pg_constraint C ON C.conrelid = R.oid
 JOIN pg_namespace N ON N.oid = R.relnamespace
@@ -65,8 +65,8 @@ WHERE N.nspname = '{namespace}' and R.relkind = 'r' {query}
 """
 
 GET_TABLES_QUERY = """SELECT
-    Attributes.name,
-    Attributes.result as attributes,
+    Columns.name,
+    Columns.result as columns,
     Constraints.result as constraints,
     Indexes.result as indexes
 FROM (
@@ -86,7 +86,7 @@ FROM (
     WHERE A.attnum > 0 AND N.nspname = '{namespace}' AND R.relkind = 'r'
           {query} AND NOT A.attisdropped
     GROUP BY R.relname
-) Attributes
+) Columns
 LEFT JOIN (
     SELECT
         R.relname as name,
@@ -95,11 +95,11 @@ LEFT JOIN (
             'deferrable', C.condeferrable,
             'deferred', C.condeferred,
             'type', C.contype,
-            'related_attributes', array_to_json(array(
+            'related_columns', array_to_json(array(
                 SELECT attname FROM pg_attribute
                 WHERE attnum = ANY(C.confkey) AND attrelid = F.oid
             )),
-            'attributes', array_to_json(array(
+            'columns', array_to_json(array(
                 SELECT attname FROM pg_attribute
                 WHERE attnum = ANY(C.conkey) AND attrelid = R.oid
             )),
@@ -113,7 +113,7 @@ LEFT JOIN (
     LEFT JOIN pg_class F ON F.oid = C.confrelid
     WHERE N.nspname = '{namespace}' and R.relkind = 'r' {query}
     GROUP BY R.relname
-) Constraints ON Attributes.name = Constraints.name
+) Constraints ON Columns.name = Constraints.name
 LEFT JOIN (
     SELECT
         R.relname as name,
@@ -122,7 +122,7 @@ LEFT JOIN (
             'type', IA.amname,
             'primary', I.indisprimary,
             'unique', I.indisunique,
-            'attributes', array_to_json(array(
+            'columns', array_to_json(array(
                 SELECT attname FROM pg_attribute
                 WHERE attnum = ANY(I.indkey) AND attrelid = R.oid
             ))
@@ -134,7 +134,7 @@ LEFT JOIN (
     LEFT JOIN pg_am IA ON IA.oid = IR.relam
     WHERE N.nspname = '{namespace}' and R.relkind = 'r' {query}
     GROUP BY R.relname
-) Indexes ON Indexes.name = Attributes.name;
+) Indexes ON Indexes.name = Columns.name;
 """
 
 
@@ -201,7 +201,7 @@ class Namespace(WithConfig, ParentStore):
         )
         return args
 
-    def get_table_attributes_query(self):
+    def get_table_columns_query(self):
         table = "R"
         column = "relname"
         args = []
@@ -211,27 +211,27 @@ class Namespace(WithConfig, ParentStore):
             query = f" AND ({query})"
         args.insert(
             0,
-            GET_TABLE_ATTRIBUTES_QUERY.format(
+            GET_TABLE_columns_QUERY.format(
                 namespace=self.name, query=query
             )
         )
         return args
 
-    def get_table(self, name, attributes, constraints, indexes):
+    def get_table(self, name, columns, constraints, indexes):
         config = self.get_child_config(name)
         return Table(
             name,
             config=config,
             namespace=self,
-            attributes=attributes,
+            columns=columns,
             constraints=constraints,
             indexes=indexes,
             verbose=self.verbose,
             tag=self.tag
         )
 
-    def parse_index_attributes(self, definition):
-        match = INDEX_ATTRIBUTES_REGEX.match(definition)
+    def parse_index_columns(self, definition):
+        match = INDEX_COLUMNS_REGEX.match(definition)
         if match:
             return [x.strip().replace('"', '') for x in match.group(1).split(',')]
         raise Exception(f'invalid index definition: "{definition}"')
@@ -243,32 +243,32 @@ class Namespace(WithConfig, ParentStore):
         async with pool.acquire() as connection:
             async with connection.transaction():
                 if version < '9':
-                    attributes_query = self.get_table_attributes_query()
+                    columns_query = self.get_table_columns_query()
                     constraints_query = self.get_table_constraints_query()
                     indexes_query = self.get_table_indexes_query()
                     # tried running in parallel, but issues with Redshift
-                    # attributes, constraints, indexes = await asyncio.gather(
-                    #    attributes, constraints, indexes
+                    # columns, constraints, indexes = await asyncio.gather(
+                    #    columns, constraints, indexes
                     # )
                     indexes = connection.fetch(*indexes_query)
                     indexes = await indexes
 
-                    attributes = connection.fetch(*attributes_query)
-                    attributes = await attributes
+                    columns = connection.fetch(*columns_query)
+                    columns = await columns
 
                     constraints = connection.fetch(*constraints_query)
                     constraints = await constraints
 
-                    for record in attributes:
-                        # name, attribute, type, default, null
+                    for record in columns:
+                        # name, column, type, default, null
                         name = record[0]
                         if 'name' not in tables[name]:
                             tables[name]['name'] = name
 
-                        if 'attributes' not in tables[name]:
-                            tables[name]['attributes'] = []
+                        if 'columns' not in tables[name]:
+                            tables[name]['columns'] = []
 
-                        tables[name]['attributes'].append({
+                        tables[name]['columns'].append({
                             'name': record[1],
                             'type': record[2],
                             'default': record[3],
@@ -277,7 +277,7 @@ class Namespace(WithConfig, ParentStore):
                     for record in constraints:
                         # name, deferrable, deferred, type,
                         # related_name, check
-                        # +related_attributes (name), attributes
+                        # +related_columns (name), columns
 
                         name = record[0]
                         if 'name' not in tables[name]:
@@ -288,11 +288,11 @@ class Namespace(WithConfig, ParentStore):
                             tables[name]['constraints'] = {}
 
                         constraint = record[1]
-                        related_attributes = record[7]
-                        if not related_attributes:
-                            related_attributes = []
+                        related_columns = record[7]
+                        if not related_columns:
+                            related_columns = []
                         else:
-                            related_attributes = [related_attributes]
+                            related_columns = [related_columns]
 
                         attrs = record[8]
                         if not attrs:
@@ -309,17 +309,16 @@ class Namespace(WithConfig, ParentStore):
                                 'type': str(record[4]),
                                 'related_name': record[5],
                                 'check': record[6],
-                                'related_attributes': related_attributes,
-                                'attributes': attrs
+                                'related_columns': related_columns,
+                                'columns': attrs
                             }
                         else:
-                            if related_attributes:
-                                # merge single-attribute join column
-                                constraints[name]['related_attributes'].extend(
-                                    related_attributes
+                            if related_columns:
+                                constraints[name]['related_columns'].extend(
+                                    related_columns
                                 )
                             if attrs:
-                                constraints[name]['attributes'].extend(
+                                constraints[name]['columns'].extend(
                                     attrs
                                 )
 
@@ -335,14 +334,14 @@ class Namespace(WithConfig, ParentStore):
 
                         index = record[1]
                         inds = tables[name]['indexes']
-                        attributes = self.parse_index_attributes(record[5])
+                        columns = self.parse_index_columns(record[5])
                         if index not in inds:
                             inds[index] = {
                                 'name': index,
                                 'type': record[2],
                                 'primary': record[3],
                                 'unique': record[4],
-                                'attributes': attributes
+                                'columns': columns
                             }
                 else:
                     query = self.get_tables_query()
@@ -369,7 +368,7 @@ class Namespace(WithConfig, ParentStore):
             try:
                 yield self.get_table(
                     table['name'],
-                    table.get('attributes', []),
+                    table.get('columns', []),
                     list(table.get('constraints', {}).values()),
                     list(table.get('indexes', {}).values())
                 )

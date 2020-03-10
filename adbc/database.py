@@ -49,6 +49,12 @@ class Database(WithConfig, ParentStore):
                 async for row in connection.cursor(*query):
                     yield row
 
+    async def execute(self, *query):
+        pool = await self.pool
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                return await connection.execute(*query)
+
     async def query(self, *query, many=True, columns=True):
         pool = await self.pool
         async with pool.acquire() as connection:

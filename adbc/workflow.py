@@ -1,5 +1,7 @@
 from adbc.utils import is_dsn
 from adbc.database import Database
+from asyncio import gather
+from jsondiff.symbols import delete, insert
 
 
 class Workflow(object):
@@ -56,12 +58,12 @@ class WorkflowStep(object):
 
         url = databases[name].get("url")
         if not url:
-            raise Exception(f'the database info for "{name}" does not include a URL')
+            raise Exception(f'The database info for "{name}" does not include a URL')
 
         if not is_dsn(url):
             raise Exception(
-                f'The url provided for database "{name}"'
-                f' is not a valid connection string: "{url}"'
+                f'The value provided for database "{name}"'
+                f' is not a valid URL: "{url}"'
             )
 
         return url
@@ -74,34 +76,275 @@ class WorkflowStep(object):
             )
         return databases[name]
 
-    def _validate(self, name, read=False, write=False):
+    def _validate(self, name, read=False, write=False, alter=False):
         config = self.config
         datasource = config.get(name)
-        setattr(self, name, datasource)
         if not datasource:
             raise Exception(f'"{name}" is required')
 
         url = self.validate_database_url(datasource)
-        setattr(self, f'{name}_url', url)
-        setattr(self, f'{name}_config', self.validate_database_config(datasource))
-        self.validate_credentials(url, read=read, write=write)
+        config = self.validate_database_config(datasource)
+        database = self.validate_connection(
+            name,
+            url,
+            config,
+            read=read,
+            write=write,
+            alter=alter
+        )
+        setattr(self, name, database)
 
-    def validate_credentials(self, url, read=False, write=False):
-        # TODO: actually validate credentials
-        pass
+    def validate_connection(
+        self,
+        name,
+        url,
+        config,
+        read=False,
+        write=False,
+        alter=False
+    ):
+        # TODO: validate read/write/alter permissions
+        # for a faster / more proactive error message
+        return Database(
+            name=name,
+            url=url,
+            config=config
+        )
 
 
 class CopyStep(WorkflowStep):
     def validate(self):
         self._validate('source', read=True)
-        self._validate('target', read=True, write=True)
+        self._validate('target', read=True, write=True, alter=True)
+
+        self._translate = self.config.get('translate', None)
+        self._drop_schemas = self.config.get('drop_schemas', False)
+        self._drop_tables = self.config.get('drop_tables', False)
+        self._drop_columns = self.config.get('drop_columns', True)
 
     async def execute(self):
-        # copy
-        # S schemas
-        # ... T tables per schema
-        # ....... R*C data points per table
+        translate = self._translate
+        source = self.source
+        target = self.target
+        initial_diff = await source.diff(target, translate)
+        meta_changes = await self.copy_metadata(initial_diff)
+        data_changes = await self.copy_data(initial_diff)
+        final_diff = await source.diff(target, translate)
+        return {
+            'initial_diff': initial_diff,
+            'meta_changes': meta_changes,
+            'data_changes': data_changes,
+            'final_diff': final_diff
+        }
+
+    def get_create_schema_query(self, schema_name):
+        return (f'CREATE SCHEMA "{schema_name}"', )
+
+    def get_drop_schema_query(self, schema_name, table_name):
+        return (f'DROP SCHEMA "{schema_name}" CASCADE', )
+
+    def get_drop_table_query(self, schema_name, table_name):
+        return (f'DROP TABLE "{schema_name}"."{table_name}" CASCADE', )
+
+    def get_create_table_column_sql(self, column):
+        # TODO
         pass
+
+    def get_create_table_constraint_sql(self, constraint):
+        # TODO
+        pass
+
+    def get_create_table_columns_sql(self, table, spaces=2):
+        if not table.columns:
+            return ''
+
+        columns = []
+        for column_name, column in table.columns.items():
+            columns.append(self.get_create_table_column_sql(column))
+
+        spaces = ' ' * spaces
+        columns = '\n{spaces}'.join(columns)
+        return f'{spaces}{columns}\n'
+
+    def get_create_table_constraints_sql(self, table, spaces=2):
+        if not table.constraints:
+            return ''
+
+        constraints = []
+        for constraint_name, constraint in table.constraints.items():
+            constraints.append(self.get_create_table_constraint_sql(constraint))
+
+        spaces = ' ' * spaces
+        constraints = '\n{spaces}'.join(constraints)
+        return f'{spaces}{constraints}\n'
+
+    def get_create_table_query(self, schema_name, table_name, table):
+        columns = self.get_create_table_columns_sql(table)
+        constraints = self.get_create_table_constraints_sql(table)
+        return [
+            f'CREATE TABLE "{schema_name}"."{table_name}" (\n'
+            f'{columns}{constraints})'
+        ]
+
+    async def create_schema(self, schema_name):
+        await self.target.execute(*self.get_create_schema_query(schema_name))
+        return True
+
+    async def create_table(self, schema_name, table_name, table):
+        await self.target.execute(
+            *self.get_create_table_query(schema_name, table_name, table)
+        )
+
+    async def drop_schema(self, schema_name):
+        if not self._drop_schemas:
+            return False
+
+        await self.target.execute(*self.drop_schema_query(schema_name))
+        return True
+
+    async def drop_table(self, schema_name, table_name, table):
+        if not self._drop_tables:
+            return False
+
+        await self.target.execute(*self.get_drop_table_query(schema_name, table_name))
+        return True
+
+    async def create_schemas(self, schemas, parents=None):
+        for schema_name, tables in schemas.items():
+            await self.create_schema(schema_name)
+            await self.create_tables(tables, parents=[schema_name])
+        return schemas
+
+    async def create_columns(self, columns, parents=None):
+        pass
+
+    async def create_constraints(self, constraints, parents=None):
+        pass
+
+    async def create_tables(self, tables, parents=None):
+        assert(len(parents) == 1)
+        schema_name = parents[0]
+
+        for table_name, table in tables.items():
+            await self.create_table(schema_name, table_name, table)
+        return tables
+
+    async def drop_constraints(self, constraints, parents=None):
+        assert(len(parents) == 2)
+        schema_name, table_name = parents
+
+        if not self._drop_constraints:
+            return {}
+
+        for constraint_name in constraints.keys():
+            await self.drop_constraint(schema_name, table_name, constraint_name)
+        return constraints
+
+    async def drop_columns(self, columns, parents=None):
+        assert(len(parents) == 2)
+        schema_name, table_name = parents
+
+        if not self._drop_columns:
+            return {}
+
+        for column_name in columns.keys():
+            await self.drop_column(schema_name, table_name, column_name)
+        return columns
+
+    async def drop_tables(self, tables, parents=None):
+        assert(len(parents) == 1)
+        schema_name = parents[0]
+
+        if not self._drop_tables:
+            return {}
+
+        for table_name in tables.keys():
+            await self.drop_table(schema_name, table_name)
+        return tables
+
+    async def drop_schemas(self, schemas, parents=None):
+        if not self._drop_schemas:
+            return {}
+
+        for schema_name in schemas.keys():
+            await self.drop_schema(schema_name)
+        return schemas
+
+    async def drop_constraint(self, schema, table, constraint_name):
+        pass
+
+    async def add_constraint(self, schema, table, constraint_name, constraint):
+        pass
+
+    async def copy_table(self, table_name, diff, parents=None):
+        parents = parents + [table_name]
+        routines = [
+            await self._copy(
+                diff=diff[child],
+                level=child,
+                parents=parents
+            ) for child in ('columns', 'constraints', 'indexes')
+            if diff.get(child)
+        ]
+        return await gather(*routines)
+
+    async def copy_schema(self, schema_name, diff, parents=None):
+        return await self._copy(
+            diff=diff,
+            level='table',
+            parents=parents + [schema_name]
+        )
+
+    async def copy_metadata(self, diff):
+        return await self._copy(
+            diff=diff,
+            level='schema',
+            parents=[]
+        )
+
+    async def _copy(self, diff=None, level=None, parents=None):
+        if not diff:
+            # both schemas are identical
+            return {}
+
+        create_all = getattr(self, f'create_{level}s')
+        drop_all = getattr(self, f'drop_{level}s')
+        copy = getattr(self, f'copy_{level}', None)
+
+        if isinstance(diff, list):
+            assert(len(diff) == 2)
+            # source and target have no overlap
+            # -> copy by dropping all in target not in source
+            # and creating all in source not in target
+            source, target = diff
+            # do these two actions in parallel
+            inserted, deleted = await gather(
+                create_all(source, parents=parents),
+                drop_all(source, parents=parents)
+            )
+            return {
+                insert: inserted,
+                delete: deleted
+            }
+        else:
+            assert(isinstance(diff, dict))
+            routines = []
+            names = []
+            for name, changes in diff.items():
+                action = None
+                if name == delete:
+                    action = drop_all(changes, parents=parents)
+                elif name == insert:
+                    action = create_all(changes, parents=parents)
+                elif copy:
+                    action = copy(name, changes, parents=parents)
+
+                if action:
+                    routines.append(action)
+                    names.append(name)
+
+            results = await gather(*routines)
+            return {r[0]: r[1] for r in zip(names, results)}
 
 
 class InfoStep(WorkflowStep):
@@ -109,12 +352,7 @@ class InfoStep(WorkflowStep):
         self._validate('source', read=True)
 
     async def execute(self):
-        database = Database(
-            name=self.source,
-            url=self.source_url,
-            config=self.source_config
-        )
-        return await database.get_diff_data()
+        return await self.source.get_diff_data()
 
 
 class DiffStep(WorkflowStep):
@@ -124,15 +362,4 @@ class DiffStep(WorkflowStep):
         self.translate = self.config.get('translate', None)
 
     async def execute(self):
-        source = Database(
-            name=self.source,
-            url=self.source_url,
-            config=self.source_config
-        )
-        translate = self.translate
-        target = Database(
-            name=self.target,
-            url=self.target_url,
-            config=self.target_config
-        )
-        return await source.diff(target, translate=translate)
+        return await self.source_database.diff(self.target, translate=self.translate)
