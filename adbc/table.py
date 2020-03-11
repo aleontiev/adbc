@@ -1,4 +1,6 @@
 import asyncio
+from copy import copy
+from collections import defaultdict
 from .store import Store
 from cached_property import cached_property
 
@@ -10,6 +12,15 @@ NO_ORDER_TYPES = {
 INTERNAL_SCHEMAS = {
     'pg_catalog',
     'information_schema'
+}
+SEQUENCE_TYPES = {
+    'integer',
+    'int4',
+    'int8',
+    'bigint',
+    'int',
+    'real',
+    'date'
 }
 
 
@@ -52,12 +63,15 @@ class Table(Store):
         self.verbose = verbose
         self.parent = self.namespace = namespace
         self.database = namespace.database
+        self.sequencer = self.config.get('sequencer', None)
+        self.immutable = self.config.get('immutable', False)
         self.columns = {
             k: v
             for k, v in split_field(
                 sorted(columns or [], key=lambda c: c["name"]), "name"
             )
         }
+
         if not self.config.get('sequences', True):
             # ignore nextval / sequence-based default values
             for column in self.columns.values():
@@ -98,6 +112,13 @@ class Table(Store):
         if not self.pks:
             # full-row pks
             self.pks = self.column_names
+
+        if (
+            not self.sequencer and
+            len(self.pks) == 1 and
+            self.columns[self.pks[0]]['type'] in SEQUENCE_TYPES
+        ):
+            self.sequencer = self.pks[0]
 
         # if disabled, remove constraints/indexes
         # but only after they are used to determine possible primary key
@@ -142,16 +163,20 @@ class Table(Store):
             result['indexes'] = self.indexes
         return result
 
+    def get_decode_boolean(self, column):
+        return f'decode("{column}", true, \'true\', false, \'false\') as "{column}"'
+
     async def get_data_hash_query(self):
         version = await self.database.version
+        decode = False
+        aggregator = "array_to_string(array_agg"
+        end = "), ',')"
         if version < "9":
             # TODO: fix, technically this applies to Redshift, not Postgres <9
             # in practice, nobody else is running Postgres 8 anymore...
             aggregator = "listagg"
             end = ", ',')"
-        else:
-            aggregator = "array_to_string(array_agg"
-            end = "), ',')"
+            decode = True
 
         columns = self.columns
 
@@ -166,8 +191,10 @@ class Table(Store):
             f'"{c}"' for c in pks if self.can_order(c)
         ])
         cols = ",\n    ".join([
-            f'"{column}"' if not self.is_array_column(column)
-            else f'array_to_string("{column}", \',\') as {column}'
+            self.get_decode_boolean(column) if decode and self.is_boolean(column) else (
+                f'"{column}"' if not self.is_array(column)
+                else f'array_to_string("{column}", \',\') as {column}'
+            )
             for column in columns
         ])
         return [
@@ -185,7 +212,12 @@ class Table(Store):
         column = self.columns[column_name]
         return column['type'] not in NO_ORDER_TYPES
 
-    def is_array_column(self, column_name):
+    def is_boolean(self, column_name):
+        column = self.columns[column_name]
+        type = column['type']
+        return type == 'boolean'
+
+    def is_array(self, column_name):
         column = self.columns[column_name]
         type = column['type']
         return '[]' in type or 'vector' in type
@@ -195,50 +227,33 @@ class Table(Store):
         return column['type'] != 'pg_node_tree'
 
     def get_count_query(self):
-        return ['SELECT COUNT(*) FROM "{}"."{}"'.format(self.namespace.name, self.name)]
+        return (f'SELECT COUNT(*) FROM "{self.namespace.name}"."{self.name}"', )
 
-    async def get_data_range_query(self):
-        pks = self.pks
-        columns = self.column_names
-
-        if len(pks) == 1:
-            pk = pks[0]
-            return [
-                f'SELECT MIN("{pk}") as "from", MAX("{pk}") as "to"\n'
-                f'FROM "{self.namespace.name}"."{self.name}"'
-            ]
-        else:
-            version = await self.database.version
-            aggregator = "array_to_string(array_agg"
-            end = "), ',')"
-            if version < "9":
-                aggregator = "listagg"
-                end = ", ',')"
-            pks = " || ':' || ".join([
-                f'T2."{pk}"::varchar' for pk in pks if self.is_short_column(pk)
-            ])
-            cols = ",\n    ".join([
-                f'"{column}"' if not self.is_array_column(column)
-                else f'array_to_string("{column}", \',\') as {column}'
-                for column in columns if self.is_short_column(column)
-            ])
-            return [(
-                'SELECT MIN(T.pks) as "from", MAX(T.pks) as "to"\n'
-                'FROM (\n'
-                f'  SELECT {aggregator}({pks}{end} as pks\n'
-                f'  FROM (\n'
-                f'    SELECT {cols}\n'
-                f'    FROM "{self.namespace.name}"."{self.name}"\n'
-                f'  ) AS T2\n'
-                ') AS T'
-            )]
+    async def get_data_range_query(self, keys):
+        keys = ',\n  '.join([
+            f'MIN("{key}") AS "min_{key}", MAX("{key}") as "max_{key}"'
+            for key in keys
+        ])
+        return (
+            f'SELECT {keys}\n'
+            f'FROM "{self.namespace.name}"."{self.name}"',
+        )
 
     async def get_data_range(self):
         if len(self.pks) > 1:
             return None
 
-        query = await self.get_data_range_query()
-        return await self.database.query_one_row(*query, as_=dict)
+        keys = copy(self.pks)
+        if self.sequencer:
+            keys.append(self.sequencer)
+        query = await self.get_data_range_query(keys)
+        row = await self.database.query_one_row(*query, as_=dict)
+        result = defaultdict(dict)
+        for key, value in row.items():
+            type = key[0:3]
+            key = key[4:]
+            result[key][type] = value
+        return result
 
     async def get_data_hash(self):
         version = await self.database.version

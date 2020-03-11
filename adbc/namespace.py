@@ -211,7 +211,7 @@ class Namespace(WithConfig, ParentStore):
             query = f" AND ({query})"
         args.insert(
             0,
-            GET_TABLE_columns_QUERY.format(
+            GET_TABLE_COLUMNS_QUERY.format(
                 namespace=self.name, query=query
             )
         )

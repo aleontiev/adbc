@@ -196,3 +196,21 @@ def merge(dictionary, other):
         else:
             dictionary[k] = v
     return dictionary
+
+
+def confirm(prompt, default=False):
+    if default:
+        prompt = f'{prompt} ([y] / n): '
+    else:
+        prompt = f'{prompt} ([n] / y): '
+    while True:
+        ans = input(prompt).strip().replace('\n', '').lower()
+        if not ans:
+            return default
+        if ans not in ['y', 'n', 'yes', 'no']:
+            print('Please enter y or n, or hit enter: ')
+            continue
+        if ans in {'y', 'yes'}:
+            return True
+        if ans in {'n', 'no'}:
+            return False
