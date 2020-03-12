@@ -63,7 +63,8 @@ class Table(Store):
         self.verbose = verbose
         self.parent = self.namespace = namespace
         self.database = namespace.database
-        self.sequencer = self.config.get('sequencer', None)
+        self.created_at = self.config.get('created_at', None)
+        self.updated_at = self.config.get('updated_at', None)
         self.immutable = self.config.get('immutable', False)
         self.columns = {
             k: v
@@ -113,13 +114,6 @@ class Table(Store):
             # full-row pks
             self.pks = self.column_names
 
-        if (
-            not self.sequencer and
-            len(self.pks) == 1 and
-            self.columns[self.pks[0]]['type'] in SEQUENCE_TYPES
-        ):
-            self.sequencer = self.pks[0]
-
         # if disabled, remove constraints/indexes
         # but only after they are used to determine possible primary key
         constraints = self.config.get('constraints', True)
@@ -135,6 +129,11 @@ class Table(Store):
         if not self.config.get('indexes', True):
             self.indexes = None
 
+        self.log(f'init: {self}')
+
+    def __str__(self):
+        return f'{self.namespace}.{self.name}'
+
     async def get_diff_data(self):
         data_range = self.get_data_range()
         data_hash = self.get_data_hash()
@@ -143,6 +142,7 @@ class Table(Store):
         data_range, data_hash, count = await asyncio.gather(
             data_range, data_hash, count
         )
+        self.log(f"info: {self}")
         return {
             "data": {
                 "hash": data_hash,
@@ -171,7 +171,7 @@ class Table(Store):
         decode = False
         aggregator = "array_to_string(array_agg"
         end = "), ',')"
-        if version < "9":
+        if version < 9:
             # TODO: fix, technically this applies to Redshift, not Postgres <9
             # in practice, nobody else is running Postgres 8 anymore...
             aggregator = "listagg"
@@ -208,44 +208,59 @@ class Table(Store):
             f') AS T'
         ]
 
-    def can_order(self, column_name):
+    def can_order(self, column_name, uuid=True):
         column = self.columns[column_name]
-        return column['type'] not in NO_ORDER_TYPES
+        if column['type'] in NO_ORDER_TYPES:
+            return False
+        if uuid is False:
+            if column['type'] == 'uuid':
+                return False
+        return True
 
     def is_boolean(self, column_name):
         column = self.columns[column_name]
         type = column['type']
         return type == 'boolean'
 
-    def is_array(self, column_name):
-        column = self.columns[column_name]
+    def is_array(self, name):
+        column = self.columns[name]
         type = column['type']
-        return '[]' in type or 'vector' in type
+        return '[]' in type or 'idvector' in type or 'intvector' in type
 
-    def is_short_column(self, column_name):
-        column = self.columns[column_name]
+    def is_short(self, name):
+        column = self.columns[name]
         return column['type'] != 'pg_node_tree'
+
+    def is_uuid(self, name):
+        column = self.columns[name]
+        return column['type'] != 'uuid'
 
     def get_count_query(self):
         return (f'SELECT COUNT(*) FROM "{self.namespace.name}"."{self.name}"', )
 
     async def get_data_range_query(self, keys):
-        keys = ',\n  '.join([
-            f'MIN("{key}") AS "min_{key}", MAX("{key}") as "max_{key}"'
-            for key in keys
-        ])
+        new_keys = []
+        for key in keys:
+            new_keys.append(
+                f'MIN("{key}") AS "min_{key}", '
+                f'MAX("{key}") as "max_{key}"'
+            )
+        keys = ',\n  '.join(new_keys)
         return (
             f'SELECT {keys}\n'
             f'FROM "{self.namespace.name}"."{self.name}"',
         )
 
     async def get_data_range(self):
-        if len(self.pks) > 1:
-            return None
+        keys = copy(self.pks) if len(self.pks) == 1 else []
+        keys = [key for key in keys if self.can_order(key, uuid=False)]
+        if self.created_at:
+            keys.append(self.created_at)
+        if self.updated_at:
+            keys.append(self.updated_at)
 
-        keys = copy(self.pks)
-        if self.sequencer:
-            keys.append(self.sequencer)
+        if not keys:
+            return None
         query = await self.get_data_range_query(keys)
         row = await self.database.query_one_row(*query, as_=dict)
         result = defaultdict(dict)
@@ -257,7 +272,7 @@ class Table(Store):
 
     async def get_data_hash(self):
         version = await self.database.version
-        if self.namespace.name in INTERNAL_SCHEMAS and version < '9':
+        if self.namespace.name in INTERNAL_SCHEMAS and version < 9:
             return None
         query = await self.get_data_hash_query()
         return await self.database.query_one_value(*query)

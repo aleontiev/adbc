@@ -81,7 +81,6 @@ class WithChildren(object):
         return hash_(s, n)
 
     async def get_diff_data(self):
-        self.log("{}.{}.diff".format(self.type, self.name))
         data = OrderedDict()
         async for child in self.get_children():
             data[child.name] = child.get_diff_data()

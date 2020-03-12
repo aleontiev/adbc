@@ -47,9 +47,7 @@ class Host(WithConfig, ParentStore):
         return args
 
     async def get_databases(self):
-        async with self.main_database.pool.acquire() as connection:
-            async for row in connection.fetch(*self.get_databases_query()):
-                yield self.get_database(row[0])
+        return await self.main_database.query_one_row(*self.get_databases_query())
 
     async def get_database(self, name):
         config = self.get_child_config(name)

@@ -28,7 +28,8 @@ class RunCommand(Command):
         if not workflow_data:
             raise Exception(f'No workflow config for "{workflow_name}"')
 
-        workflow = Workflow(workflow_name, workflow_data, databases)
+        verbose = self.option('verbose')
+        workflow = Workflow(workflow_name, workflow_data, databases, verbose)
         uvloop.install()
         result = asyncio.run(
             workflow.execute()

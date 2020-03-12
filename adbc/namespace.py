@@ -155,6 +155,10 @@ class Namespace(WithConfig, ParentStore):
         self.config = config
         self.verbose = verbose
         self.tag = tag
+        self.log(f'init: {self}')
+
+    def __str__(self):
+        return f'{self.database}.{self.name}'
 
     def get_tables_query(self):
         table = "R"
@@ -242,7 +246,7 @@ class Namespace(WithConfig, ParentStore):
         tables = defaultdict(dict)
         async with pool.acquire() as connection:
             async with connection.transaction():
-                if version < '9':
+                if version < 9:
                     columns_query = self.get_table_columns_query()
                     constraints_query = self.get_table_constraints_query()
                     indexes_query = self.get_table_indexes_query()

@@ -2,6 +2,7 @@ from adbc.utils import is_dsn
 from adbc.database import Database
 from asyncio import gather
 from jsondiff.symbols import delete, insert
+from adbc.store import Loggable
 
 
 CONSTRAINT_TYPE_MAP = {
@@ -13,11 +14,12 @@ CONSTRAINT_TYPE_MAP = {
 }
 
 
-class Workflow(object):
-    def __init__(self, name, config, databases):
+class Workflow(Loggable):
+    def __init__(self, name, config, databases, verbose=False):
         self.name = name
         self.config = config
         self.databases = databases
+        self.verbose = verbose
         steps = config.get("steps", [])
         if not steps:
             raise ValueError(f'workflow "{name}" has no steps')
@@ -30,7 +32,7 @@ class Workflow(object):
         return results
 
 
-class WorkflowStep(object):
+class WorkflowStep(Loggable):
     def __new__(cls, workflow, config):
         if cls is WorkflowStep:
             command = config.get("command", "").lower()
@@ -49,6 +51,7 @@ class WorkflowStep(object):
 
     def __init__(self, workflow, config):
         self.workflow = workflow
+        self.verbose = self.workflow.verbose
         self.config = config
         self.validate()
 
@@ -99,7 +102,7 @@ class WorkflowStep(object):
     ):
         # TODO: validate read/write/alter permissions
         # for a faster / more proactive error message
-        return Database(name=name, url=url, config=config)
+        return Database(name=name, url=url, config=config, verbose=self.verbose)
 
 
 class CopyStep(WorkflowStep):
@@ -206,7 +209,7 @@ class CopyStep(WorkflowStep):
 
     def get_column_sql(self, name, column):
         nullable = 'NULL' if column['null'] else 'NOT NULL'
-        return f'{name} {column["type"]} {nullable}'
+        return f'"{name}" {column["type"]} {nullable}'
 
     def get_constraint_sql(self, name, constraint):
         columns = constraint["columns"]
@@ -383,8 +386,8 @@ class CopyStep(WorkflowStep):
             await self.drop_schema(schema_name)
         return schemas
 
-    async def merge_constraint(self, column, diff, parents=None):
-        print('merge constraint', constraint, diff)
+    async def merge_constraint(self, name, diff, parents=None):
+        print('merge constraint', name, diff)
         raise NotImplementedError()
 
     async def merge_index(self, column, diff, parents=None):
@@ -422,6 +425,7 @@ class CopyStep(WorkflowStep):
             # both schemas are identical
             return {}
 
+        self.log(f'merge: {level} {".".join(parents)}')
         plural = f"{level}s" if level[-1] != "x" else f"{level}es"
         create_all = getattr(self, f"create_{plural}")
         drop_all = getattr(self, f"drop_{plural}")

@@ -33,6 +33,10 @@ class Database(WithConfig, ParentStore):
         self.config = config
         self.verbose = verbose
         self.tag = tag
+        self.log(f'init: {self}')
+
+    def __str__(self):
+        return self.name
 
     @cached_property
     async def version(self):
@@ -92,6 +96,7 @@ class Database(WithConfig, ParentStore):
         result = await self.query(*query, many=False, columns=True)
         if as_:
             return as_(result)
+        return result
 
     async def query_one_value(self, *query):
         return await self.query(*query, many=False, columns=False)
@@ -117,13 +122,17 @@ class Database(WithConfig, ParentStore):
         )
 
     async def diff(self, other, translate=None):
+        self.log(f"diff: {self}")
         data = self.get_diff_data()
         other_data = other.get_diff_data()
         data, other_data = await gather(data, other_data)
 
         if translate:
             # translate after both diffs have already been captured
-            for key, value in translate.items():
+            schemas = translate.get('schemas', {})
+            types = translate.get('types', {})
+            # table/schema names
+            for key, value in schemas.items():
                 if key == value:
                     continue
 
@@ -131,6 +140,16 @@ class Database(WithConfig, ParentStore):
                 if key in data:
                     data[value] = data[key]
                     data.pop(key)
+            # column typesa
+            if types:
+                types = {k: v for k, v in types.items() if k != v}
+            if types:
+                # iterate over all columns and change type as appropriate
+                for tables in data.values():
+                    for table in tables.values():
+                        for column in table['schema']['columns'].values():
+                            if column['type'] in types:
+                                column['type'] = types[column['type']]
 
         return diff(data, other_data, syntax="symmetric")
 

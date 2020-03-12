@@ -80,7 +80,7 @@ SERVER_VERSION_REGEX = re.compile('^[A-Za-z]+ ([0-9.]+)')
 def get_server_version(version):
     match = SERVER_VERSION_REGEX.match(version)
     if match:
-        return match.group(1)
+        return float('.'.join(match.group(1).split('.')[0:2]))
     else:
         raise Exception('Not a valid server version string')
 
