@@ -134,23 +134,25 @@ class Table(Store):
     def __str__(self):
         return f'{self.namespace}.{self.name}'
 
-    async def get_diff_data(self):
-        data_range = self.get_data_range()
-        data_hash = self.get_data_hash()
-        count = self.get_count()
-        schema = self.get_schema()
-        data_range, data_hash, count = await asyncio.gather(
-            data_range, data_hash, count
-        )
+    async def get_info(self, only=None):
+        result = {}
+        if only == 'data' or not only:
+            data_range = self.get_data_range()
+            data_hash = self.get_data_hash()
+            count = self.get_count()
+            data_range, data_hash, count = await asyncio.gather(
+                data_range, data_hash, count
+            )
+            result['data'] = {
+                'hash': data_hash,
+                'count': count,
+                'range': data_range
+            }
+        if only == 'schema' or not only:
+            result['schema'] = self.get_schema()
+
         self.log(f"info: {self}")
-        return {
-            "data": {
-                "hash": data_hash,
-                "count": count,
-                "range": data_range,
-            },
-            "schema": schema,
-        }
+        return result
 
     def get_schema(self):
         result = {

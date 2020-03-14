@@ -121,10 +121,13 @@ class Database(WithConfig, ParentStore):
             name, database=self, config=config, verbose=self.verbose, tag=self.tag
         )
 
-    async def diff(self, other, translate=None):
+    async def diff(self, other, translate=None, only=None):
         self.log(f"diff: {self}")
-        data = self.get_diff_data()
-        other_data = other.get_diff_data()
+        if only:
+            assert(only == 'schema' or only == 'data')
+
+        data = self.get_info(only=only)
+        other_data = other.get_info(only=only)
         data, other_data = await gather(data, other_data)
 
         if translate:
@@ -147,6 +150,8 @@ class Database(WithConfig, ParentStore):
                 # iterate over all columns and change type as appropriate
                 for tables in data.values():
                     for table in tables.values():
+                        if 'schema' not in table:
+                            continue
                         for column in table['schema']['columns'].values():
                             if column['type'] in types:
                                 column['type'] = types[column['type']]

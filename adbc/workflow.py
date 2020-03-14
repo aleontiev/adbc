@@ -122,12 +122,14 @@ class CopyStep(WorkflowStep):
         translate = self.translate
         source = self.source
         target = self.target
-        initial_diff = await source.diff(target, translate)
-        meta_changes = await self.copy_metadata(initial_diff)
-        data_changes = await self.copy_data(initial_diff)
+        schema_diff = await source.diff(target, translate, only='schema')
+        meta_changes = await self.copy_metadata(schema_diff)
+        data_diff = await source.diff(target, translate, only='data')
+        data_changes = await self.copy_data(data_diff)
         final_diff = await source.diff(target, translate)
         return {
-            "initial_diff": initial_diff,
+            "schema_diff": schema_diff,
+            "data_diff": data_diff,
             "meta_changes": meta_changes,
             "data_changes": data_changes,
             "final_diff": final_diff,
@@ -214,7 +216,7 @@ class CopyStep(WorkflowStep):
     def get_constraint_sql(self, name, constraint):
         columns = constraint["columns"]
         if columns:
-            columns = ", ".join(columns)
+            columns = ", ".join([f'"{c}"' for c in columns])
             columns = f" ({columns})"
         else:
             columns = ""
@@ -450,9 +452,9 @@ class CopyStep(WorkflowStep):
             for name, changes in diff.items():
                 action = None
                 if name == delete:
-                    action = drop_all(changes, parents=parents)
-                elif name == insert:
                     action = create_all(changes, parents=parents)
+                elif name == insert:
+                    action = drop_all(changes, parents=parents)
                 elif merge:
                     action = merge(name, changes, parents=parents)
 
@@ -470,10 +472,11 @@ class CopyStep(WorkflowStep):
 
 class InfoStep(WorkflowStep):
     def validate(self):
+        self.only = self.config.get('only', None)
         self._validate("source", read=True)
 
     async def execute(self):
-        return await self.source.get_diff_data()
+        return await self.source.get_info(only=self.only)
 
 
 class DiffStep(WorkflowStep):

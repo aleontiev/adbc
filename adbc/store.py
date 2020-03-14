@@ -80,10 +80,10 @@ class WithChildren(object):
         s = await gather(*s)
         return hash_(s, n)
 
-    async def get_diff_data(self):
+    async def get_info(self, only=None):
         data = OrderedDict()
         async for child in self.get_children():
-            data[child.name] = child.get_diff_data()
+            data[child.name] = child.get_info(only=only)
 
         keys, values = data.keys(), data.values()
         values = await gather(*values)
