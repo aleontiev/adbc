@@ -138,13 +138,13 @@ class Table(Store):
         result = {}
         if only == 'data' or not only:
             data_range = self.get_data_range()
-            data_hash = self.get_data_hash()
+            # data_hash = self.get_data_hash()
             count = self.get_count()
-            data_range, data_hash, count = await asyncio.gather(
-                data_range, data_hash, count
+            data_range, count = await asyncio.gather(
+                data_range, count # data_hash, count
             )
             result['data'] = {
-                'hash': data_hash,
+                # 'hash': data_hash,
                 'count': count,
                 'range': data_range
             }
@@ -173,18 +173,22 @@ class Table(Store):
         decode = False
         aggregator = "array_to_string(array_agg"
         end = "), ',')"
+        cast = False
         if version < 9:
             # TODO: fix, technically this applies to Redshift, not Postgres <9
             # in practice, nobody else is running Postgres 8 anymore...
             aggregator = "listagg"
             end = ", ',')"
             decode = True
+            cast = True
 
         columns = self.columns
 
+        cast = '::varchar' if cast else ''
+
         # concatenate all column names and values in pseudo-json
-        aggregate = " ||\n ".join([
-            (f"'{c}:' || " f'T."{c}"::varchar')
+        aggregate = " || '' || \n ".join([
+            f'T."{c}"{cast}'
             for c in self.columns
         ])
         pks = self.pks

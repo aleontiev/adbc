@@ -1,3 +1,8 @@
+import os
+import uuid
+import io
+import tempfile
+from aiobotocore import get_session
 from adbc.utils import is_dsn
 from adbc.database import Database
 from asyncio import gather
@@ -107,6 +112,8 @@ class WorkflowStep(Loggable):
 
 class CopyStep(WorkflowStep):
     def validate(self):
+        # unique prefix for this job
+        self.prefix = str(uuid.uuid4()) + "/"
         self._validate("source", read=True)
         self._validate("target", read=True, write=True, alter=True)
 
@@ -118,14 +125,62 @@ class CopyStep(WorkflowStep):
         self._drop_constraints = self.config.get("drop_constraints", True) or drop_all
         self._drop_indexes = self.config.get("drop_indexes", True) or drop_all
 
+    async def _validate_s3(self):
+        target_version = await self.target.version
+        if target_version < 9:
+            # must have S3 credentials
+            bucket = self.target.config.get("aws_s3_bucket")
+            region = self.target.config.get("aws_s3_region")
+            secret = self.target.config.get("aws_secret_access_key") or os.environ.get(
+                "AWS_SECRET_ACCESS_KEY"
+            )
+            access_key = self.target.config.get("aws_access_key_id") or os.environ.get(
+                "AWS_ACCESS_KEY_ID"
+            )
+            prefix = self.target.config.get("aws_s3_prefix") or ""
+            assert bucket
+            assert secret
+            assert region
+            assert access_key
+            assert secret
+
+            self.use_s3 = True
+            self.s3_access_key = access_key
+            self.s3_secret = secret
+            self.s3_region = region
+            self.s3_bucket = bucket
+            self.s3_prefix = prefix or ""
+            session = get_session()
+            self.s3 = session.create_client(
+                "s3",
+                region_name=region,
+                aws_secret_access_key=secret,
+                aws_access_key_id=access_key,
+            )
+        else:
+            self.use_s3 = None
+
+    async def _validate_source(self):
+        source_version = await self.source.version
+        self.use_select = source_version < 9
+
     async def execute(self):
         translate = self.translate
         source = self.source
         target = self.target
-        schema_diff = await source.diff(target, translate, only='schema')
+        schema_diff = await source.diff(
+            target, translate=translate, only="schema", info=False
+        )
         meta_changes = await self.copy_metadata(schema_diff)
-        data_diff = await source.diff(target, translate, only='data')
-        data_changes = await self.copy_data(data_diff)
+        source_info, target_info, data_diff = await source.diff(
+            target, translate=translate, info=True
+        )
+        # may be required to use S3
+        await self._validate_source()
+        await self._validate_s3()
+        data_changes = await self.copy_data(
+            source_info, target_info, data_diff, translate=translate
+        )
         final_diff = await source.diff(target, translate)
         return {
             "schema_diff": schema_diff,
@@ -210,7 +265,7 @@ class CopyStep(WorkflowStep):
         )
 
     def get_column_sql(self, name, column):
-        nullable = 'NULL' if column['null'] else 'NOT NULL'
+        nullable = "NULL" if column["null"] else "NOT NULL"
         return f'"{name}" {column["type"]} {nullable}'
 
     def get_constraint_sql(self, name, constraint):
@@ -389,14 +444,14 @@ class CopyStep(WorkflowStep):
         return schemas
 
     async def merge_constraint(self, name, diff, parents=None):
-        print('merge constraint', name, diff)
+        print("merge constraint", name, diff)
         raise NotImplementedError()
 
     async def merge_index(self, column, diff, parents=None):
         raise NotImplementedError()
 
     async def merge_column(self, column, diff, parents=None):
-        print('merge column', column, diff)
+        print("merge column", column, diff)
         raise NotImplementedError()
 
     async def merge_table(self, table_name, diff, parents=None):
@@ -416,8 +471,159 @@ class CopyStep(WorkflowStep):
         # merge schemas in diff (have tables in common but not identical)
         return await self.merge(diff, "table", parents + [schema_name])
 
-    async def copy_data(self, diff):
-        return None  # TODO!!!
+    async def copy_data(self, source, target, diff, translate=None):
+        if not diff:
+            return {}
+
+        source_schemas = (
+            {v: k for k, v in translate.get("schemas", {}).items()} if translate else {}
+        )
+        keys = []
+        values = []
+        for target_schema, schema_changes in diff.items():
+            if target_schema == delete or target_schema == insert:
+                continue
+
+            source_schema = source_schemas.get(target_schema, target_schema)
+            for target_table, changes in schema_changes.items():
+                source_table = target_table
+                if "data" in changes:
+                    keys.append(target_table)
+                    source_metadata = source[source_schema][source_table]
+                    target_metadata = target[target_schema][target_table]
+                    values.append(
+                        self.copy_table(
+                            source_schema,
+                            source_table,
+                            source_metadata,
+                            target_schema,
+                            target_table,
+                            target_metadata,
+                            changes["data"],
+                        )
+                    )
+                if "schema" in changes:
+                    raise Exception(
+                        f"schema changed during copy: "
+                        f"{source_schema}.{source_table}: {changes['schema']}"
+                    )
+
+        if values:
+            values = await gather(*values)
+        return dict(zip(keys, values))
+
+    async def copy_table(
+        self,
+        source_schema,
+        source_table,
+        source_metadata,
+        target_schema,
+        target_table,
+        target_metadata,
+        diff,
+    ):
+        # full copy
+        # 1) * -> postgres (use COPY -> COPY)
+        # 2) * -> redshift (use COPY -> S3 <- COPY)
+        method = self._copy_table_s3 if self.use_s3 else self._copy_table
+        return await method(
+            source_schema,
+            source_table,
+            source_metadata,
+            target_schema,
+            target_table,
+            target_metadata,
+            diff,
+        )
+
+    async def _copy_table_s3(
+        self,
+        source_schema,
+        source_table,
+        source_metadata,
+        target_schema,
+        target_table,
+        target_metadata,
+        diff,
+    ):
+        # can't stream the data directly to Redshift and have to go through S3, yay
+        # 1) use aiobotocore to save a table dump to S3
+        # 2) use COPY FROM S3 to load data
+        s3_key = None
+        bucket = self.s3_bucket
+
+        s3_key = f"{self.s3_prefix}{self.prefix}{source_schema}.{source_table}.csv"
+        s3_url = f"s3://{bucket}/{s3_key}"
+        columns = list(sorted(source_metadata['schema']['columns'].keys()))
+
+        buffer = io.BytesIO()
+        # TODO: try to stream this in
+        await self.source.copy_from(
+            table_name=source_table,
+            schema_name=source_schema,
+            output=buffer,
+            columns=columns,
+            format='csv'
+        )
+        self.log(f'copy out: {source_schema}.{source_table}')
+        await self.s3.put_object(Bucket=bucket, Key=s3_key, Body=buffer.getvalue())
+        self.log(f'copy s3: {source_schema}.{source_table}')
+
+        # TODO: implement mode: full upsert:
+        # this is possible if there are primary keys
+        # in this case, we create a temporary table to copy into
+        # then perform UPSERT rows from the temporary table
+        # into the original table, then remove the temp table
+
+        # TODO: implement mode: delta immutable
+        # if the table has a created field and is immutable
+        # and the created field min matches between source and target
+        # and the target created max is lower than the source
+        # in that case, take the diff of maxes, selectively COPY
+        # and insert that data, then check the data diff again
+        # if there is a mismatch at any step, fallback to full copy
+        # or full upsert
+
+        # TODO: implement mode: delta
+        # if the table has an updated field
+        # and the updated field min matches between source and target
+        # and the target updated max is lower
+        # in that case, take the diff of maxes, selectively COPY
+        # and insert that data, then check data diff
+        # if there is a mismatch, fallback to full upsert
+
+        # TODO: implement chunked copy
+        # if there are more than 500K rows, operations can get very slow
+        # it is possible to chunk copy or select operation in any mode
+        # as long as the table has a sortable key
+        # like an integer or varchar pk, created, or updated field (not UUID)
+
+        # full copy with TRUNCATE: the basic algorithm
+        # should work for all tables, but is slower than delta updates
+        # TODO: implement full copy with tranasction + delete from
+        # this is slower than TRUNCATE, advantage is data is never "lost"
+        # from the table
+
+        target_columns = ', '.join([f'"{c}"' for c in columns])
+        try:
+            await self.target.execute(f'TRUNCATE "{target_schema}"."{target_table}"')
+            await self.target.execute(
+                f'COPY "{target_schema}"."{target_table}"\n'
+                f'({target_columns})\n'
+                f"FROM '{s3_url}'\n"
+                f"FORMAT CSV\n"
+                f"SECRET_ACCESS_KEY '{self.s3_secret}'\n"
+                f"ACCESS_KEY_ID '{self.s3_access_key}'\n"
+                f"COMPUPDATE OFF STATUPDATE OFF"
+            )
+            self.log(f'copy in: {source_schema}.{source_table}')
+            if s3_key:
+                key = s3_key
+                s3_key = None
+                await self.s3.delete_object(Bucket=bucket, Key=key)
+        except Exception:
+            if s3_key:
+                await self.s3.delete_object(Bucket=bucket, Key=s3_key)
 
     async def copy_metadata(self, diff):
         return await self.merge(diff, "schema", [])
@@ -433,8 +639,9 @@ class CopyStep(WorkflowStep):
         drop_all = getattr(self, f"drop_{plural}")
         merge = getattr(self, f"merge_{level}", None)
 
-        if isinstance(diff, list):
+        if isinstance(diff, (list, tuple)):
             assert len(diff) == 2
+
             # source and target have no overlap
             # -> copy by dropping all in target not in source
             # and creating all in source not in target
@@ -446,6 +653,7 @@ class CopyStep(WorkflowStep):
             return {insert: inserted, delete: deleted}
         else:
             assert isinstance(diff, dict)
+
             routines = []
             names = []
             results = []
@@ -472,7 +680,7 @@ class CopyStep(WorkflowStep):
 
 class InfoStep(WorkflowStep):
     def validate(self):
-        self.only = self.config.get('only', None)
+        self.only = self.config.get("only", None)
         self._validate("source", read=True)
 
     async def execute(self):

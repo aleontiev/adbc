@@ -14,6 +14,7 @@ jsondiff = "^1.2.0"
 uvloop = "^0.12.2"
 pyyaml = "^5.3"
 pyaml = "^19.12.0"
+aiobotocore = "^0.12.0"
 
 [tool.poetry.dev-dependencies]
 pytest = "^3.0"

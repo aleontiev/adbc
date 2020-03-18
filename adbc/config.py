@@ -1,11 +1,13 @@
 from adbc.template import resolve_template
 from yaml import safe_load as load
+from adbc.vault import vault
 import copy
+import os
 
 
 def get_initial_context():
     """Return context of available services, such as Vault"""
-    return {"vault": VaultConfig()}
+    return {"vault": VaultConfig(), "env": dict(os.environ)}
 
 
 def read_config_file(filename):
@@ -103,7 +105,7 @@ class VaultConfig(object):
             # still in context mode
             return self.__end_context_mode__().__produce__()
         # TODO: vault integration here
-        return " ".join(self.__args__)
+        return vault(self.__args__)
 
     def __clone__(self, **kwargs):
         for field in self.__FIELDS__:

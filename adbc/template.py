@@ -6,7 +6,7 @@ from adbc.utils import get
 FORMAT_STRING_REGEX = re.compile('\\{\\{\\s*([^}{]+)\\s*\\}\\}')
 
 
-def resolve_template(value, context=None):
+def resolve_template(value, context=None, null=Exception):
     if not value:
         return value
 
@@ -26,7 +26,11 @@ def resolve_template(value, context=None):
         start = match.start()
         end = match.end()
         path = match.group(1).strip()
-        replace = get(context, path, null=Exception)
+        null = Exception
+        if path.endswith('?'):
+            null = ''
+            path = path[:-1]
+        replace = get(context, path, null=null)
 
         if read < start:
             if results:

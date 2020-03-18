@@ -2,6 +2,7 @@ from asyncio import gather
 from asyncpg import create_pool
 from cached_property import cached_property
 
+import copy
 from jsondiff import diff
 
 from .exceptions import NotIncluded
@@ -18,7 +19,14 @@ class Database(WithConfig, ParentStore):
     type = "db"
 
     def __init__(
-        self, name=None, host=None, url=None, config=None, tag=None, verbose=False
+        self,
+        name=None,
+        host=None,
+        url=None,
+        config=None,
+        tag=None,
+        verbose=False,
+        prompt=False,
     ):
         if url and not host:
             from .host import Host
@@ -27,13 +35,13 @@ class Database(WithConfig, ParentStore):
             if not name:
                 name = host.dbname
 
-        self.prompt_execute = True
+        self.prompt_execute = prompt
         self.name = name
         self.parent = self.host = host
         self.config = config
         self.verbose = verbose
         self.tag = tag
-        self.log(f'init: {self}')
+        self.log(f"init: {self}")
 
     def __str__(self):
         return self.name
@@ -49,9 +57,19 @@ class Database(WithConfig, ParentStore):
                 async for row in connection.cursor(*query):
                     yield row
 
+    async def copy_from(self, **kwargs):
+        pool = await self.pool
+        table_name = kwargs.pop('table_name', None)
+        query = kwargs.pop('query', None)
+        async with pool.acquire() as connection:
+            if table_name:
+                return await connection.copy_from_table(table_name, **kwargs)
+            else:
+                return await connection.copy_from_query(*query, **kwargs)
+
     async def execute(self, *query):
         pool = await self.pool
-        sep = '=' * 10
+        sep = "=" * 10
         print_query = query
         if len(print_query) == 1:
             print_query = print_query[0]
@@ -64,7 +82,7 @@ class Database(WithConfig, ParentStore):
                         f"\n{sep}\n{print_query}\n{sep}\n",
                         True,
                     ):
-                        raise Exception('Aborted')
+                        raise Exception("Aborted")
                 try:
                     return await connection.execute(*query)
                 except Exception as e:
@@ -121,19 +139,21 @@ class Database(WithConfig, ParentStore):
             name, database=self, config=config, verbose=self.verbose, tag=self.tag
         )
 
-    async def diff(self, other, translate=None, only=None):
+    async def diff(self, other, translate=None, only=None, info=False):
         self.log(f"diff: {self}")
         if only:
-            assert(only == 'schema' or only == 'data')
+            assert only == "schema" or only == "data"
 
         data = self.get_info(only=only)
         other_data = other.get_info(only=only)
         data, other_data = await gather(data, other_data)
-
+        original_data = data
         if translate:
+            if info:
+                original_data = copy.deepcopy(data)
             # translate after both diffs have already been captured
-            schemas = translate.get('schemas', {})
-            types = translate.get('types', {})
+            schemas = translate.get("schemas", {})
+            types = translate.get("types", {})
             # table/schema names
             for key, value in schemas.items():
                 if key == value:
@@ -150,13 +170,14 @@ class Database(WithConfig, ParentStore):
                 # iterate over all columns and change type as appropriate
                 for tables in data.values():
                     for table in tables.values():
-                        if 'schema' not in table:
+                        if "schema" not in table:
                             continue
-                        for column in table['schema']['columns'].values():
-                            if column['type'] in types:
-                                column['type'] = types[column['type']]
+                        for column in table["schema"]["columns"].values():
+                            if column["type"] in types:
+                                column["type"] = types[column["type"]]
 
-        return diff(data, other_data, syntax="symmetric")
+        diff_data = diff(data, other_data, syntax="symmetric")
+        return (original_data, other_data, diff_data) if info else diff_data
 
     async def get_pool(self):
         return await create_pool(dsn=self.host.url, max_size=20)
