@@ -1,9 +1,11 @@
 import os
 import uuid
 import io
-import tempfile
+from copy import copy
+from math import ceil
 from aiobotocore import get_session
 from adbc.utils import is_dsn
+from adbc.table import Table, can_order
 from adbc.database import Database
 from asyncio import gather
 from jsondiff.symbols import delete, insert
@@ -43,14 +45,22 @@ class WorkflowStep(Loggable):
             command = config.get("command", "").lower()
             if not command:
                 raise Exception(f'"command" is required but not provided')
+            debug = False
+            if command.startswith('?'):
+                debug = True
+                command = command[1:]
             if command == "copy":
-                return CopyStep(workflow, config)
+                step = CopyStep(workflow, config)
             elif command == "diff":
-                return DiffStep(workflow, config)
+                step = DiffStep(workflow, config)
             elif command == "info":
-                return InfoStep(workflow, config)
+                step = InfoStep(workflow, config)
             else:
                 raise Exception(f'the provided command "{command}" is not supported')
+            if debug:
+                return DebugStep(step)
+            else:
+                return step
         else:
             return super(WorkflowStep, cls).__new__(cls)
 
@@ -108,6 +118,53 @@ class WorkflowStep(Loggable):
         # TODO: validate read/write/alter permissions
         # for a faster / more proactive error message
         return Database(name=name, url=url, config=config, verbose=self.verbose)
+
+
+# TODO: implement mode: full upsert:
+# this is possible if there are primary keys
+# in this case, we create a temporary table to copy into
+# then perform UPSERT rows from the temporary table
+# into the original table, then remove the temp table
+
+# TODO: implement mode: delta immutable
+# if the table has a created field and is immutable
+# and the created field min matches between source and target
+# and the target created max is lower than the source
+# in that case, take the diff of maxes, selectively COPY
+# and insert that data, then check the data diff again
+# if there is a mismatch at any step, fallback to full copy
+# or full upsert
+
+# TODO: implement mode: delta
+# if the table has an updated field
+# and the updated field min matches between source and target
+# and the target updated max is lower
+# in that case, take the diff of maxes, selectively COPY
+# and insert that data, then check data diff
+# if there is a mismatch, fallback to full upsert
+
+# TODO: implement chunked copy
+# if there are more than 500K rows, operations can get very slow
+# it is possible to chunk copy or select operation in any mode
+# as long as the table has a sortable key
+# like an integer or varchar pk, created, or updated field (not UUID)
+
+class DebugStep(object):
+    """debug another step"""
+    def __init__(self, step):
+        self.step = step
+
+    async def execute(self):
+        print('PAUSING BEFORE EXECUTE')
+        import pdb
+        pdb.set_trace()
+
+        value = await self.step.execute()
+
+        print('PAUSING AFTER EXECUTE')
+        import pdb
+        pdb.set_trace()
+        return value
 
 
 class CopyStep(WorkflowStep):
@@ -536,6 +593,64 @@ class CopyStep(WorkflowStep):
             diff,
         )
 
+    def get_max_copy_size(self):
+        return 10000
+
+    async def _copy_shard_s3(
+        self,
+        source_schema,
+        source_table,
+        target_schema,
+        target_table,
+        shard,
+        num_shards,
+        pk=None,
+        max_size=None,
+        cursor=None,
+        columns=None,
+        bucket=None,
+        key=None,
+    ):
+        output = io.BytesIO()
+        # 1. compareshard count, cursor, and md5 across source and target
+        # if they all match, do not copy anything
+
+        await self.source.copy_from(output=output, format="csv", query=query)
+        self.log(
+            f"copy (out): {source_schema}.{source_table} "
+            f"({shard+1} of {num_shards})"
+        )
+        output = output.getvalue()
+
+        await self.s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=output
+        )
+        self.log(
+            f"copy (s3): {source_schema}.{source_table} "
+            f"({shard+1} of {num_shards})"
+        )
+
+        # 2. delete all rows in the shard from the target
+        # 3. copy rows in
+        try:
+            # actually perform the copy
+            num_copied = await self.target.execute(
+                f'COPY "{target_schema}"."{target_table}"\n'
+                f"({cols})\n"
+                f"FROM '{s3_url}'\n"
+                f"FORMAT CSV\n"
+                f"SECRET_ACCESS_KEY '{self.s3_secret}'\n"
+                f"ACCESS_KEY_ID '{self.s3_access_key}'\n"
+                f"COMPUPDATE OFF STATUPDATE OFF"
+            )
+        finally:
+            await self.s3.delete_object(Key=key, Bucket=bucket)
+
+        num_copied = int(num_copied.replace('COPY ', ''))
+        return cursor, num_copied
+
     async def _copy_table_s3(
         self,
         source_schema,
@@ -546,84 +661,64 @@ class CopyStep(WorkflowStep):
         target_metadata,
         diff,
     ):
-        # can't stream the data directly to Redshift and have to go through S3, yay
-        # 1) use aiobotocore to save a table dump to S3
-        # 2) use COPY FROM S3 to load data
-        s3_key = None
+        schema = source_metadata["schema"]
+        columns = schema["columns"]
+        column_names = list(sorted(columns.keys()))
+        indexes = schema.get("indexes", {})
+        constraints = schema.get("constraints", {})
+        pks = Table.get_pks(indexes, constraints, column_names)
+
+        count = source_metadata["data"]["count"]
+        max_size = self.get_max_copy_size()
+        num_shards = 1
+        pk = None
+        cursor = None
+        if count > max_size and len(pks) == 1:
+            pk = pks[0]
+            if can_order(columns[pk]['type']):
+                # if the table is large enough
+                # and there is a single PK that supports ordering (not UUID)
+                # and the PK range is captured in source data,
+                # split the copy into shards
+                num_shards = ceil(count / max_size)
+
         bucket = self.s3_bucket
-
-        s3_key = f"{self.s3_prefix}{self.prefix}{source_schema}.{source_table}.csv"
-        s3_url = f"s3://{bucket}/{s3_key}"
-        columns = list(sorted(source_metadata['schema']['columns'].keys()))
-
-        buffer = io.BytesIO()
-        # TODO: try to stream this in
-        await self.source.copy_from(
-            table_name=source_table,
-            schema_name=source_schema,
-            output=buffer,
-            columns=columns,
-            format='csv'
-        )
-        self.log(f'copy out: {source_schema}.{source_table}')
-        await self.s3.put_object(Bucket=bucket, Key=s3_key, Body=buffer.getvalue())
-        self.log(f'copy s3: {source_schema}.{source_table}')
-
-        # TODO: implement mode: full upsert:
-        # this is possible if there are primary keys
-        # in this case, we create a temporary table to copy into
-        # then perform UPSERT rows from the temporary table
-        # into the original table, then remove the temp table
-
-        # TODO: implement mode: delta immutable
-        # if the table has a created field and is immutable
-        # and the created field min matches between source and target
-        # and the target created max is lower than the source
-        # in that case, take the diff of maxes, selectively COPY
-        # and insert that data, then check the data diff again
-        # if there is a mismatch at any step, fallback to full copy
-        # or full upsert
-
-        # TODO: implement mode: delta
-        # if the table has an updated field
-        # and the updated field min matches between source and target
-        # and the target updated max is lower
-        # in that case, take the diff of maxes, selectively COPY
-        # and insert that data, then check data diff
-        # if there is a mismatch, fallback to full upsert
-
-        # TODO: implement chunked copy
-        # if there are more than 500K rows, operations can get very slow
-        # it is possible to chunk copy or select operation in any mode
-        # as long as the table has a sortable key
-        # like an integer or varchar pk, created, or updated field (not UUID)
-
-        # full copy with TRUNCATE: the basic algorithm
-        # should work for all tables, but is slower than delta updates
-        # TODO: implement full copy with tranasction + delete from
-        # this is slower than TRUNCATE, advantage is data is never "lost"
-        # from the table
-
-        target_columns = ', '.join([f'"{c}"' for c in columns])
+        s3_folder = f"{self.s3_prefix}{self.prefix}{source_schema}.{source_table}/"
+        shards_label = ''
+        if num_shards > 1:
+            shards_label = f' ({num_shards})'
+        self.log(f"copy (start): {source_schema}.{source_table}{shards_label}")
+        shard = 0
         try:
-            await self.target.execute(f'TRUNCATE "{target_schema}"."{target_table}"')
-            await self.target.execute(
-                f'COPY "{target_schema}"."{target_table}"\n'
-                f'({target_columns})\n'
-                f"FROM '{s3_url}'\n"
-                f"FORMAT CSV\n"
-                f"SECRET_ACCESS_KEY '{self.s3_secret}'\n"
-                f"ACCESS_KEY_ID '{self.s3_access_key}'\n"
-                f"COMPUPDATE OFF STATUPDATE OFF"
-            )
-            self.log(f'copy in: {source_schema}.{source_table}')
-            if s3_key:
-                key = s3_key
-                s3_key = None
-                await self.s3.delete_object(Bucket=bucket, Key=key)
+            for shard in range(num_shards):
+                s3_key = f"{s3_folder}{shard}.csv"
+                cursor, num_copied = await self._copy_shard_s3(
+                    source_schema,
+                    source_table,
+                    target_schema,
+                    target_table,
+                    shard,
+                    num_shards,
+                    pk=pk,
+                    max_size=max_size,
+                    cursor=cursor,
+                    columns=column_names,
+                    bucket=bucket,
+                    key=s3_key,
+                )
+
+        # remove keys
+        # finally does not work here because of async quirks
         except Exception:
-            if s3_key:
-                await self.s3.delete_object(Bucket=bucket, Key=s3_key)
+            self.log(
+                f"copy (fail): {source_schema}.{source_table} "
+                f"({shard} of {num_shards})"
+            )
+            raise
+        else:
+            self.log(
+                f"copy (in): {source_schema}.{source_table}{shards_label}"
+            )
 
     async def copy_metadata(self, diff):
         return await self.merge(diff, "schema", [])
@@ -633,7 +728,11 @@ class CopyStep(WorkflowStep):
             # both schemas are identical
             return {}
 
-        self.log(f'merge: {level} {".".join(parents)}')
+        if parents:
+            self.log(f'merge: {".".join(parents)} {level}s')
+        else:
+            self.log(f"merge: all {level}s")
+
         plural = f"{level}s" if level[-1] != "x" else f"{level}es"
         create_all = getattr(self, f"create_{plural}")
         drop_all = getattr(self, f"drop_{plural}")

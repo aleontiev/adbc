@@ -6,6 +6,11 @@ from adbc.utils import get
 FORMAT_STRING_REGEX = re.compile('\\{\\{\\s*([^}{]+)\\s*\\}\\}')
 
 
+def get_context_variables(value):
+    """Get context variables inside string value"""
+    return [match.group(1).strip() for match in FORMAT_STRING_REGEX.finditer(value)]
+
+
 def resolve_template(value, context=None, null=Exception):
     if not value:
         return value

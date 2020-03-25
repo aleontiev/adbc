@@ -2,7 +2,9 @@ import asyncio
 from copy import copy
 from collections import defaultdict
 from .store import Store
+from adbc.sql import column
 from cached_property import cached_property
+from adbc.utils import get_first, split_field
 
 
 NO_ORDER_TYPES = {
@@ -24,20 +26,13 @@ SEQUENCE_TYPES = {
 }
 
 
-def get_first(items, fn, then=None):
-    if isinstance(items, dict):
-        items = items.values()
-
-    for item in items:
-        if fn(item):
-            return item[then] if then else item
-    return None
-
-
-def split_field(i, f):
-    for key in i:
-        value = key.pop(f, None)
-        yield (value, key)
+def can_order(type, uuid=True):
+    if type in NO_ORDER_TYPES:
+        return False
+    if uuid is False:
+        if type == 'uuid':
+            return False
+    return True
 
 
 class Table(Store):
@@ -63,9 +58,12 @@ class Table(Store):
         self.verbose = verbose
         self.parent = self.namespace = namespace
         self.database = namespace.database
-        self.created_at = self.config.get('created_at', None)
-        self.updated_at = self.config.get('updated_at', None)
-        self.immutable = self.config.get('immutable', False)
+        self.on_create = self.config.get('on_create', None)
+        self.on_update = self.config.get('on_update', None)
+        self.on_delete = self.config.get('on_update', None)
+        self.immutable = self.config.get(
+            'immutable', not (bool(self.on_update) or bool(self.on_delete))
+        )
         self.columns = {
             k: v
             for k, v in split_field(
@@ -96,23 +94,12 @@ class Table(Store):
 
         self.tag = tag
         self.pks = []
-        if self.indexes:
-            self.pks = get_first(
-                self.indexes,
-                lambda item: item["primary"],
-                "columns"
-            )
 
-        if not self.pks and self.constraints:
-            self.pks = get_first(
-                self.constraints,
-                lambda item: item['type'] == 'p',
-                'columns'
-            )
-
-        if not self.pks:
-            # full-row pks
-            self.pks = self.column_names
+        self.pks = Table.get_pks(
+            self.indexes,
+            self.constraints,
+            self.column_names
+        )
 
         # if disabled, remove constraints/indexes
         # but only after they are used to determine possible primary key
@@ -131,6 +118,28 @@ class Table(Store):
 
         self.log(f'init: {self}')
 
+    @staticmethod
+    def get_pks(indexes, constraints, columns):
+        pks = None
+        if indexes:
+            pks = get_first(
+                indexes,
+                lambda item: item["primary"],
+                "columns"
+            )
+
+        if not pks and constraints:
+            pks = get_first(
+                constraints,
+                lambda item: item['type'] == 'p',
+                'columns'
+            )
+
+        if not pks:
+            # full-row pks
+            pks = columns
+        return pks
+
     def __str__(self):
         return f'{self.namespace}.{self.name}'
 
@@ -141,7 +150,7 @@ class Table(Store):
             # data_hash = self.get_data_hash()
             count = self.get_count()
             data_range, count = await asyncio.gather(
-                data_range, count # data_hash, count
+                data_range, count
             )
             result['data'] = {
                 # 'hash': data_hash,
@@ -188,20 +197,20 @@ class Table(Store):
 
         # concatenate all column names and values in pseudo-json
         aggregate = " || '' || \n ".join([
-            f'T."{c}"{cast}'
+            f'T.{column(c)}{cast}'
             for c in self.columns
         ])
         pks = self.pks
         namespace = self.namespace.name
         order = ",\n    ".join([
-            f'"{c}"' for c in pks if self.can_order(c)
+            column(c) for c in pks if self.can_order(c)
         ])
         cols = ",\n    ".join([
-            self.get_decode_boolean(column) if decode and self.is_boolean(column) else (
-                f'"{column}"' if not self.is_array(column)
-                else f'array_to_string("{column}", \',\') as {column}'
+            self.get_decode_boolean(c) if decode and self.is_boolean(c) else (
+                column(c) if not self.is_array(c)
+                else f'array_to_string({column(c)}, \',\') as {c}'
             )
-            for column in columns
+            for c in columns
         ])
         return [
             f"SELECT MD5(\n"
@@ -216,12 +225,7 @@ class Table(Store):
 
     def can_order(self, column_name, uuid=True):
         column = self.columns[column_name]
-        if column['type'] in NO_ORDER_TYPES:
-            return False
-        if uuid is False:
-            if column['type'] == 'uuid':
-                return False
-        return True
+        return can_order(column['type'], uuid=uuid)
 
     def is_boolean(self, column_name):
         column = self.columns[column_name]
@@ -248,8 +252,8 @@ class Table(Store):
         new_keys = []
         for key in keys:
             new_keys.append(
-                f'MIN("{key}") AS "min_{key}", '
-                f'MAX("{key}") as "max_{key}"'
+                f'MIN({column(key)}) AS "min_{key}", '
+                f'MAX({column(key)}) AS "max_{key}"'
             )
         keys = ',\n  '.join(new_keys)
         return (
@@ -260,13 +264,15 @@ class Table(Store):
     async def get_data_range(self):
         keys = copy(self.pks) if len(self.pks) == 1 else []
         keys = [key for key in keys if self.can_order(key, uuid=False)]
-        if self.created_at:
-            keys.append(self.created_at)
-        if self.updated_at:
-            keys.append(self.updated_at)
+        if self.on_create:
+            keys.append(self.on_create)
+        if self.on_update:
+            keys.append(self.on_update)
 
         if not keys:
             return None
+
+        keys = list(set(keys))
         query = await self.get_data_range_query(keys)
         row = await self.database.query_one_row(*query, as_=dict)
         result = defaultdict(dict)

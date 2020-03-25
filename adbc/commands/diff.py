@@ -1,5 +1,8 @@
+try:
+    import uvloop
+except (ValueError, ImportError):
+    uvloop = None
 import asyncio
-import uvloop
 
 from cleo import Command
 from adbc.database import Database
@@ -41,5 +44,6 @@ class DiffCommand(Command):
             include=include
         )
 
-        uvloop.install()
+        if uvloop:
+            uvloop.install()
         pprint(asyncio.run(source.diff(target)))

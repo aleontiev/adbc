@@ -74,11 +74,11 @@ def get_include_query(
     return result
 
 
-SERVER_VERSION_REGEX = re.compile('^[A-Za-z]+ ([0-9.]+)')
+SERVER_VERSION_NUMBER_REGEX = re.compile('^[A-Za-z]+ ([0-9.]+)')
 
 
-def get_server_version(version):
-    match = SERVER_VERSION_REGEX.match(version)
+def get_version_number(version):
+    match = SERVER_VERSION_NUMBER_REGEX.match(version)
     if match:
         return float('.'.join(match.group(1).split('.')[0:2]))
     else:
@@ -214,3 +214,30 @@ def confirm(prompt, default=False):
             return True
         if ans in {'n', 'no'}:
             return False
+
+
+def get_first(items, fn, then=None):
+    if isinstance(items, dict):
+        items = items.values()
+
+    for item in items:
+        if fn(item):
+            return item[then] if then else item
+    return None
+
+
+def split_field(i, f):
+    for key in i:
+        value = key.pop(f, None)
+        yield (value, key)
+
+
+class aecho(object):
+    def __init__(self, args=None):
+        self.args = args
+
+    async def __aenter__(self):
+        return self.args
+
+    async def __aexit__(self, *args):
+        pass

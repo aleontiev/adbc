@@ -1,4 +1,8 @@
-import uvloop
+try:
+    import uvloop
+except (ValueError, ImportError):
+    uvloop = None
+
 import asyncio
 from pyaml import pprint as yaml_pprint
 from pprint import pprint
@@ -16,7 +20,7 @@ class RunCommand(Command):
     """
 
     def handle(self):
-        workflow_name = self.argument('workflow')
+        name = self.argument('workflow')
         config_file = self.option('config')
         config = hydrate_config(
             read_config_file(config_file),
@@ -24,13 +28,14 @@ class RunCommand(Command):
         )
         workflows = config.get('workflows', {})
         databases = config.get('databases', {})
-        workflow_data = workflows.get(workflow_name, None)
-        if not workflow_data:
-            raise Exception(f'No workflow config for "{workflow_name}"')
+        data = workflows.get(name, None)
+        if not data:
+            raise Exception(f'No workflow config for "{name}"')
 
         verbose = self.option('verbose')
-        workflow = Workflow(workflow_name, workflow_data, databases, verbose)
-        uvloop.install()
+        workflow = Workflow(name, data, databases, verbose)
+        if uvloop:
+            uvloop.install()
         result = asyncio.run(
             workflow.execute()
         )

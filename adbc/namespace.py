@@ -139,35 +139,27 @@ LEFT JOIN (
 
 
 class Namespace(WithConfig, ParentStore):
-    type = 'ns'
-    child_key = 'tables'
+    type = "ns"
+    child_key = "tables"
 
-    def __init__(
-        self,
-        name,
-        database=None,
-        config=None,
-        verbose=False,
-        tag=None,
-    ):
+    def __init__(self, name, database=None, config=None, verbose=False, tag=None):
         self.name = name
         self.parent = self.database = database
         self.config = config
         self.verbose = verbose
         self.tag = tag
-        self.log(f'init: {self}')
+        self.log(f"init: {self}")
+        self._tables = {}
 
     def __str__(self):
-        return f'{self.database}.{self.name}'
+        return f"{self.database}.{self.name}"
 
     def get_tables_query(self):
         table = "R"
         column = "relname"
         args = []
         include = self.get_child_include()
-        query, args = get_include_query(
-            include, table, column
-        )
+        query, args = get_include_query(include, table, column)
         if query:
             query = f" AND ({query})"
         args.insert(0, GET_TABLES_QUERY.format(namespace=self.name, query=query))
@@ -181,12 +173,7 @@ class Namespace(WithConfig, ParentStore):
         query, args = get_include_query(include, table, column)
         if query:
             query = f" AND ({query})"
-        args.insert(
-            0,
-            GET_TABLE_INDEXES_QUERY.format(
-                namespace=self.name, query=query
-            )
-        )
+        args.insert(0, GET_TABLE_INDEXES_QUERY.format(namespace=self.name, query=query))
         return args
 
     def get_table_constraints_query(self):
@@ -198,10 +185,7 @@ class Namespace(WithConfig, ParentStore):
         if query:
             query = f" AND ({query})"
         args.insert(
-            0,
-            GET_TABLE_CONSTRAINTS_QUERY.format(
-                namespace=self.name, query=query
-            )
+            0, GET_TABLE_CONSTRAINTS_QUERY.format(namespace=self.name, query=query)
         )
         return args
 
@@ -213,31 +197,31 @@ class Namespace(WithConfig, ParentStore):
         query, args = get_include_query(include, table, column)
         if query:
             query = f" AND ({query})"
-        args.insert(
-            0,
-            GET_TABLE_COLUMNS_QUERY.format(
-                namespace=self.name, query=query
-            )
-        )
+        args.insert(0, GET_TABLE_COLUMNS_QUERY.format(namespace=self.name, query=query))
         return args
 
-    def get_table(self, name, columns, constraints, indexes):
-        config = self.get_child_config(name)
-        return Table(
-            name,
-            config=config,
-            namespace=self,
-            columns=columns,
-            constraints=constraints,
-            indexes=indexes,
-            verbose=self.verbose,
-            tag=self.tag
-        )
+    def get_table(
+        self, name, columns=None, constraints=None, indexes=None, refresh=False
+    ):
+        if name not in self._tables or refresh:
+            assert columns is not None
+            config = self.get_child_config(name)
+            self._tables[name] = Table(
+                name,
+                config=config,
+                namespace=self,
+                columns=columns,
+                constraints=constraints,
+                indexes=indexes,
+                verbose=self.verbose,
+                tag=self.tag,
+            )
+        return self._tables[name]
 
     def parse_index_columns(self, definition):
         match = INDEX_COLUMNS_REGEX.match(definition)
         if match:
-            return [x.strip().replace('"', '') for x in match.group(1).split(',')]
+            return [x.strip().replace('"', "") for x in match.group(1).split(",")]
         raise Exception(f'invalid index definition: "{definition}"')
 
     async def get_children(self):
@@ -266,30 +250,32 @@ class Namespace(WithConfig, ParentStore):
                     for record in columns:
                         # name, column, type, default, null
                         name = record[0]
-                        if 'name' not in tables[name]:
-                            tables[name]['name'] = name
+                        if "name" not in tables[name]:
+                            tables[name]["name"] = name
 
-                        if 'columns' not in tables[name]:
-                            tables[name]['columns'] = []
+                        if "columns" not in tables[name]:
+                            tables[name]["columns"] = []
 
-                        tables[name]['columns'].append({
-                            'name': record[1],
-                            'type': record[2],
-                            'default': record[3],
-                            'null': record[4]
-                        })
+                        tables[name]["columns"].append(
+                            {
+                                "name": record[1],
+                                "type": record[2],
+                                "default": record[3],
+                                "null": record[4],
+                            }
+                        )
                     for record in constraints:
                         # name, deferrable, deferred, type,
                         # related_name, check
                         # +related_columns (name), columns
 
                         name = record[0]
-                        if 'name' not in tables[name]:
-                            tables[name]['name'] = name
+                        if "name" not in tables[name]:
+                            tables[name]["name"] = name
 
-                        if 'constraints' not in tables[name]:
+                        if "constraints" not in tables[name]:
                             # constraint name -> constraint data
-                            tables[name]['constraints'] = {}
+                            tables[name]["constraints"] = {}
 
                         constraint = record[1]
                         related_columns = record[7]
@@ -304,48 +290,46 @@ class Namespace(WithConfig, ParentStore):
                         else:
                             attrs = [attrs]
 
-                        cs = tables[name]['constraints']
+                        cs = tables[name]["constraints"]
                         if constraint not in cs:
                             cs[constraint] = {
-                                'name': constraint,
-                                'deferrable': record[2],
-                                'deferred': record[3],
-                                'type': str(record[4]),
-                                'related_name': record[5],
-                                'check': record[6],
-                                'related_columns': related_columns,
-                                'columns': attrs
+                                "name": constraint,
+                                "deferrable": record[2],
+                                "deferred": record[3],
+                                "type": str(record[4]),
+                                "related_name": record[5],
+                                "check": record[6],
+                                "related_columns": related_columns,
+                                "columns": attrs,
                             }
                         else:
                             if related_columns:
-                                constraints[name]['related_columns'].extend(
+                                constraints[name]["related_columns"].extend(
                                     related_columns
                                 )
                             if attrs:
-                                constraints[name]['columns'].extend(
-                                    attrs
-                                )
+                                constraints[name]["columns"].extend(attrs)
 
                     for record in indexes:
                         # name, type, primary, unique, def
                         name = record[0]
 
-                        if 'name' not in tables[name]:
-                            tables[name]['name'] = name
+                        if "name" not in tables[name]:
+                            tables[name]["name"] = name
 
-                        if 'indexes' not in tables[name]:
-                            tables[name]['indexes'] = {}
+                        if "indexes" not in tables[name]:
+                            tables[name]["indexes"] = {}
 
                         index = record[1]
-                        inds = tables[name]['indexes']
+                        inds = tables[name]["indexes"]
                         columns = self.parse_index_columns(record[5])
                         if index not in inds:
                             inds[index] = {
-                                'name': index,
-                                'type': record[2],
-                                'primary': record[3],
-                                'unique': record[4],
-                                'columns': columns
+                                "name": index,
+                                "type": record[2],
+                                "primary": record[3],
+                                "unique": record[4],
+                                "columns": columns,
                             }
                 else:
                     query = self.get_tables_query()
@@ -353,16 +337,11 @@ class Namespace(WithConfig, ParentStore):
                         "json",
                         encoder=json.dumps,
                         decoder=json.loads,
-                        schema="pg_catalog"
+                        schema="pg_catalog",
                     )
                     async for row in connection.cursor(*query):
                         try:
-                            table = self.get_table(
-                                row[0],
-                                row[1],
-                                row[2],
-                                row[3]
-                            )
+                            table = self.get_table(row[0], row[1], row[2], row[3])
                         except NotIncluded:
                             pass
                         else:
@@ -371,14 +350,17 @@ class Namespace(WithConfig, ParentStore):
         for table in tables.values():
             try:
                 yield self.get_table(
-                    table['name'],
-                    table.get('columns', []),
-                    list(table.get('constraints', {}).values()),
-                    list(table.get('indexes', {}).values())
+                    table["name"],
+                    table.get("columns", []),
+                    list(table.get("constraints", {}).values()),
+                    list(table.get("indexes", {}).values()),
                 )
             except NotIncluded:
                 pass
 
     @cached_property
     async def tables(self):
-        return await self.get_children()
+        tables = {}
+        async for child in self.get_children():
+            tables[child.name] = child
+        return tables

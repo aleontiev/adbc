@@ -20,9 +20,11 @@ class Host(WithConfig, ParentStore):
         self.dbname = self.parsed_url.path.replace('/', '')
         self.name = self.parsed_url.netloc
         self.config = config
+        self._databases = {}
 
     async def get_children(self):
-        yield self.databases
+        # ! databases are permanently cached after this query
+        return await self.databases
 
     def get_databases_query(self):
         table = 'pg_database'
@@ -49,15 +51,18 @@ class Host(WithConfig, ParentStore):
     async def get_databases(self):
         return await self.main_database.query_one_row(*self.get_databases_query())
 
-    async def get_database(self, name):
-        config = self.get_child_config(name)
-        if not config:
-            raise Exception(f'{self}: database "{name}" is not included')
+    async def get_database(self, name, refresh=False):
+        if name not in self._databases or refresh:
+            config = self.get_child_config(name)
+            if not config:
+                raise Exception(f'{self}: database "{name}" is not included')
 
-        yield Database(
-            host=self,
-            config=config
-        )
+            self._databases[name] = Database(
+                name,
+                host=self,
+                config=config
+            )
+        yield self._databases[name]
 
     @cached_property
     async def main_database(self):
@@ -65,4 +70,5 @@ class Host(WithConfig, ParentStore):
 
     @cached_property
     async def databases(self):
-        yield self.get_databases()
+        databases = await self.get_databases()
+        return {d.name for d in databases}
