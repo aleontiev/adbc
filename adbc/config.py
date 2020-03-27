@@ -10,6 +10,15 @@ def get_initial_context():
     return {"vault": VaultConfig(), "env": dict(os.environ)}
 
 
+def get_config(filename=None):
+    if not filename:
+        filename = os.environ.get('ADBC_CONFIG_PATH') or 'adbc.yml'
+    return hydrate_config(
+        read_config_file(filename),
+        context=get_initial_context()
+    )
+
+
 def read_config_file(filename):
     """
     Arguments:

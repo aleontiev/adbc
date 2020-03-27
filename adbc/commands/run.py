@@ -7,7 +7,7 @@ import asyncio
 from pyaml import pprint as yaml_pprint
 from pprint import pprint
 from cleo import Command
-from adbc.config import read_config_file, hydrate_config, get_initial_context
+from adbc.config import get_config
 from adbc.workflow import Workflow
 
 
@@ -22,10 +22,7 @@ class RunCommand(Command):
     def handle(self):
         name = self.argument('workflow')
         config_file = self.option('config')
-        config = hydrate_config(
-            read_config_file(config_file),
-            context=get_initial_context()
-        )
+        config = get_config(config_file)
         workflows = config.get('workflows', {})
         databases = config.get('databases', {})
         data = workflows.get(name, None)

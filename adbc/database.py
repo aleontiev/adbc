@@ -63,7 +63,7 @@ class Database(WithConfig, ParentStore):
             tables = await namespace.tables
             table = tables[table]
             self._models[key] = Model(table=table)
-        return self._models[(key]
+        return self._models[key]
 
     @cached_property
     async def full_version(self):

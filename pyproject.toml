@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "adbc"
-version = "0.1.0"
+version = "0.1.1"
 description = ""
 authors = ["aleontiev <alonetiev@gmail.com>"]
 
@@ -9,7 +9,7 @@ python = "^3.7"
 asyncpg = "^0.18.3"
 cached_property = "^1.5.1"
 ipython = "^7.6.1"
-cleo = "^0.7.5"
+cleo = "^0.7.6"
 jsondiff = "^1.2.0"
 pyyaml = "^5.3"
 pyaml = "^19.12.0"
