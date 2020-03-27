@@ -50,16 +50,20 @@ class Database(WithConfig, ParentStore):
         self.tag = tag
         self.log(f"init: {self}")
         self._schemas = {}
+        self._models = {}
 
     def __str__(self):
         return self.name
 
     async def model(self, schema, table):
-        namespaces = await self.namespaces
-        namespace = namespaces[schema]
-        tables = await namespace.tables
-        table = tables[table]
-        return Model(table=table)
+        key = (schema, table)
+        if key not in self._models:
+            namespaces = await self.namespaces
+            namespace = namespaces[schema]
+            tables = await namespace.tables
+            table = tables[table]
+            self._models[key] = Model(table=table)
+        return self._models[(key]
 
     @cached_property
     async def full_version(self):

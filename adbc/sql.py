@@ -2,7 +2,7 @@ import re
 from adbc.template import resolve_template, get_context_variables
 
 
-COLUMN_REGEX = re.compile("^[a-zA-Z][-_a-zA-Z0-9$]*$")
+IDENTIFIER_REGEX = re.compile("^[a-zA-Z][-_a-zA-Z0-9$]*$")
 
 RAW_EXPRESSION_WHITELIST = {
     'NOW()',
@@ -11,43 +11,60 @@ RAW_EXPRESSION_WHITELIST = {
 
 
 def should_escape(value):
-    if not getattr(value, '_is_raw', None):
+    if not getattr(value, '_raw', None):
         return True
     return str(value.upper()) not in RAW_EXPRESSION_WHITELIST
 
 
 class Raw(str):
-    _is_raw = True
+    _raw = True
 
     def __copy__(self):
         return Raw(str(self))
 
 
-def column(col, check=True):
+def quote(ident):
+    return f'"{ident}"'
+
+
+def format_table(table, schema=None, check=True):
     if check:
-        check_column(col)
-    return f'"{col}"'
+        check_identifier(table)
+        if schema:
+            check_identifier(schema)
+    return f'{quote(schema)}.{quote(table)}' if schema else quote(table)
 
 
-def check_column(col):
-    if not COLUMN_REGEX.match(col):
-        raise Exception(f'invalid column name: {col}')
-    return col
+def format_column(col, check=True, table=None, schema=None):
+    if check:
+        check_identifier(col)
+    if table:
+        table = format_table(table, schema, check=check)
+
+    return f'{table}.{quote(col)}' if table else quote(col)
 
 
-def sort_columns(cols, check=True):
+def check_identifier(ident):
+    if not IDENTIFIER_REGEX.match(ident):
+        raise Exception(f'invalid identifier name: {ident}')
+    return ident
+
+
+def sort_columns(cols, check=True, table=None, schema=None):
     columns = []
     for c in cols:
         direction = "ASC"
         if c.startswith("-"):
             direction = "DESC"
             c = c[1:]
-        columns.append(f'{column(c, check)} {direction}')
+        columns.append(f'{format_column(c, check, table, schema)} {direction}')
     return ", ".join(columns)
 
 
-def list_columns(cols, check=True):
-    return ", ".join([column(c, check=check) for c in cols])
+def list_columns(cols, check=True, table=None, schema=None, aliases=None):
+    return ", ".join([
+        format_column(c, check=check, table=table, schema=schema) for c in cols
+    ])
 
 
 def parens(value):

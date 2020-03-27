@@ -12,19 +12,12 @@ class PostgresExecutor(object):
         self.table = table
         self.database = table.database
 
-    def get_delete(self, query):
-        table = self.table
-        schema = table.namespace
-        return f'DELETE FROM "{schema.name}"."{table.name}"'
-
     def get_insert(self, query):
-        table = self.table
-        schema = table.namespace
         body = query.data('body')
         columns = list_columns(
             body.keys() if isinstance(body, dict) else body[0].keys()
         )
-        return f'INSERT INTO "{schema.name}"."{table.name}" ({columns})'
+        return f'INSERT INTO {self.table.sql_name} ({columns})'
 
     def get_select(self, query, count=None):
         field = query.data('field')
@@ -68,14 +61,34 @@ class PostgresExecutor(object):
         return [f"WHERE {where}", *args] if where else []
 
     def get_from(self, query):
+        return f'FROM {self.table.sql_name}'
+
+    def get_joins(self, query):
+        columns = query.columns()
+        relations = {}
         table = self.table
-        schema = table.namespace
-        return f'FROM "{schema.name}"."{table.name}"'
+        for column in columns:
+            if '.' in column:
+                parts = column.split('.')
+                relations.add('.'.join(parts[:-1]))
+        for relation in relations:
+            if '.' in relation:
+                raise NotImplementedError('deep joins not supported')
+            rel = table.relations.get(relation)
+            if not rel:
+                raise ValueError(f'table {table} has no relation {relation}')
+            # name:string (e.g. user)
+            # from_column:string (e.g. user_id)
+            # to_column:string (e.g. id)
+            # from:string (e.g. auth_group)
+            # to:string (e.g. auth_user)
+            # schema:string (e.g. public)
+            # direct:boolean (True)
+        # TODO: implement joins
+        return ''
 
     def get_update(self, query):
-        table = self.table
-        schema = table.namespace
-        return f'UPDATE "{schema.name}"."{table.name}"'
+        return f'UPDATE {self.table.sql_name}'
 
     def get_order(self, query):
         sort = query.data('sort')
@@ -123,12 +136,14 @@ class PostgresExecutor(object):
             where = None
             args = []
         from_ = self.get_from(query)
+        joins = self.get_joins(query)
         order = self.get_order(query)
         limit = self.get_limit(query)
 
         sql = self.build_sql(
             select,
             from_,
+            joins,
             where,
             order,
             limit,
@@ -173,6 +188,18 @@ class PostgresExecutor(object):
         args = args[:-1]
         sql = '\n'.join([a for a in args if a])
         return (sql, *last)
+
+    MODIFIED_ROWS_REGEX = re.compile('[A-Z]+ ([0-9])+')
+
+    def get_updated_rows(self, result):
+        match = self.MODIFIED_ROWS_REGEX.match(result)
+        return int(match.group(1))
+
+    INSERTED_ROWS_REGEX = re.compile('INSERT [0-9]+ ([0-9]+)')
+
+    def get_inserted_rows(self, result):
+        match = self.INSERTED_ROWS_REGEX.match(result)
+        return int(match.group(1))
 
     def get_values(self, body, args):
         values = []
@@ -238,21 +265,6 @@ class PostgresExecutor(object):
         if not returning:
             result = self.get_inserted_rows(result)
         return result
-
-    MODIFIED_ROWS_REGEX = re.compile('[A-Z]+ ([0-9])+')
-
-    def get_deleted_rows(self, result):
-        return self.get_updated_rows(result)
-
-    def get_updated_rows(self, result):
-        match = self.MODIFIED_ROWS_REGEX.match(result)
-        return int(match.group(1))
-
-    INSERTED_ROWS_REGEX = re.compile('INSERT [0-9]+ ([0-9]+)')
-
-    def get_inserted_rows(self, result):
-        match = self.INSERTED_ROWS_REGEX.match(result)
-        return int(match.group(1))
 
     async def set(self, query, **kwargs):
         """UPDATE data
@@ -327,9 +339,10 @@ class PostgresExecutor(object):
             where = None
             args = []
 
-        delete = self.get_delete(query)
+        from_ = self.get_from(query)
         sql = self.build_sql(
-            delete,
+            'DELETE',
+            from_,
             where,
             returning,
             args
@@ -340,5 +353,5 @@ class PostgresExecutor(object):
             connection=connection
         )
         if not returning:
-            result = self.get_deleted_rows(result)
+            result = self.get_updated_rows(result)
         return result

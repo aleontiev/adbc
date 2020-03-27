@@ -2,7 +2,7 @@ import asyncio
 from copy import copy
 from collections import defaultdict
 from .store import Store
-from adbc.sql import column
+from adbc.sql import format_column, format_table
 from cached_property import cached_property
 from adbc.utils import get_first, split_field
 
@@ -197,18 +197,17 @@ class Table(Store):
 
         # concatenate all column names and values in pseudo-json
         aggregate = " || '' || \n ".join([
-            f'T.{column(c)}{cast}'
+            f'T.{format_column(c)}{cast}'
             for c in self.columns
         ])
         pks = self.pks
-        namespace = self.namespace.name
         order = ",\n    ".join([
-            column(c) for c in pks if self.can_order(c)
+            format_column(c) for c in pks if self.can_order(c)
         ])
         cols = ",\n    ".join([
             self.get_decode_boolean(c) if decode and self.is_boolean(c) else (
-                column(c) if not self.is_array(c)
-                else f'array_to_string({column(c)}, \',\') as {c}'
+                format_column(c) if not self.is_array(c)
+                else f'array_to_string({format_column(c)}, \',\') as {c}'
             )
             for c in columns
         ])
@@ -218,10 +217,14 @@ class Table(Store):
             f')\n'
             f'FROM (\n'
             f'  SELECT {cols}\n'
-            f'  FROM "{namespace}"."{self.name}"\n'
+            f'  FROM {self.sql_name}\n'
             f'  ORDER BY {order}'
             f') AS T'
         ]
+
+    @cached_property
+    def sql_name(self):
+        return format_table(self.name, schema=self.namespace.name)
 
     def can_order(self, column_name, uuid=True):
         column = self.columns[column_name]
@@ -252,8 +255,8 @@ class Table(Store):
         new_keys = []
         for key in keys:
             new_keys.append(
-                f'MIN({column(key)}) AS "min_{key}", '
-                f'MAX({column(key)}) AS "max_{key}"'
+                f'MIN({format_column(key)}) AS "min_{key}", '
+                f'MAX({format_column(key)}) AS "max_{key}"'
             )
         keys = ',\n  '.join(new_keys)
         return (
