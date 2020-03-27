@@ -1,7 +1,6 @@
 import os
 import uuid
 import io
-from copy import copy
 from math import ceil
 from aiobotocore import get_session
 from adbc.utils import is_dsn
