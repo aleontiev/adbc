@@ -160,10 +160,12 @@ class PostgresExecutor(object):
             limit,
             args
         )
-        method = (
-            'query_one_value' if count or (field and key)
-            else 'query_one_row' if key else 'query'
-        )
+        if count or (field and key):
+            method = 'query_one_value'
+        elif key:
+            method = 'query_one_row'
+        elif field:
+            method = 'query_one_column'
         return await getattr(self.database, method)(
             *sql,
             connection=connection

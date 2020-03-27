@@ -69,8 +69,8 @@ class Query(object):
             else:
                 remove.add(k)
 
-        if not result and self.data('method') == 'get':
-            # automatic * for get
+        if not result and self.data('method') in ('get', 'one'):
+            # automatic * for get/one
             result = self.all_columns(level)
 
         for k in remove:

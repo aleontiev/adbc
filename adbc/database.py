@@ -164,6 +164,9 @@ class Database(WithConfig, ParentStore):
             return as_(result)
         return result
 
+    async def query_one_column(self, *query, **kwargs):
+        return await self.query(*query, many=True, columns=False, **kwargs)
+
     async def query_one_value(self, *query, **kwargs):
         return await self.query(*query, many=False, columns=False, **kwargs)
 
