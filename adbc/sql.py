@@ -92,10 +92,10 @@ OPERATORS = {
 
 
 OPERATOR_TRANSLATE = {
-    "starts.with": "%{{ value }}",
-    "istarts.with": "%{{ value }}",
-    "ends.with": "{{ value }}%",
-    "iends.with": "{{ value }}%",
+    "starts.with": "{{ value }}%",
+    "istarts.with": "{{ value }}%",
+    "ends.with": "%{{ value }}",
+    "iends.with": "%{{ value }}",
     "contains": "%{{ value }}%",
     "icontains": "%{{ value }}%",
 }
