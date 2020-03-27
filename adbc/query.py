@@ -94,6 +94,10 @@ class Query(object):
     async def get(self, key=None, field=None):
         return await self._call("get", key=key, field=field)
 
+    # SELECT
+    async def one(self, key=None, field=None):
+        return await self._call("one", key=key, field=field)
+
     # DELETE
     async def delete(self, key=None, field=None):
         return await self._call("delete", key=key, field=field)

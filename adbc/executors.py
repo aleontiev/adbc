@@ -109,6 +109,17 @@ class PostgresExecutor(object):
         kwargs['count'] = 'count(*)'
         return await self.get(query, **kwargs)
 
+    async def one(self, query, **kwargs):
+        result = await self.get(query, **kwargs)
+        if isinstance(result, list):
+            num = len(result)
+            if num != 1:
+                raise ValueError(f'expecting 1 record/value but got {num}')
+            return result[0]
+        else:
+            # assume non-list results are already single Record or value
+            return result
+
     async def get(self, query, **kwargs):
         """SELECT data in table
 

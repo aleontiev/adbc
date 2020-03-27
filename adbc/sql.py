@@ -82,7 +82,8 @@ OPERATORS = {
     "not.equal": '"{{ field }}" != {{ value }}',
     "is.null": '"{{ field }}" IS {{ not }}NULL',
     "starts.with": '"{{ field }}" LIKE {{ value }}',
-    "ends.with": '"{{ field }}" LIKE {{ value }}',
+    "istarts.with": '"{{ field }}" ILIKE {{ value }}',
+    "iends.with": '"{{ field }}" ILIKE {{ value }}',
     "contains": '"{{ field }}" LIKE {{ value }}',
     "icontains": '"{{ field }}" ILIKE {{ value }}',
     "in": '"{{ field }}" IN {{ value }}',
@@ -92,7 +93,9 @@ OPERATORS = {
 
 OPERATOR_TRANSLATE = {
     "starts.with": "%{{ value }}",
+    "istarts.with": "%{{ value }}",
     "ends.with": "{{ value }}%",
+    "iends.with": "{{ value }}%",
     "contains": "%{{ value }}%",
     "icontains": "%{{ value }}%",
 }
@@ -143,7 +146,8 @@ def where_clause(where, args):
         clause = []
         for operator, value in operator_value.items():
             template = OPERATORS.get(operator)
-            assert template
+            if not template:
+                raise ValueError(f'bad operator: "{operator}"')
 
             like = "LIKE" in template.upper()
             needs = get_context_variables(template)
