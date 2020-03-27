@@ -166,6 +166,8 @@ class PostgresExecutor(object):
             method = 'query_one_row'
         elif field:
             method = 'query_one_column'
+        else:
+            method = 'query'
         return await getattr(self.database, method)(
             *sql,
             connection=connection
