@@ -1,5 +1,5 @@
 from asyncio import gather
-from asyncpg import create_pool
+from asyncpg import create_pool, connect
 from cached_property import cached_property
 
 import copy
@@ -50,6 +50,7 @@ class Database(WithConfig, ParentStore):
         self.tag = tag
         self.log(f"init: {self}")
         self._schemas = {}
+        self._connection = None
         self._models = {}
 
     def __str__(self):
@@ -78,11 +79,14 @@ class Database(WithConfig, ParentStore):
                 async for row in conn.cursor(*query):
                     yield row
 
+    def use(self, connection):
+        self._connection = connection
+
     async def copy_from(self, **kwargs):
         pool = await self.pool
         table_name = kwargs.pop('table_name', None)
         transaction = kwargs.pop('transaction', False)
-        connection = kwargs.pop('connection', None)
+        connection = kwargs.pop('connection', self._connection)
         connection = aecho(connection) if connection else pool.acquire()
         query = kwargs.pop('query', None)
         async with connection as conn:
@@ -99,6 +103,7 @@ class Database(WithConfig, ParentStore):
         pool = await self.pool
         pquery = print_query(query)
 
+        connection = connection or self._connection
         connection = aecho(connection) if connection else pool.acquire()
         async with connection as conn:
             if self.prompt:
@@ -124,6 +129,7 @@ class Database(WithConfig, ParentStore):
         self, *query, connection=None, many=True, columns=True, transaction=False
     ):
         pool = await self.pool
+        connection = connection or self._connection
         connection = aecho(connection) if connection else pool.acquire()
         pquery = print_query(query)
         async with connection as conn:
@@ -238,6 +244,9 @@ class Database(WithConfig, ParentStore):
 
     async def get_pool(self):
         return await create_pool(dsn=self.host.url, max_size=20)
+
+    async def get_connection(self):
+        return await connect(self.host.url)
 
     async def get_children(self):
         query = self.get_namespaces_query()

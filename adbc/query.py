@@ -53,8 +53,8 @@ class Query(object):
     def columns(self, level=None):
         result = set()
         state = self.get_state(level)
-        if '*' in state:
-            value = state['*']
+        if "*" in state:
+            value = state["*"]
             all_columns = set(self.all_columns(level))
             if value:
                 result |= all_columns
@@ -62,14 +62,14 @@ class Query(object):
                 result -= all_columns
         remove = set()
         for k, v in state.items():
-            if k.startswith(".") or k == '*':
+            if k.startswith(".") or k == "*":
                 continue
             if v:
                 result.add(k)
             else:
                 remove.add(k)
 
-        if not result and self.data('method') in ('get', 'one'):
+        if not result and self.data("method") in ("get", "one"):
             # automatic * for get/one
             result = self.all_columns(level)
 
@@ -80,27 +80,27 @@ class Query(object):
         return list(sorted(result))
 
     async def count(self, **kwargs):
-        return await self._call("count")
+        return await self._call("count", **kwargs)
 
     # INSERT
-    async def add(self, key=None, field=None):
-        return await self._call("add", key=key, field=field)
+    async def add(self, key=None, field=None, **kwargs):
+        return await self._call("add", key=key, field=field, **kwargs)
 
     # UPDATE
-    async def set(self, key=None, field=None):
-        return await self._call("set", key=key, field=field)
+    async def set(self, key=None, field=None, **kwargs):
+        return await self._call("set", key=key, field=field, **kwargs)
 
     # SELECT
-    async def get(self, key=None, field=None):
-        return await self._call("get", key=key, field=field)
+    async def get(self, key=None, field=None, **kwargs):
+        return await self._call("get", key=key, field=field, **kwargs)
 
     # SELECT
-    async def one(self, key=None, field=None):
-        return await self._call("one", key=key, field=field)
+    async def one(self, key=None, field=None, **kwargs):
+        return await self._call("one", key=key, field=field, **kwargs)
 
     # DELETE
-    async def delete(self, key=None, field=None):
-        return await self._call("delete", key=key, field=field)
+    async def delete(self, key=None, field=None, **kwargs):
+        return await self._call("delete", key=key, field=field, **kwargs)
 
     async def execute(self, **kwargs):
         executor = self.executor
@@ -157,9 +157,11 @@ class Query(object):
             kwargs[arg] = take
         return self._update(kwargs, copy=copy, level=level, merge=True)
 
-    async def _call(self, method, key=None, field=None):
+    async def _call(self, method, key=None, field=None, **kwargs):
         if self.data("method") != method:
-            return await getattr(self.method(method), method)(key=key, field=field)
+            return await getattr(self.method(method), method)(
+                key=key, field=field, **kwargs
+            )
 
         if key or field:
             # redirect back through copy

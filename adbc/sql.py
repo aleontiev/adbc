@@ -4,23 +4,14 @@ from adbc.template import resolve_template, get_context_variables
 
 IDENTIFIER_REGEX = re.compile("^[a-zA-Z][-_a-zA-Z0-9$]*$")
 
-RAW_EXPRESSION_WHITELIST = {
-    'NOW()',
-    'DEFAULT'
-}
+
+class Raw(str):
+    def __copy__(self):
+        return Raw(str(self))
 
 
 def should_escape(value):
-    if not getattr(value, '_raw', None):
-        return True
-    return str(value.upper()) not in RAW_EXPRESSION_WHITELIST
-
-
-class Raw(str):
-    _raw = True
-
-    def __copy__(self):
-        return Raw(str(self))
+    return not isinstance(value, Raw)
 
 
 def quote(ident):
