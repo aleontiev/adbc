@@ -108,7 +108,6 @@ class Database(WithConfig, ParentStore):
         async with connection as conn:
             if self.prompt:
                 if not confirm(
-                    f"Run query on DB {self.name}?"
                     f"{sep}{pquery}{sep}",
                     True,
                 ):
@@ -135,7 +134,6 @@ class Database(WithConfig, ParentStore):
         async with connection as conn:
             if self.prompt:
                 if not confirm(
-                    f"Run query on DB {self.name}?"
                     f"{sep}{pquery}{sep}",
                     True,
                 ):

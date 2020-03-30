@@ -278,7 +278,6 @@ class PostgresExecutor(object):
             method = 'query' if multiple else 'query_one_row'
         else:
             method = 'execute'
-        method = 'query' if returning else 'execute'
         result = await getattr(self.database, method)(
             *sql,
             connection=connection
