@@ -258,7 +258,9 @@ class PostgresExecutor(object):
 
         # body is either a list of dicts or a dict
         assert(body)
+        multiple = True
         if isinstance(body, dict):
+            multiple = False
             body = [body]
 
         returning = self.get_returning(query)
@@ -272,6 +274,10 @@ class PostgresExecutor(object):
             returning,
             args
         )
+        if returning:
+            method = 'query' if multiple else 'query_one_row'
+        else:
+            method = 'execute'
         method = 'query' if returning else 'execute'
         result = await getattr(self.database, method)(
             *sql,
