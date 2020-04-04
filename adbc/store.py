@@ -37,53 +37,40 @@ class Store(Loggable):
     async def get_count(self):
         raise NotImplementedError()
 
-    async def get_data_hash(self):
-        raise NotImplementedError()
-
-    async def get_schema_hash(self):
+    async def get_data_md5(self):
         raise NotImplementedError()
 
 
 class WithChildren(object):
-    async def get_children(self):
+    async def get_children(self, **kwargs):
         raise NotImplementedError()
 
-    async def get_count(self):
-        s = []
-        async for c in self.get_children():
+    async def get_count(self, **kwargs):
+        tasks = []
+        refresh = kwargs.pop('refresh', False)
+        async for child in self.get_children(refresh=refresh):
             # get counts in parallel
-            s.append(c.get_count())
+            tasks.append(child.get_count())
 
-        return sum(await gather(*s))
+        return sum(await gather(*tasks))
 
-    async def get_data_hash(self):
-        s = []
-        n = []
-        async for c in self.get_children():
+    async def get_data_md5(self, **kwargs):
+        tasks = []
+        names = []
+        refresh = kwargs.pop('refresh', False)
+        async for child in self.get_children(refresh=refresh):
             # get data hashes in parallel
-            data_hash = c.get_data_hash()
-            s.append(data_hash)
-            n.append(c.name)
+            md5 = child.get_data_md5(**kwargs)
+            tasks.append(md5)
+            names.append(child.name)
 
-        s = await gather(*s)
-        return hash_(s, n)
+        tasks = await gather(*names)
+        return hash_(tasks, names)
 
-    async def get_schema_hash(self):
-        s = []
-        n = []
-        async for c in self.get_children():
-            # get schema hashes in parallel
-            schema_hash = c.get_schema_hash()
-            s.append(schema_hash)
-            n.append(c.name)
-
-        s = await gather(*s)
-        return hash_(s, n)
-
-    async def get_info(self, only=None):
+    async def get_info(self, only=None, refresh=False):
         data = OrderedDict()
-        async for child in self.get_children():
-            data[child.name] = child.get_info(only=only)
+        async for child in self.get_children(refresh=refresh):
+            data[child.name] = child.get_info(only=only, refresh=refresh)
 
         keys, values = data.keys(), data.values()
         values = await gather(*values)

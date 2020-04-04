@@ -14,7 +14,8 @@ from .namespace import Namespace
 
 DATABASE_VERSION_QUERY = "SELECT version()"
 
-sep = f"\n{'=' * 40}\n"
+sepn = f"\n{'=' * 40}"
+sep = f'{sepn}\n'
 
 
 class Database(WithConfig, ParentStore):
@@ -48,7 +49,6 @@ class Database(WithConfig, ParentStore):
         self.parent = self.host = host
         self.verbose = verbose
         self.tag = tag
-        self.log(f"init: {self}")
         self._schemas = {}
         self._connection = None
         self._models = {}
@@ -56,13 +56,25 @@ class Database(WithConfig, ParentStore):
     def __str__(self):
         return self.name
 
-    async def model(self, schema, table):
-        key = (schema, table)
-        if key not in self._models:
-            namespaces = await self.namespaces
-            namespace = namespaces[schema]
-            tables = await namespace.tables
-            table = tables[table]
+    async def model(self, schema, table_name, refresh=False):
+        key = (schema, table_name)
+        if key not in self._models or refresh:
+            namespace = None
+            async for child in self.get_children(refresh=refresh):
+                if child.name == schema:
+                    namespace = child
+                    break
+            if not namespace:
+                raise ValueError(f'schema {schema} not found or no access')
+
+            table = None
+            async for child in namespace.get_children(refresh=refresh):
+                if child.name == table_name:
+                    table = child
+                    break
+            if not table:
+                raise ValueError(f'table {schema}.{table_name} not found or no access')
+
             self._models[key] = Model(table=table)
         return self._models[key]
 
@@ -88,40 +100,60 @@ class Database(WithConfig, ParentStore):
         transaction = kwargs.pop('transaction', False)
         connection = kwargs.pop('connection', self._connection)
         connection = aecho(connection) if connection else pool.acquire()
+        close = kwargs.pop('close', False)
         query = kwargs.pop('query', None)
         async with connection as conn:
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
+                result = None
                 if table_name:
-                    return await conn.copy_from_table(table_name, **kwargs)
+                    result = await conn.copy_from_table(table_name, **kwargs)
                 elif query:
-                    return await conn.copy_from_query(*query, **kwargs)
+                    result = await conn.copy_from_query(*query, **kwargs)
                 else:
                     raise NotImplementedError('table or query is required')
+                if close:
+                    output = kwargs.get('output')
+                    if getattr(output, 'close'):
+                        output.close()
+                return result
+
+    async def copy_to(self, **kwargs):
+        pool = await self.pool
+        table_name = kwargs.pop('table_name', None)
+        transaction = kwargs.pop('transaction', False)
+        connection = kwargs.pop('connection', None) or self._connection
+        connection = aecho(connection) if connection else pool.acquire()
+        async with connection as conn:
+            transaction = conn.transaction() if transaction else aecho()
+            async with transaction:
+                if table_name:
+                    return await conn.copy_to_table(table_name, **kwargs)
+                else:
+                    raise NotImplementedError('table is required')
 
     async def execute(self, *query, connection=None, transaction=False):
         pool = await self.pool
         pquery = print_query(query)
-
         connection = connection or self._connection
         connection = aecho(connection) if connection else pool.acquire()
+
         async with connection as conn:
             if self.prompt:
                 if not confirm(
-                    f"{sep}{pquery}{sep}",
+                    f"{sep}{pquery}{sepn}",
                     True,
                 ):
-                    raise Exception("Aborted")
+                    raise Exception(f"{self}: execute aborted")
             elif self.verbose:
-                print(f"Running on DB {self.name}:{sep}{pquery}{sep}")
+                print(f"{self}: execute{sep}{pquery}{sepn}")
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
                 try:
                     return await conn.execute(*query)
                 except Exception as e:
-                    err = f"Query failed: " f"{e.__class__.__name__}: {e}"
-                    if not self.prompt:
-                        err += f"\nQuery:{sep}{pquery}{sep}"
+                    err = f"{self}: execute failed; {e.__class__.__name__}: {e}"
+                    err += f"\nQuery:{sep}{pquery}{sepn}"
                     raise Exception(err)
 
     async def query(
@@ -131,33 +163,32 @@ class Database(WithConfig, ParentStore):
         connection = connection or self._connection
         connection = aecho(connection) if connection else pool.acquire()
         pquery = print_query(query)
+
         async with connection as conn:
             if self.prompt:
                 if not confirm(
-                    f"{sep}{pquery}{sep}",
+                    f"{sep}{pquery}{sepn}",
                     True,
                 ):
-                    raise Exception("Aborted")
+                    raise Exception(f"{self}: query aborted")
             elif self.verbose:
-                print(f"Running on DB {self.name}:{sep}{pquery}{sep}")
+                print(f"{self}: query{sep}{pquery}{sepn}")
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
                 try:
                     results = await conn.fetch(*query)
                 except Exception as e:
-                    query = sep.join([str(q) for q in query])
-                    raise Exception(
-                        f"Query:{sep}{query}{sep}"
-                        f"{e.__class__.__name__}: {e}"
-                    )
+                    err = f"{self}: query failed; {e.__class__.__name__}: {e}"
+                    err += f"\nQuery:{sep}{pquery}{sepn}"
+                    raise Exception(err)
                 if many:
                     return results if columns else [r[0] for r in results]
                 else:
-                    if not len(results):
-                        query = sep.join([str(q) for q in query])
+                    num = len(results)
+                    if num != 1:
                         raise Exception(
-                            f"Query:{sep}{query}{sep}"
-                            f"Expecting one row but no results"
+                            f"{self}: query failed; expecting 1 row, got {num}\n"
+                            f"Query:{sep}{query}{sepn}"
                         )
                     result = results[0]
                     return result if columns else result[0]
@@ -200,13 +231,13 @@ class Database(WithConfig, ParentStore):
             )
         return self._schemas[name]
 
-    async def diff(self, other, translate=None, only=None, info=False):
-        self.log(f"diff: {self}")
+    async def diff(self, other, translate=None, only=None, info=False, refresh=False):
+        self.log(f"{self}: diff")
         if only:
             assert only == "schema" or only == "data"
 
-        data = self.get_info(only=only)
-        other_data = other.get_info(only=only)
+        data = self.get_info(only=only, refresh=refresh)
+        other_data = other.get_info(only=only, refresh=refresh)
         data, other_data = await gather(data, other_data)
         original_data = data
         if translate:
@@ -246,11 +277,11 @@ class Database(WithConfig, ParentStore):
     async def get_connection(self):
         return await connect(self.host.url)
 
-    async def get_children(self):
+    async def get_children(self, refresh=False):
         query = self.get_namespaces_query()
         async for row in self.stream(*query):
             try:
-                yield self.get_namespace(row[0])
+                yield self.get_namespace(row[0], refresh=refresh)
             except NotIncluded:
                 pass
 

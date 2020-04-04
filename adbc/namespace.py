@@ -97,11 +97,14 @@ LEFT JOIN (
             'type', C.contype,
             'related_columns', array_to_json(array(
                 SELECT attname FROM pg_attribute
+                JOIN (SELECT a, b FROM (SELECT unnest(C.confkey) as a, generate_series(1, array_length(C.confkey, 1)) as b) x) ORD on ORD.a = attnum
                 WHERE attnum = ANY(C.confkey) AND attrelid = F.oid
             )),
             'columns', array_to_json(array(
                 SELECT attname FROM pg_attribute
+                JOIN (SELECT a, b FROM (SELECT unnest(C.conkey) as a, generate_series(1, array_length(C.conkey, 1)) as b) x) ORD on ORD.a = attnum
                 WHERE attnum = ANY(C.conkey) AND attrelid = R.oid
+                ORDER BY ORD.b
             )),
             'related_name', F.relname,
             'check', C.consrc
@@ -124,6 +127,7 @@ LEFT JOIN (
             'unique', I.indisunique,
             'columns', array_to_json(array(
                 SELECT attname FROM pg_attribute
+                JOIN (SELECT a, b FROM (SELECT unnest(I.indkey) as a, generate_series(1, array_length(I.indkey, 1)) as b) x) ORD on ORD.a = attnum
                 WHERE attnum = ANY(I.indkey) AND attrelid = R.oid
             ))
         )) as result
@@ -148,7 +152,6 @@ class Namespace(WithConfig, ParentStore):
         self.config = config
         self.verbose = verbose
         self.tag = tag
-        self.log(f"init: {self}")
         self._tables = {}
 
     def __str__(self):
@@ -224,13 +227,13 @@ class Namespace(WithConfig, ParentStore):
             return [x.strip().replace('"', "") for x in match.group(1).split(",")]
         raise Exception(f'invalid index definition: "{definition}"')
 
-    async def get_children(self):
-        version = await self.database.version
+    async def get_children(self, refresh=False):
+        redshift = 'redshift' in (await self.database.full_version).lower()
         pool = await self.database.pool
         tables = defaultdict(dict)
         async with pool.acquire() as connection:
             async with connection.transaction():
-                if version < 9:
+                if redshift:
                     columns_query = self.get_table_columns_query()
                     constraints_query = self.get_table_constraints_query()
                     indexes_query = self.get_table_indexes_query()
@@ -341,7 +344,9 @@ class Namespace(WithConfig, ParentStore):
                     )
                     async for row in connection.cursor(*query):
                         try:
-                            table = self.get_table(row[0], row[1], row[2], row[3])
+                            table = self.get_table(
+                                row[0], row[1], row[2], row[3], refresh=refresh
+                            )
                         except NotIncluded:
                             pass
                         else:
@@ -354,6 +359,7 @@ class Namespace(WithConfig, ParentStore):
                     table.get("columns", []),
                     list(table.get("constraints", {}).values()),
                     list(table.get("indexes", {}).values()),
+                    refresh=refresh
                 )
             except NotIncluded:
                 pass

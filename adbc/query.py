@@ -170,9 +170,9 @@ class Query(object):
                 args[".key"] = key
             if field:
                 args[".field"] = field
-            return await getattr(self._update(args), method)()
+            return await getattr(self._update(args), method)(**kwargs)
 
-        return await self.execute()
+        return await self.execute(**kwargs)
 
     def validate_where(self, level, query):
         return True

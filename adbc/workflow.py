@@ -1,9 +1,10 @@
 import os
 import uuid
 import io
+
 from math import ceil
 from aiobotocore import get_session
-from adbc.utils import is_dsn
+from adbc.utils import is_dsn, aecho
 from adbc.table import Table, can_order
 from adbc.database import Database
 from asyncio import gather
@@ -45,7 +46,7 @@ class WorkflowStep(Loggable):
             if not command:
                 raise Exception(f'"command" is required but not provided')
             debug = False
-            if command.startswith('?'):
+            if command.startswith("?"):
                 debug = True
                 command = command[1:]
             if command == "copy":
@@ -148,20 +149,24 @@ class WorkflowStep(Loggable):
 # as long as the table has a sortable key
 # like an integer or varchar pk, created, or updated field (not UUID)
 
+
 class DebugStep(object):
     """debug another step"""
+
     def __init__(self, step):
         self.step = step
 
     async def execute(self):
-        print('PAUSING BEFORE EXECUTE')
+        print("PAUSING BEFORE EXECUTE")
         import pdb
+
         pdb.set_trace()
 
         value = await self.step.execute()
 
-        print('PAUSING AFTER EXECUTE')
+        print("PAUSING AFTER EXECUTE")
         import pdb
+
         pdb.set_trace()
         return value
 
@@ -182,8 +187,12 @@ class CopyStep(WorkflowStep):
         self._drop_indexes = self.config.get("drop_indexes", True) or drop_all
 
     async def _validate_s3(self):
-        target_version = await self.target.version
-        if target_version < 9:
+        source_version = await self.source.full_version
+        target_version = await self.target.full_version
+        self.redshift = (
+            "redshift" in source_version.lower() or "redshift" in target_version.lower()
+        )
+        if self.redshift:
             # must have S3 credentials
             bucket = self.target.config.get("aws_s3_bucket")
             region = self.target.config.get("aws_s3_region")
@@ -200,7 +209,6 @@ class CopyStep(WorkflowStep):
             assert access_key
             assert secret
 
-            self.use_s3 = True
             self.s3_access_key = access_key
             self.s3_secret = secret
             self.s3_region = region
@@ -213,12 +221,6 @@ class CopyStep(WorkflowStep):
                 aws_secret_access_key=secret,
                 aws_access_key_id=access_key,
             )
-        else:
-            self.use_s3 = None
-
-    async def _validate_source(self):
-        source_version = await self.source.version
-        self.use_select = source_version < 9
 
     async def execute(self):
         translate = self.translate
@@ -229,15 +231,15 @@ class CopyStep(WorkflowStep):
         )
         meta_changes = await self.copy_metadata(schema_diff)
         source_info, target_info, data_diff = await source.diff(
-            target, translate=translate, info=True
+            target, translate=translate, info=True, refresh=True
         )
-        # may be required to use S3
-        await self._validate_source()
+        # may be required to use S3, if using Redshift
         await self._validate_s3()
+
         data_changes = await self.copy_data(
             source_info, target_info, data_diff, translate=translate
         )
-        final_diff = await source.diff(target, translate)
+        final_diff = await source.diff(target, translate, refresh=True)
         return {
             "schema_diff": schema_diff,
             "data_diff": data_diff,
@@ -256,30 +258,70 @@ class CopyStep(WorkflowStep):
         return (f'DROP TABLE "{schema}"."{table}" CASCADE',)
 
     def get_drop_column_query(self, schema, table, name):
-        return (f'ALTER TABLE "{schema}"."{table}"\n' f"DROP COLUMN {name} CASCADE",)
+        return (f'ALTER TABLE "{schema}"."{table}"\nDROP COLUMN "{name}" CASCADE',)
 
-    def get_drop_constraint_query(self, schema, table, name):
+    def get_alter_constraint_query(
+        self, schema_name, table_name, name, deferred=None, deferrable=None
+    ):
+        remainder = []
+        if deferrable is not None:
+            remainder.append("DEFERRABLE" if deferrable else "NOT DEFERRABLE")
+        if deferred is not None:
+            remainder.append(
+                "INTIIALLY DEFERRED" if deferred else "INITIALLY IMMEDIATE"
+            )
+        remainder = " ".join(remainder)
+        if not remainder:
+            return []
         return (
-            f'ALTER TABLE "{schema}"."{table}"\n' f"DROP CONSTRAINT {name} CASCADE",
+            f'ALTER TABLE "{schema_name}"."{table_name}"\n'
+            f'ALTER CONSTRAINT "{name}" {remainder}',
         )
 
+    def get_alter_column_query(
+        self, schema, table, column, not_null=None, type=None, **kwargs
+    ):
+        has_default = "default" in kwargs
+        default = kwargs.get("default") if has_default else None
+        remainder = ""
+        if type is not None:
+            remainder = f"TYPE {type}"
+        elif not_null is not None:
+            remainder = f'{"SET" if not_null else "DROP"} NOT NULL'
+        elif has_default:
+            remainder = (
+                f'{"SET" if default is not None else "DROP"} DEFAULT '
+                f'{default if default is not None else ""}'
+            )
+        if not remainder:
+            return []
+        return (
+            f'ALTER TABLE "{schema}"."{table}"\n'
+            'ALTER COLUMN "{column}" {remainder}',
+        )
+
+    def get_drop_constraint_query(self, schema, table, name):
+        return (f'ALTER TABLE "{schema}"."{table}"\nDROP CONSTRAINT "{name}" CASCADE',)
+
     def get_drop_index_query(self, schema, name):
-        return f'DROP INDEX "{schema}"."{name}" CASCADE'
+        return (f'DROP INDEX "{schema}"."{name}" CASCADE',)
 
     def get_create_index_query(self, schema, table, name, index):
-        index = self.get_index
         unique = " UNIQUE" if index["unique"] else ""
         columns = ", ".join([f'"{c}"' for c in index["columns"]])
         type = index["type"]
-        return (f"CREATE{unique} INDEX {name} ON {table} ({columns}) USING {type}",)
+        return (
+            f'CREATE{unique} INDEX {name} ON "{schema}"."{table}"\n'
+            f'USING {type} ({columns})',
+        )
 
     def get_create_constraint_query(self, schema, table, name, constraint):
         constraint = self.get_constraint_sql(name, constraint)
-        return f'ALTER TABLE "{schema}"."{table}"\n' f"ADD {constraint}"
+        return (f'ALTER TABLE "{schema}"."{table}"\n' f"ADD {constraint}",)
 
     def get_create_column_query(self, schema, table, name, column):
         column = self.get_column_sql(name, column)
-        return f'ALTER TABLE "{schema}"."{table}"\n' f"ADD COLUMN {column}"
+        return (f'ALTER TABLE "{schema}"."{table}"\n' f"ADD COLUMN {column}",)
 
     def get_create_table_columns_sql(self, table, spaces=2):
         table_schema = table.get("schema", {})
@@ -320,6 +362,17 @@ class CopyStep(WorkflowStep):
             f'CREATE TABLE "{schema}"."{name}" (\n' f"{columns}{sep}{constraints})",
         )
 
+    def get_create_table_indexes_query(self, schema, table_name, table):
+        indexes = table.get("schema", {}).get("indexes", {})
+        statements = []
+        for name, index in indexes.items():
+            if index["primary"] or index["unique"]:
+                # automatically created by constraints
+                continue
+            query = self.get_create_index_query(schema, table_name, name, index)
+            statements.append(query[0])
+        return (";\n".join(statements),) if statements else []
+
     def get_column_sql(self, name, column):
         nullable = "NULL" if column["null"] else "NOT NULL"
         return f'"{name}" {column["type"]} {nullable}'
@@ -336,9 +389,19 @@ class CopyStep(WorkflowStep):
         if related_name:
             related_columns = ",\n  ".join(constraint["related_columns"])
             related = f" REFERENCES {related_name} ({related_columns})"
+
+        deferrable = "DEFERRABLE" if constraint["deferrable"] else "NOT DEFERRABLE"
+        deferred = (
+            "INITIALLY DEFERRED" if constraint["deferred"] else "INITIALLY IMMEDIATE"
+        )
+        check = ''
+        if constraint['check']:
+            check = f' {constraint["check"]} '
+            columns = ''
         return (
             f"CONSTRAINT {name} "
-            f'{CONSTRAINT_TYPE_MAP[constraint["type"]]}{columns}{related}'
+            f'{CONSTRAINT_TYPE_MAP[constraint["type"]]}{check}{columns}{related} '
+            f"{deferrable} {deferred}"
         )
 
     async def create_column(self, schema, table, name, column):
@@ -379,7 +442,8 @@ class CopyStep(WorkflowStep):
 
     async def create_table_items(self, name, data, parents, exclude=None):
         assert len(parents) == 2
-        schema, table = parents[0]
+        schema, table = parents
+
         for item_name, item in data.items():
             if exclude and exclude(item):
                 continue
@@ -388,6 +452,9 @@ class CopyStep(WorkflowStep):
 
     async def create_table(self, schema, name, table):
         await self.target.execute(*self.get_create_table_query(schema, name, table))
+        query = self.get_create_table_indexes_query(schema, name, table)
+        if query:
+            await self.target.execute(*query)
         return True
 
     async def create_tables(self, tables, parents=None):
@@ -500,15 +567,39 @@ class CopyStep(WorkflowStep):
         return schemas
 
     async def merge_constraint(self, name, diff, parents=None):
-        print("merge constraint", name, diff)
-        raise NotImplementedError()
+        kwargs = {}
+        schema_name, table_name = parents
+        kwargs = {}
+        if "deferred" in diff:
+            kwargs["deferred"] = diff["deferred"][0]
+        if "deferrable" in diff:
+            kwargs["deferrable"] = diff["deferrable"][0]
+        if not kwargs:
+            raise Exception(
+                f"expecting constraint diff to have deferrable or deferred, is: {diff}"
+            )
+
+        query = self.get_alter_constraint_query(schema_name, table_name, name, **kwargs)
+        await self.target.execute(*query)
+        return diff
 
     async def merge_index(self, column, diff, parents=None):
         raise NotImplementedError()
 
     async def merge_column(self, column, diff, parents=None):
-        print("merge column", column, diff)
-        raise NotImplementedError()
+        kwargs = {}
+        if "null" in diff:
+            kwargs["not null"] = not diff["null"][0]
+        if "type" in diff:
+            kwargs["type"] = diff["type"][0]
+        if "default" in diff:
+            kwargs["default"] = diff["default"][0]
+        if not kwargs:
+            raise Exception("expecting column diff to have null, type, or default")
+        schema_name, table_name = parents
+        query = self.get_alter_column_query(schema_name, table_name, column, **kwargs)
+        await self.target.execute(*query)
+        return diff
 
     async def merge_table(self, table_name, diff, parents=None):
         parents = parents + [table_name]
@@ -581,7 +672,7 @@ class CopyStep(WorkflowStep):
         # full copy
         # 1) * -> postgres (use COPY -> COPY)
         # 2) * -> redshift (use COPY -> S3 <- COPY)
-        method = self._copy_table_s3 if self.use_s3 else self._copy_table
+        method = self._copy_table_s3 if self.redshift else self._copy_table
         return await method(
             source_schema,
             source_table,
@@ -593,7 +684,7 @@ class CopyStep(WorkflowStep):
         )
 
     def get_max_copy_size(self):
-        return 10000
+        return 1000 if self.redshift else 50000
 
     async def _copy_shard_s3(
         self,
@@ -621,14 +712,9 @@ class CopyStep(WorkflowStep):
         )
         output = output.getvalue()
 
-        await self.s3.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=output
-        )
+        await self.s3.put_object(Bucket=bucket, Key=key, Body=output)
         self.log(
-            f"copy (s3): {source_schema}.{source_table} "
-            f"({shard+1} of {num_shards})"
+            f"copy (s3): {source_schema}.{source_table} " f"({shard+1} of {num_shards})"
         )
 
         # 2. delete all rows in the shard from the target
@@ -647,10 +733,10 @@ class CopyStep(WorkflowStep):
         finally:
             await self.s3.delete_object(Key=key, Bucket=bucket)
 
-        num_copied = int(num_copied.replace('COPY ', ''))
+        num_copied = int(num_copied.replace("COPY ", ""))
         return cursor, num_copied
 
-    async def _copy_table_s3(
+    async def _copy_table(
         self,
         source_schema,
         source_table,
@@ -666,6 +752,143 @@ class CopyStep(WorkflowStep):
         indexes = schema.get("indexes", {})
         constraints = schema.get("constraints", {})
         pks = Table.get_pks(indexes, constraints, column_names)
+        source_count = source_metadata["data"]["count"]
+        max_size = self.get_max_copy_size()
+        num_shards = 1
+        pk = None
+        if len(pks) == 1:
+            pk = pks[0]
+
+        if source_count > max_size and pk:
+            if can_order(columns[pk]["type"]):
+                num_shards = ceil(source_count / max_size)
+
+        shards_label = ""
+        if num_shards > 1:
+            shards_label = f" ({num_shards})"
+
+        self.log(f"copy (start): {source_schema}.{source_table}{shards_label}")
+        cursor = None
+        num_shards = num_shards if pk else 1
+        max_size = max_size if num_shards > 1 else None
+        for shard in range(num_shards):
+            source_check = self._check_shard(
+                self.source, source_schema, source_table, cursor=cursor, limit=max_size
+            )
+            target_check = self._check_shard(
+                self.target, target_schema, target_table, cursor=cursor, limit=max_size
+            )
+            source_result, target_result = await gather(source_check, target_check)
+            source_md5, source_read, source_max = source_result
+            target_md5, target_read, target_max = target_result
+            if (
+                source_md5 == target_md5
+                and source_read == target_read
+                and source_max == target_max
+            ):
+                # md5 check pass
+                cursor = source_max
+                continue
+
+            await self._copy_shard(
+                pk,
+                source_schema,
+                source_table,
+                target_schema,
+                target_table,
+                target_read > 0,
+                cursor if num_shards > 1 else None,
+                source_max if num_shards > 1 else None,
+            )
+            cursor = source_max
+
+    async def _copy_shard(
+        self,
+        pk,
+        source_schema,
+        source_table,
+        target_schema,
+        target_table,
+        delete,
+        cursor_min,
+        cursor_max,
+    ):
+        # md5 check failed
+        # copy this shard
+        connection = await self.target.get_connection() if delete else None
+        transaction = connection.transaction() if delete else aecho()
+        try:
+            async with transaction:
+                query = await self.target.model(target_schema, target_table)
+                if cursor_max:
+                    if cursor_min:
+                        query = query.where({
+                            ".and": [
+                                {pk: {">": cursor_min}}, {pk: {"<=": cursor_max}}
+                            ]
+                        })
+                    else:
+                        query = query.where({pk: {"<=": cursor_max}})
+
+                if delete:
+                    await self.target.execute(
+                        "SET CONSTRAINTS ALL DEFERRED", connection=connection
+                    )
+                    await query.delete(connection=connection)
+
+                buffer = io.BytesIO()
+                # copy from source to buffer
+                sql = await query.get(sql=True)
+                await self.source.copy_from(
+                    query=sql,
+                    output=buffer,
+                )
+                # copy buffer to target
+                buffer.seek(0)
+                await self.target.copy_to(
+                    table_name=target_table,
+                    schema_name=target_schema,
+                    source=buffer,
+                    connection=connection,
+                )
+                # TODO: copy from/to in stream
+                # copy_from, copy_to = await gather(copy_from, copy_to)
+        finally:
+            if connection:
+                await connection.close()
+                connection = None
+
+    async def _check_shard(self, db, schema, table_name, cursor=None, limit=None):
+        model = await db.model(schema, table_name)
+        table = model.table
+        try:
+            result = await table.get_data_md5(
+                cursor=cursor, limit=limit, count=True, max_pk=True
+            )
+            return (result["md5"], result["count"], result["max"])
+        except Exception:
+            md5 = table.get_data_md5(cursor=cursor, limit=limit, count=True)
+            max_pk = table.get_max_id(cursor=cursor, limit=limit)
+            md5, max_pk = await gather(md5, max_pk)
+            return (md5["md5"], md5["count"], max_pk)
+
+    async def _copy_table_s3(
+        self,
+        source_schema,
+        source_table,
+        source_metadata,
+        target_schema,
+        target_table,
+        target_metadata,
+        diff,
+    ):
+        # TODO: fix this
+        schema = source_metadata["schema"]
+        columns = schema["columns"]
+        column_names = list(sorted(columns.keys()))
+        indexes = schema.get("indexes", {})
+        constraints = schema.get("constraints", {})
+        pks = Table.get_pks(indexes, constraints, column_names)
 
         count = source_metadata["data"]["count"]
         max_size = self.get_max_copy_size()
@@ -674,7 +897,7 @@ class CopyStep(WorkflowStep):
         cursor = None
         if count > max_size and len(pks) == 1:
             pk = pks[0]
-            if can_order(columns[pk]['type']):
+            if can_order(columns[pk]["type"]):
                 # if the table is large enough
                 # and there is a single PK that supports ordering (not UUID)
                 # and the PK range is captured in source data,
@@ -683,9 +906,9 @@ class CopyStep(WorkflowStep):
 
         bucket = self.s3_bucket
         s3_folder = f"{self.s3_prefix}{self.prefix}{source_schema}.{source_table}/"
-        shards_label = ''
+        shards_label = ""
         if num_shards > 1:
-            shards_label = f' ({num_shards})'
+            shards_label = f" ({num_shards})"
         self.log(f"copy (start): {source_schema}.{source_table}{shards_label}")
         shard = 0
         try:
@@ -715,9 +938,7 @@ class CopyStep(WorkflowStep):
             )
             raise
         else:
-            self.log(
-                f"copy (in): {source_schema}.{source_table}{shards_label}"
-            )
+            self.log(f"copy (in): {source_schema}.{source_table}{shards_label}")
 
     async def copy_metadata(self, diff):
         return await self.merge(diff, "schema", [])

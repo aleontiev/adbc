@@ -128,6 +128,7 @@ class PostgresExecutor(object):
             count: ?string
                 if set, return count of rows instead of records
             connection: ?asyncpg.connection
+            sql: if True, return the query instead
 
         Return:
             List of records: if no key is specified
@@ -137,7 +138,7 @@ class PostgresExecutor(object):
         field = query.data('field') is not None
         key = query.data('key') is not None
         connection = kwargs.get('connection', None)
-
+        sql = kwargs.get('sql', None)
         count = kwargs.get('count', False)
         select = self.get_select(query, count=count)
         where = self.get_where(query)
@@ -151,7 +152,7 @@ class PostgresExecutor(object):
         order = self.get_order(query)
         limit = self.get_limit(query)
 
-        sql = self.build_sql(
+        query = self.build_sql(
             select,
             from_,
             joins,
@@ -160,6 +161,9 @@ class PostgresExecutor(object):
             limit,
             args
         )
+        if sql:
+            # just return the query
+            return query
         if count or (field and key):
             method = 'query_one_value'
         elif key:
@@ -169,7 +173,7 @@ class PostgresExecutor(object):
         else:
             method = 'query'
         return await getattr(self.database, method)(
-            *sql,
+            *query,
             connection=connection
         )
 
@@ -253,6 +257,7 @@ class PostgresExecutor(object):
         """
         body = query.data('body')
         connection = kwargs.get('connection')
+        sql = kwargs.get('sql', False)
         # TODO: support ON CONFLICT
         # upsert = kwargs.get('upsert', True)
 
@@ -268,18 +273,20 @@ class PostgresExecutor(object):
         insert = self.get_insert(query)
         values = self.get_values(body, args)
 
-        sql = self.build_sql(
+        query = self.build_sql(
             insert,
             values,
             returning,
             args
         )
+        if sql:
+            return query
         if returning:
             method = 'query' if multiple else 'query_one_row'
         else:
             method = 'execute'
         result = await getattr(self.database, method)(
-            *sql,
+            *query,
             connection=connection
         )
         if not returning:
@@ -301,6 +308,7 @@ class PostgresExecutor(object):
         field = query.data('field')
         body = query.data('body')
         connection = kwargs.get('connection')
+        sql = kwargs.get('sql', False)
         assert(body)
         if not field:
             # body must be a dict with values
@@ -322,16 +330,18 @@ class PostgresExecutor(object):
         set_ = self.get_set(body, args)
 
         update = self.get_update(query)
-        sql = self.build_sql(
+        query = self.build_sql(
             update,
             set_,
             where,
             returning,
             args
         )
+        if sql:
+            return query
         method = 'query' if returning else 'execute'
         result = await getattr(self.database, method)(
-            *sql,
+            *query,
             connection=connection
         )
         if not returning:

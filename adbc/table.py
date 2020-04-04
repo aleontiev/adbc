@@ -116,8 +116,6 @@ class Table(Store):
         if not self.config.get('indexes', True):
             self.indexes = None
 
-        self.log(f'init: {self}')
-
     @staticmethod
     def get_pks(indexes, constraints, columns):
         pks = None
@@ -143,7 +141,7 @@ class Table(Store):
     def __str__(self):
         return f'{self.namespace}.{self.name}'
 
-    async def get_info(self, only=None):
+    async def get_info(self, only=None, **kwargs):
         result = {}
         if only == 'data' or not only:
             data_range = self.get_data_range()
@@ -160,7 +158,7 @@ class Table(Store):
         if only == 'schema' or not only:
             result['schema'] = self.get_schema()
 
-        self.log(f"info: {self}")
+        self.log(f"{self}: info")
         return result
 
     def get_schema(self):
@@ -177,13 +175,23 @@ class Table(Store):
     def get_decode_boolean(self, column):
         return f'decode("{column}", true, \'true\', false, \'false\') as "{column}"'
 
-    async def get_data_hash_query(self):
-        version = await self.database.version
+    async def get_statistics_query(
+        self,
+        count=False,
+        max_pk=False,
+        md5=False,
+        limit=None,
+        cursor=None,
+    ):
+        if not count and not max_pk and not md5:
+            raise Exception('must pass count or max_pk or md5')
+
+        redshift = 'redshift' in (await self.database.full_version).lower()
         decode = False
         aggregator = "array_to_string(array_agg"
         end = "), ',')"
         cast = False
-        if version < 9:
+        if redshift:
             # TODO: fix, technically this applies to Redshift, not Postgres <9
             # in practice, nobody else is running Postgres 8 anymore...
             aggregator = "listagg"
@@ -192,7 +200,10 @@ class Table(Store):
             cast = True
 
         columns = self.columns
-
+        pks = self.pks
+        order = ",\n    ".join([
+            format_column(c) for c in pks if self.can_order(c)
+        ])
         cast = '::varchar' if cast else ''
 
         # concatenate all column names and values in pseudo-json
@@ -200,27 +211,76 @@ class Table(Store):
             f'T.{format_column(c)}{cast}'
             for c in self.columns
         ])
-        pks = self.pks
-        order = ",\n    ".join([
-            format_column(c) for c in pks if self.can_order(c)
-        ])
-        cols = ",\n    ".join([
+        if not md5:
+            columns = pks
+        inner = ",\n    ".join([
             self.get_decode_boolean(c) if decode and self.is_boolean(c) else (
                 format_column(c) if not self.is_array(c)
                 else f'array_to_string({format_column(c)}, \',\') as {c}'
             )
             for c in columns
         ])
-        return [
-            f"SELECT MD5(\n"
-            f'  {aggregator}({aggregate}{end}\n'
-            f')\n'
+        output = []
+        pk = pks[0]
+        md5 = f'MD5(\n  {aggregator}({aggregate}{end})' if md5 else None
+        count = 'COUNT(*)' if count else ''
+        max_pk = f'MAX({format_column(pk)})' if max_pk else ''
+        if md5:
+            output.append(md5)
+        if count:
+            output.append(count)
+        if max_pk:
+            if len(pks) != 1:
+                raise Exception(f'must have 1 primary key, has {len(pks)}')
+            output.append(max_pk)
+
+        if limit:
+            limit = f'\n  LIMIT {int(limit)}\n'
+        else:
+            limit = ''
+
+        where = ''
+        if cursor:
+            where = f'\n  WHERE {format_column(pk)} > $1\n'
+
+        output = ', '.join(output)
+        query = [
+            f'SELECT {output}\n'
             f'FROM (\n'
-            f'  SELECT {cols}\n'
-            f'  FROM {self.sql_name}\n'
-            f'  ORDER BY {order}'
+            f'  SELECT {inner}\n'
+            f'  FROM {self.sql_name}{where}\n'
+            f'  ORDER BY {order}{limit}'
             f') AS T'
         ]
+        if cursor:
+            query.append(cursor)
+        return query
+
+    def get_max_id_query(self, limit=None, cursor=None):
+        if len(self.pks) != 1:
+            raise Exception(f'must have 1 primary key, has {len(self.pks)}')
+
+        pk = self.pks[0]
+        pk = format_column(pk)
+        if limit is None and cursor is None:
+            return [f'SELECT {pk} FROM {self.sql_name} ORDER BY {pk} DESC LIMIT 1']
+
+        where = ''
+        if cursor:
+            where = f'\n  WHERE {pk} > $1\n'
+        if limit:
+            limit = f'\n  LIMIT {int(limit)}\n'
+        query = [
+            f'SELECT T.{pk}\n'
+            f'FROM (\n'
+            f'  SELECT {pk}\n'
+            f'  FROM {self.sql_name}{where}\n'
+            f'  ORDER BY {pk}{limit}'
+            f') AS T ORDER BY T.{pk} DESC LIMIT 1'
+        ]
+        if cursor:
+            query.append(cursor)
+        return query
 
     @cached_property
     def sql_name(self):
@@ -285,12 +345,24 @@ class Table(Store):
             result[key][type] = value
         return result
 
-    async def get_data_hash(self):
-        version = await self.database.version
-        if self.namespace.name in INTERNAL_SCHEMAS and version < 9:
+    async def get_max_id(self, limit=None, cursor=None):
+        query = self.get_max_id_query(limit=limit, cursor=cursor)
+        results = await self.database.query(*query)
+        return results[0][0] if results else None  # one value or None
+
+    async def get_data_md5(self, limit=None, cursor=None, count=False, max_pk=False):
+        redshift = 'redshift' in (await self.database.full_version).lower()
+        if redshift and self.namespace.name in INTERNAL_SCHEMAS:
             return None
-        query = await self.get_data_hash_query()
-        return await self.database.query_one_value(*query)
+        query = await self.get_statistics_query(
+            md5=True,
+            count=count,
+            max_pk=max_pk,
+            limit=limit,
+            cursor=cursor
+        )
+        method = 'query_one_value' if not count and not max_pk else 'query_one_row'
+        return await getattr(self.database, method)(*query)
 
     async def get_count(self):
         query = self.get_count_query()
