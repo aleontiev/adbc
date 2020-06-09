@@ -1,5 +1,5 @@
 import re
-from .sql import list_columns, sort_columns, where_clause, should_escape
+from .sql import list_columns, sort_columns, where_clause, should_escape, get_tagged_number
 
 
 # TODO: support other backends
@@ -208,12 +208,6 @@ class PostgresExecutor(object):
         sql = '\n'.join([a for a in args if a])
         return (sql, *last)
 
-    MODIFIED_ROWS_REGEX = re.compile('[A-Z]+ ([0-9])+')
-
-    def get_updated_rows(self, result):
-        match = self.MODIFIED_ROWS_REGEX.match(result)
-        return int(match.group(1))
-
     INSERTED_ROWS_REGEX = re.compile('INSERT [0-9]+ ([0-9]+)')
 
     def get_inserted_rows(self, result):
@@ -345,7 +339,7 @@ class PostgresExecutor(object):
             connection=connection
         )
         if not returning:
-            result = self.get_updated_rows(result)
+            result = get_tagged_number(result)
         return result
 
     async def delete(self, query, **kwargs):
@@ -383,5 +377,5 @@ class PostgresExecutor(object):
             connection=connection
         )
         if not returning:
-            result = self.get_updated_rows(result)
+            result = get_tagged_number(result)
         return result

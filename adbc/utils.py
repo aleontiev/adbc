@@ -1,5 +1,6 @@
 import re
 import inspect
+import asyncio
 import collections
 from cached_property import cached_property  # noqa
 
@@ -8,10 +9,10 @@ def get_include_args(args, truth=True):
     """Get command args that in/exclude based on a value"""
     include = {}
     if isinstance(args, str):
-        args = args.split(',')
+        args = args.split(",")
 
     for arg in args:
-        if arg.startswith('~') or arg.startswith('-'):
+        if arg.startswith("~") or arg.startswith("-"):
             arg = arg[1:]
             include[arg] = False
         else:
@@ -19,70 +20,15 @@ def get_include_args(args, truth=True):
     return include
 
 
-def get_include_query(
-    include,
-    table,
-    column,
-):
-    """Get query filters that in/exclude based on a particular column"""
-
-    if not include or include is True:
-        # no filters
-        return ('', [])
-
-    args = []
-    query = []
-    count = 1
-    includes = excludes = False
-    for key, should in include.items():
-        if isinstance(should, dict) and 'enabled' in should:
-            should = should['enabled']
-        if not should:
-            # disabled config block, skip
-            continue
-
-        should = bool(should)
-        if key.startswith('~'):
-            should = not should
-            key = key[1:]
-
-        if '*' in key:
-            operator = '~~' if should else '!~~'
-            key = key.replace('*', '%')
-        else:
-            operator = '=' if should else '!='
-        args.append(key)
-        query.append(
-            '({}."{}" {} ${})'.format(
-                table,
-                column,
-                operator,
-                count
-            )
-        )
-        count += 1
-        if should:
-            includes = True
-        else:
-            excludes = True
-
-    if includes and not excludes:
-        union = 'OR'
-    else:
-        union = 'AND'
-    result = ' {} '.format(union).join(query), args
-    return result
-
-
-SERVER_VERSION_NUMBER_REGEX = re.compile('^[A-Za-z]+ ([0-9.]+)')
+SERVER_VERSION_NUMBER_REGEX = re.compile("^[A-Za-z]+ ([0-9.]+)")
 
 
 def get_version_number(version):
     match = SERVER_VERSION_NUMBER_REGEX.match(version)
     if match:
-        return float('.'.join(match.group(1).split('.')[0:2]))
+        return float(".".join(match.group(1).split(".")[0:2]))
     else:
-        raise Exception('Not a valid server version string')
+        raise Exception("Not a valid server version string")
 
 
 def get(context, path, null=None):
@@ -105,17 +51,13 @@ def get(context, path, null=None):
         get(context, "a.0.x") == 'y'
     """
     parts = path.split(".")
-    allow_null = not (
-        inspect.isclass(null) and issubclass(null, Exception)
-    )
+    allow_null = not (inspect.isclass(null) and issubclass(null, Exception))
     for part in parts:
         if context is None:
             if allow_null:
                 return null
             else:
-                raise null(
-                    f'context is null but next part: "{part}"'
-                )
+                raise null(f'context is null but next part: "{part}"')
         if callable(context):
             # try to "call" into the context
             try:
@@ -151,7 +93,7 @@ def get(context, path, null=None):
                 if allow_null:
                     return null
                 else:
-                    raise null(f'context index out of bounds: {part}')
+                    raise null(f"context index out of bounds: {part}")
         else:
             if hasattr(context, part):
                 context = getattr(context, part)
@@ -170,6 +112,7 @@ def get(context, path, null=None):
 
 def is_dsn(url):
     from asyncpg.connect_utils import _parse_connect_dsn_and_args
+
     try:
         _parse_connect_dsn_and_args(
             dsn=url,
@@ -181,7 +124,7 @@ def is_dsn(url):
             database=None,
             ssl=None,
             connect_timeout=None,
-            server_settings=None
+            server_settings=None,
         )
     except Exception:
         raise
@@ -200,19 +143,19 @@ def merge(dictionary, other):
 
 def confirm(prompt, default=False):
     if default:
-        prompt = f'{prompt} ([y] / n): '
+        prompt = f"{prompt} ([y] / n): "
     else:
-        prompt = f'{prompt} ([n] / y): '
+        prompt = f"{prompt} ([n] / y): "
     while True:
-        ans = input(prompt).strip().replace('\n', '').lower()
+        ans = input(prompt).strip().replace("\n", "").lower()
         if not ans:
             return default
-        if ans not in ['y', 'n', 'yes', 'no']:
-            print('Please enter y or n, or hit enter: ')
+        if ans not in ["y", "n", "yes", "no"]:
+            print("Please enter y or n, or hit enter: ")
             continue
-        if ans in {'y', 'yes'}:
+        if ans in {"y", "yes"}:
             return True
-        if ans in {'n', 'no'}:
+        if ans in {"n", "no"}:
             return False
 
 
@@ -232,7 +175,7 @@ def split_field(i, f):
         yield (value, key)
 
 
-class aecho(object):
+class AsyncContext(object):
     def __init__(self, args=None):
         self.args = args
 
@@ -241,3 +184,75 @@ class aecho(object):
 
     async def __aexit__(self, *args):
         pass
+
+
+aecho = AsyncContext
+
+
+class AsyncBuffer(object):
+    DEBUFFER = 100
+
+    def __init__(self, debug=False):
+        self._debug = debug
+        self._buffer = []
+        self._read = -1
+        self._reads = 0
+        self._waits = 0
+        self._writes = 0
+        self._waiting = 0
+        self._buffmax = 0
+        self._waiter = None
+        self._closed = False
+
+    async def write(self, data):
+        self._writes += 1
+        self._buffer.append(data)
+        self._buffmax = max(self._buffmax, len(self._buffer))
+        if self._waiting and self._waiter:
+            self._waiter.set_result(data)
+
+    def close(self):
+        # no more writes, but can still read out the rest
+        self._closed = True
+        if self._waiter:
+            self._waiter.cancel()
+
+    def __aiter__(self):
+        return self
+
+    def debuffer(self):
+        if self._read > 0 and self._read % self.DEBUFFER == 0:
+            # debuffer any rows not yet read
+            # and reset read counter to 0
+            self._buffer = self._buffer[self._read + 1:]
+            self._read = -1
+
+    async def wait(self):
+        self._waits += 1
+        self._waiting += 1
+        self._waiter = asyncio.get_running_loop().create_future()
+        await self._waiter
+        self._waiter = None
+        self._waiting -= 1
+
+    async def __anext__(self):
+        index = self._read + 1
+        if index >= len(self._buffer):
+            if self._closed:
+                if self._debug:
+                    print(
+                        'closed buffer, '
+                        f"reads: {self._reads}, "
+                        f"writes: {self._writes}, "
+                        f"waits: {self._waits}, "
+                        f"buffmax: {self._buffmax}"
+                    )
+                raise StopAsyncIteration()
+
+            await self.wait()
+
+        result = self._buffer[index]
+        self._read = index
+        self.debuffer()
+        self._reads += 1
+        return result

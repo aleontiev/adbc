@@ -1,24 +1,19 @@
-from asyncio import gather
-from asyncpg import create_pool, connect
 from cached_property import cached_property
-
-import copy
-from jsondiff import diff
 
 from .exceptions import NotIncluded
 from .store import ParentStore, WithConfig
-from .utils import get_include_query, get_version_number, confirm, aecho
+from .utils import get_version_number, confirm, aecho
 from .model import Model
-from .sql import print_query
+from .sql import print_query, get_tagged_number
 from .namespace import Namespace
 
-DATABASE_VERSION_QUERY = "SELECT version()"
+from .copy import WithCopy
 
-sepn = f"\n{'=' * 40}"
-sep = f'{sepn}\n'
+SEPN = f"\n{'=' * 40}"
+SEP = f"{SEPN}\n"
 
 
-class Database(WithConfig, ParentStore):
+class Database(WithCopy, WithConfig, ParentStore):
     child_key = "schemas"
     type = "db"
 
@@ -31,9 +26,12 @@ class Database(WithConfig, ParentStore):
         tag=None,
         verbose=False,
         prompt=False,
+        **kwargs
     ):
+        super().__init__(**kwargs)
+
         self.config = config
-        config_url = self.config.get('url')
+        config_url = self.config.get("url")
         if config_url and not url:
             url = config_url
 
@@ -65,7 +63,7 @@ class Database(WithConfig, ParentStore):
                     namespace = child
                     break
             if not namespace:
-                raise ValueError(f'schema {schema} not found or no access')
+                raise ValueError(f"schema {schema} not found or no access")
 
             table = None
             async for child in namespace.get_children(refresh=refresh):
@@ -73,10 +71,15 @@ class Database(WithConfig, ParentStore):
                     table = child
                     break
             if not table:
-                raise ValueError(f'table {schema}.{table_name} not found or no access')
+                raise ValueError(f"table {schema}.{table_name} not found or no access")
 
             self._models[key] = Model(table=table)
         return self._models[key]
+
+    @cached_property
+    async def is_redshift(self):
+        version = await self.full_Version
+        return "redshift" in version.lower()
 
     @cached_property
     async def full_version(self):
@@ -96,64 +99,76 @@ class Database(WithConfig, ParentStore):
 
     async def copy_from(self, **kwargs):
         pool = await self.pool
-        table_name = kwargs.pop('table_name', None)
-        transaction = kwargs.pop('transaction', False)
-        connection = kwargs.pop('connection', self._connection)
+        table_name = kwargs.pop("table_name", None)
+        transaction = kwargs.pop("transaction", False)
+        connection = kwargs.pop("connection", self._connection)
         connection = aecho(connection) if connection else pool.acquire()
-        close = kwargs.pop('close', False)
-        query = kwargs.pop('query', None)
+        close = kwargs.pop("close", False)
+        query = kwargs.pop("query", None)
         async with connection as conn:
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
                 result = None
                 if table_name:
-                    result = await conn.copy_from_table(table_name, **kwargs)
+                    self.log(f"{self}: copy from {table_name}")
+                    result = get_tagged_number(
+                        await conn.copy_from_table(table_name, **kwargs)
+                    )
                 elif query:
-                    result = await conn.copy_from_query(*query, **kwargs)
+                    self.log(f"{self}: copy from {SEP}{print_query(query)}{SEPN}")
+                    result = get_tagged_number(
+                        await conn.copy_from_query(*query, **kwargs)
+                    )
                 else:
-                    raise NotImplementedError('table or query is required')
+                    raise NotImplementedError("table or query is required")
                 if close:
-                    output = kwargs.get('output')
-                    if getattr(output, 'close'):
+                    if hasattr(close, 'close'):
+                        # close passed in object
+                        output = close
+                    else:
+                        # close output object
+                        output = kwargs.get("output")
+
+                    if getattr(output, "close"):
                         output.close()
                 return result
 
     async def copy_to(self, **kwargs):
         pool = await self.pool
-        table_name = kwargs.pop('table_name', None)
-        transaction = kwargs.pop('transaction', False)
-        connection = kwargs.pop('connection', None) or self._connection
+        table_name = kwargs.pop("table_name", None)
+        transaction = kwargs.pop("transaction", False)
+        connection = kwargs.pop("connection", None) or self._connection
         connection = aecho(connection) if connection else pool.acquire()
         async with connection as conn:
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
                 if table_name:
-                    return await conn.copy_to_table(table_name, **kwargs)
+                    self.log(f"{self}: copy to {table_name}")
+                    return get_tagged_number(
+                        await conn.copy_to_table(table_name, **kwargs)
+                    )
                 else:
-                    raise NotImplementedError('table is required')
+                    raise NotImplementedError("table is required")
 
     async def execute(self, *query, connection=None, transaction=False):
         pool = await self.pool
-        pquery = print_query(query)
         connection = connection or self._connection
         connection = aecho(connection) if connection else pool.acquire()
+        pquery = print_query(query)
 
         async with connection as conn:
             if self.prompt:
-                if not confirm(
-                    f"{sep}{pquery}{sepn}",
-                    True,
-                ):
+                if not confirm(f"{SEP}{pquery}{SEPN}", True):
                     raise Exception(f"{self}: execute aborted")
-            elif self.verbose:
-                print(f"{self}: execute{sep}{pquery}{sepn}")
+            else:
+                self.log(f"{self}: execute{SEP}{pquery}{SEPN}")
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
                 try:
                     return await conn.execute(*query)
                 except Exception as e:
                     err = f"{self}: execute failed; {e.__class__.__name__}: {e}"
-                    err += f"\nQuery:{sep}{pquery}{sepn}"
+                    err += f"\nQuery:{SEP}{pquery}{SEPN}"
                     raise Exception(err)
 
     async def query(
@@ -166,38 +181,35 @@ class Database(WithConfig, ParentStore):
 
         async with connection as conn:
             if self.prompt:
-                if not confirm(
-                    f"{sep}{pquery}{sepn}",
-                    True,
-                ):
+                if not confirm(f"{SEP}{pquery}{SEPN}", True):
                     raise Exception(f"{self}: query aborted")
-            elif self.verbose:
-                print(f"{self}: query{sep}{pquery}{sepn}")
+            else:
+                self.log(f"{self}: query{SEP}{pquery}{SEPN}")
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
                 try:
                     results = await conn.fetch(*query)
                 except Exception as e:
                     err = f"{self}: query failed; {e.__class__.__name__}: {e}"
-                    err += f"\nQuery:{sep}{pquery}{sepn}"
+                    err += f"\nQuery:{SEP}{pquery}{SEPN}"
                     raise Exception(err)
                 if many:
                     return results if columns else [r[0] for r in results]
                 else:
                     num = len(results)
+                    if num == 0:
+                        # no results -> return None
+                        return None
                     if num != 1:
                         raise Exception(
-                            f"{self}: query failed; expecting 1 row, got {num}\n"
-                            f"Query:{sep}{query}{sepn}"
+                            f"{self}: query failed; expecting <=1 row, got {num}\n"
+                            f"Query:{SEP}{query}{SEPN}"
                         )
                     result = results[0]
                     return result if columns else result[0]
 
-    async def query_one_row(self, *query, as_=None, **kwargs):
-        result = await self.query(*query, many=False, columns=True, **kwargs)
-        if as_:
-            return as_(result)
-        return result
+    async def query_one_row(self, *query, **kwargs):
+        return await self.query(*query, many=False, columns=True, **kwargs)
 
     async def query_one_column(self, *query, **kwargs):
         return await self.query(*query, many=True, columns=False, **kwargs)
@@ -206,7 +218,7 @@ class Database(WithConfig, ParentStore):
         return await self.query(*query, many=False, columns=False, **kwargs)
 
     async def get_full_version(self):
-        version = await self.query_one_value(DATABASE_VERSION_QUERY)
+        version = await self.query_one_value(*self.backend.get_query('version'))
         return version
 
     @cached_property
@@ -214,68 +226,30 @@ class Database(WithConfig, ParentStore):
         return get_version_number(await self.full_version)
 
     def get_namespaces_query(self):
-        table = "pg_namespace"
-        column = "nspname"
         include = self.get_child_include()
-        query, args = get_include_query(include, table, column)
-        if query:
-            query = "WHERE {}".format(query)
-        args.insert(0, 'SELECT "{}"\nFROM "{}" {}'.format(column, table, query))
-        return args
+        return self.host._backend.get_namespaces_query(self, include)
 
     def get_namespace(self, name, refresh=False):
         if name not in self._schemas or refresh:
             config = self.get_child_config(name)
             self._schemas[name] = Namespace(
-                name, database=self, config=config, verbose=self.verbose, tag=self.tag
+                name,
+                database=self,
+                config=config,
+                verbose=self.verbose,
+                tag=self.tag
             )
         return self._schemas[name]
 
-    async def diff(self, other, translate=None, only=None, info=False, refresh=False):
-        self.log(f"{self}: diff")
-        if only:
-            assert only == "schema" or only == "data"
-
-        data = self.get_info(only=only, refresh=refresh)
-        other_data = other.get_info(only=only, refresh=refresh)
-        data, other_data = await gather(data, other_data)
-        original_data = data
-        if translate:
-            if info:
-                original_data = copy.deepcopy(data)
-            # translate after both diffs have already been captured
-            schemas = translate.get("schemas", {})
-            types = translate.get("types", {})
-            # table/schema names
-            for key, value in schemas.items():
-                if key == value:
-                    continue
-
-                # source schema "key" is the same as target schema "value"
-                if key in data:
-                    data[value] = data[key]
-                    data.pop(key)
-            # column typesa
-            if types:
-                types = {k: v for k, v in types.items() if k != v}
-            if types:
-                # iterate over all columns and change type as appropriate
-                for tables in data.values():
-                    for table in tables.values():
-                        if "schema" not in table:
-                            continue
-                        for column in table["schema"]["columns"].values():
-                            if column["type"] in types:
-                                column["type"] = types[column["type"]]
-
-        diff_data = diff(data, other_data, syntax="symmetric")
-        return (original_data, other_data, diff_data) if info else diff_data
+    @cached_property
+    def backend(self):
+        return self.host._backend
 
     async def get_pool(self):
-        return await create_pool(dsn=self.host.url, max_size=20)
+        return await self.backend.create_pool(dsn=self.host.url, max_size=20)
 
     async def get_connection(self):
-        return await connect(self.host.url)
+        return await self.backend.connect(self.host.url)
 
     async def get_children(self, refresh=False):
         query = self.get_namespaces_query()

@@ -1,13 +1,43 @@
 import re
 from adbc.template import resolve_template, get_context_variables
+from adbc.utils import get_first
 
 
 IDENTIFIER_REGEX = re.compile("^[a-zA-Z][-_a-zA-Z0-9$]*$")
+TAGGED_NUMBER_REGEX = re.compile(r'[a-zA-Z]+ ([0-9]+)')
+NO_ORDER_TYPES = {"xid", "anyarray"}
 
 
 class Raw(str):
     def __copy__(self):
         return Raw(str(self))
+
+
+def get_pks(indexes, constraints, columns):
+    """Get primary key(s) given on indexes/constraints/columns lists"""
+    pks = None
+    if indexes:
+        pks = get_first(indexes, lambda item: item["primary"], "columns")
+
+    if not pks and constraints:
+        pks = get_first(constraints, lambda item: item["type"] == "p", "columns")
+
+    if not pks:
+        # full-row pks
+        pks = columns
+    return pks
+
+
+def can_order(type):
+    return type in NO_ORDER_TYPES
+
+
+def get_tagged_number(value):
+    match = TAGGED_NUMBER_REGEX.match(value)
+    if not match:
+        raise Exception('fnot a tagged number: {value}')
+
+    return int(match.group(1))
 
 
 def should_escape(value):

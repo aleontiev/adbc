@@ -1,16 +1,10 @@
 from asyncio import gather
 from collections import OrderedDict
 from fnmatch import fnmatch
-from hashlib import md5
 
+from .logging import Loggable
 from .utils import cached_property, merge
 from .exceptions import NotIncluded
-
-
-def hash_(s, n):
-    return md5(
-        ",".join(["{}-{}".format(s[i], n[i]) for i in range(len(s))]).encode("utf-8")
-    ).hexdigest()
 
 
 def specificity(item):
@@ -21,12 +15,6 @@ def specificity(item):
     return (0 if wildcards > 0 else 1, wildcards, others, index)
 
 
-class Loggable(object):
-    def log(self, *args, **kwargs):
-        if self.verbose:
-            print(*args, **kwargs)
-
-
 class Store(Loggable):
     async def push(self, other):
         raise NotImplementedError()
@@ -35,9 +23,6 @@ class Store(Loggable):
         raise NotImplementedError()
 
     async def get_count(self):
-        raise NotImplementedError()
-
-    async def get_data_md5(self):
         raise NotImplementedError()
 
 
@@ -53,19 +38,6 @@ class WithChildren(object):
             tasks.append(child.get_count())
 
         return sum(await gather(*tasks))
-
-    async def get_data_md5(self, **kwargs):
-        tasks = []
-        names = []
-        refresh = kwargs.pop('refresh', False)
-        async for child in self.get_children(refresh=refresh):
-            # get data hashes in parallel
-            md5 = child.get_data_md5(**kwargs)
-            tasks.append(md5)
-            names.append(child.name)
-
-        tasks = await gather(*names)
-        return hash_(tasks, names)
 
     async def get_info(self, only=None, refresh=False):
         data = OrderedDict()
