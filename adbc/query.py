@@ -1,6 +1,7 @@
 from .utils import merge as _merge
 from copy import deepcopy
 from .exceptions import QueryValidationError, QueryExecutionError
+from .executors import get_executor
 
 
 class NestedFeature(object):
@@ -27,14 +28,14 @@ class NestedFeature(object):
 
 class Query(object):
     # methods
-    def __init__(self, table=None, state=None, executor=None):
+    def __init__(self, database=None, state=None, executor=None):
         """
         Arguments:
             state: internal query representation
         """
         self._state = state or {}
-        self.table = table
-        self.executor = executor
+        self.database = database
+        self.executor = executor or get_executor(self.database)
 
     def get_state(self, level=None):
         state = self.state
@@ -44,40 +45,7 @@ class Query(object):
         return state
 
     def data(self, key, level=None, default=None):
-        return self.get_state(level).get(f".{key}", default)
-
-    def all_columns(self, level=None):
-        table = self.table
-        return list(table.columns.keys())
-
-    def columns(self, level=None):
-        result = set()
-        state = self.get_state(level)
-        if "*" in state:
-            value = state["*"]
-            all_columns = set(self.all_columns(level))
-            if value:
-                result |= all_columns
-            else:
-                result -= all_columns
-        remove = set()
-        for k, v in state.items():
-            if k.startswith(".") or k == "*":
-                continue
-            if v:
-                result.add(k)
-            else:
-                remove.add(k)
-
-        if not result and self.data("method") in ("get", "one"):
-            # automatic * for get/one
-            result = self.all_columns(level)
-
-        for k in remove:
-            if k in result:
-                result.remove(k)
-
-        return list(sorted(result))
+        return self.get_state(level).get(key, default)
 
     async def count(self, **kwargs):
         return await self._call("count", **kwargs)
@@ -116,20 +84,23 @@ class Query(object):
     def state(self):
         return self._state
 
-    def key(self, name):
-        return self._update({".key": name})
+    def source(self, name):
+        return self._update({"source": name})
 
     def field(self, name):
-        return self._update({".field": name})
+        return self._update({"field": name})
+
+    def key(self, name):
+        return self._update({"key": name})
 
     def method(self, name):
-        return self._update({".method": name})
+        return self._update({"method": name})
 
     def body(self, body):
-        return self._update({".body": body}, merge=True)
+        return self._update({"body": body}, merge=True)
 
     def limit(self, limit):
-        return self._update({".limit": limit})
+        return self._update({"limit": limit})
 
     @property
     def take(self):
@@ -143,19 +114,31 @@ class Query(object):
     def sort(self):
         return NestedFeature(self, "sort")
 
+    @property
+    def join(self):
+        return NestedFeature(self, "join")
+
     def validate_field(self, level, field):
         return True
 
+    def _join(self, level, *args, copy=True):
+        return self._update({"join": args}, level=level, copy=copy)
+
     def _take(self, level, *args, copy=True):
         kwargs = {}
-        for arg in args:
-            take = True
-            if arg.startswith("-"):
-                arg = arg[1:]
-                take = False
-            self.validate_field(level, arg)
-            kwargs[arg] = take
-        return self._update(kwargs, copy=copy, level=level, merge=True)
+        if args and isinstance(args[0], str):
+            for arg in args:
+                take = arg
+                if arg.startswith("-"):
+                    arg = arg[1:]
+                    take = None
+                self.validate_field(level, arg)
+                kwargs[arg] = take
+        elif args and isinstance(args[0], dict):
+            kwargs = args[0]
+        else:
+            raise ValueError('take: expecting at least one argument')
+        return self._update({'take': kwargs}, copy=copy, level=level, merge=True)
 
     async def _call(self, method, key=None, field=None, **kwargs):
         if self.data("method") != method:
@@ -167,9 +150,9 @@ class Query(object):
             # redirect back through copy
             args = {}
             if key:
-                args[".key"] = key
+                args["key"] = key
             if field:
-                args[".field"] = field
+                args["field"] = field
             return await getattr(self._update(args), method)(**kwargs)
 
         return await self.execute(**kwargs)
@@ -185,13 +168,13 @@ class Query(object):
         Example:
             .where({
                 '.or': [
-                    {'users.location.name': {'contains': 'New York'}},
-                    {'.not': {'users.in': [1, 2]}}
+                    {'.contains': {'users.location.name': '"New York"'}}},
+                    {'.not': {'.in': {'users': [1, 2]}}}
                 ]
             })
         """
         self.validate_where(level, query)
-        return self._update({".where": query}, copy=copy, level=level)
+        return self._update({"where": query}, copy=copy, level=level)
 
     def _sort(self, level, *args, copy=True):
         """
@@ -199,7 +182,7 @@ class Query(object):
             .sort("name", "-created")
         """
         self.validate_sort(level, args)
-        return self._update({".sort": args}, copy=copy, level=level)
+        return self._update({"sort": args}, copy=copy, level=level)
 
     def __str__(self):
         return str(self.state)
@@ -240,7 +223,7 @@ class Query(object):
                 sub[key] = value
 
         if copy:
-            return Query(table=self.table, state=state, executor=self.executor)
+            return Query(database=self.database, state=state, executor=self.executor)
         else:
             return self
 

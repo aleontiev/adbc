@@ -1,25 +1,27 @@
 from urllib.parse import urlparse
 from cached_property import cached_property
 
-from .backends.postgres import PostgresBackend
+from adbc.backends.postgres import PostgresBackend
+from adbc.logging import Loggable
+from adbc.scope import WithScope
+
 from .database import Database
-from .store import ParentStore, WithConfig
 
 
-class Host(WithConfig, ParentStore):
+class Host(Loggable, WithScope):
     type = 'host'
     child_key = 'databases'
 
     def __init__(
         self,
         url,
-        config=None
+        scope=None
     ):
         self.url = url
         self.parsed_url = urlparse(url)
         self.dbname = self.parsed_url.path.replace('/', '')
         self.name = self.parsed_url.netloc
-        self.config = config
+        self.scope = scope
         self._databases = {}
         self._backend = PostgresBackend()
 
@@ -32,16 +34,18 @@ class Host(WithConfig, ParentStore):
             *self._backend.get_query('databases')
         )
 
-    def get_database(self, name, refresh=False):
-        if name not in self._databases or refresh:
-            config = self.get_child_config(name)
-            if not config:
-                raise Exception(f'{self}: database "{name}" is not included')
+    def get_database(self, name, scope=None, refresh=False):
+        if name not in self._databases or refresh or scope is not None:
+            scope = self.get_child_scope(name, scope=scope)
+            if not scope:
+                raise Exception(
+                    f'{self}: database "{name}" is not included'
+                )
 
             self._databases[name] = Database(
                 name,
                 host=self,
-                config=config
+                scope=scope
             )
         return self._databases[name]
 

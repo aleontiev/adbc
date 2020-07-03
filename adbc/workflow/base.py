@@ -4,7 +4,7 @@ from .debug import DebugStep
 from .diff import DiffStep
 from .copy import CopyStep
 from .info import InfoStep
-from .flow import FlowStep
+from .sql import SQLStep
 
 
 class Workflow(Loggable):
@@ -28,23 +28,25 @@ class Workflow(Loggable):
 class AutoStep(Loggable):
     def __new__(cls, workflow, config):
         if cls is AutoStep:
-            command = config.get("command", "").lower()
-            if not command:
-                raise Exception(f'"command" is required but not provided')
+            type = config.get("type", "").lower()
+            if not type:
+                raise Exception(f'"type" is required but not provided')
             debug = False
-            if command.startswith("?"):
+            if type.startswith("?"):
                 debug = True
-                command = command[1:]
-            if command == "copy":
+                type = type[1:]
+            if type == "copy":
                 step = CopyStep(workflow, config)
-            elif command == "diff":
+            elif type == "diff":
                 step = DiffStep(workflow, config)
-            elif command == "info":
+            elif type == "info":
                 step = InfoStep(workflow, config)
-            elif command == 'flow':
-                step = FlowStep(workflow, config)
+            elif type == "sql":
+                step = SQLStep(workflow, config)
             else:
-                raise Exception(f'the provided command "{command}" is not supported')
+                raise Exception(
+                    f'the workflow step type "{type}" is not supported'
+                )
             if debug:
                 return DebugStep(step)
             else:

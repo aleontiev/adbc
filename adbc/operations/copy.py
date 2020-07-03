@@ -2,8 +2,9 @@ import io
 from math import ceil
 from asyncio import gather
 from jsondiff.symbols import insert, delete
-from .sql import get_pks, can_order
-from .utils import AsyncContext, AsyncBuffer
+from adbc.sql import get_pks, can_order
+from adbc.utils import AsyncContext, AsyncBuffer
+
 from .merge import WithMerge
 from .drop import WithDrop
 from .create import WithCreate
@@ -12,27 +13,32 @@ from .diff import WithDiff
 
 class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
     parallel_copy = True
+    check_all = True
 
     async def get_max_copy_size(self):
         is_redshift = await self.is_redshift
         return 1000 if is_redshift else 16000
 
-    async def _delete_before(self, pk, schema, table, value):
-        return await self._delete_edge(pk, schema, table, value)
+    async def _delete_before(self, pk, table, value, schema=None):
+        return await self._delete_edge(pk, table, value, schema=schema)
 
-    async def _delete_after(self, pk, schema, table, value):
-        return await self._delete_edge(pk, schema, table, value, before=False)
+    async def _delete_after(self, pk, table, value, schema=None):
+        return await self._delete_edge(pk, table, value, before=False, schema=schema)
 
-    async def _delete_edge(self, pk, schema, table, value, before=True):
-        model = await self.model(schema, table)
+    async def _truncate(self, table, schema=None):
+        table = self.F.table(table, schema=schema)
+        return await self.execute("TRUNCATE {table}")
+
+    async def _delete_edge(self, pk, table, value, before=True, schema=None):
+        model = await self.get_model(table, schema=schema)
         operator = '<' if before else '>'
         return await model.where({pk: {operator: value}}).delete()
 
     async def _check_shard(
         self,
         db,
-        schema,
         table_name,
+        schema=None,
         md5=True,
         min_pk=True,
         max_pk=True,
@@ -40,7 +46,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         cursor=None,
         limit=None
     ):
-        model = await db.model(schema, table_name)
+        model = await db.get_model(table_name, schema=schema)
         table = model.table
         kwargs = {
             'cursor': cursor,
@@ -128,7 +134,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         transaction = AsyncContext()  # connection.transaction() if delete else aecho()
         try:
             async with transaction:
-                query = await target.model(target_schema, target_table)
+                query = await target.get_model(target_table, schema=target_schema)
                 if not truncate:
                     if cursor_min:
                         query = query.where({
@@ -142,7 +148,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
                 if delete:
                     if truncate:
-                        await self._truncate(target_schema, target_table)
+                        await self._truncate(target_table, schema=target_schema)
                     else:
                         await query.delete(connection=connection)
 
@@ -246,7 +252,9 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                 # we still need to get the next ID
                 # but we do not need the md5
                 source_check = self._check_shard(
-                    self.source, source_schema, source_table,
+                    self.source,
+                    source_table,
+                    schema=source_schema,
                     md5=False,
                     min_pk=False,
                     count=False,
@@ -258,11 +266,13 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                 source_max = source_result['max']
             else:
                 source_check = self._check_shard(
-                    self.source, source_schema, source_table,
+                    self.source, source_table,
+                    schema=source_schema,
                     cursor=cursor, limit=max_size
                 )
                 target_check = self._check_shard(
-                    target, target_schema, target_table,
+                    target, target_table,
+                    schema=target_schema,
                     cursor=cursor, limit=max_size
                 )
                 source_result, target_result = await gather(source_check, target_check)
@@ -320,19 +330,41 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
     async def copy_metadata(self, diff):
         return await self.merge(diff, "schema", [])
 
-    async def copy_data(self, target, source_info, target_info, diff, translate=None):
+    def _get_schema_translation(self, scope=None, from_=None, to='source'):
+        if not scope:
+            return {}
+
+        translation = {}
+        for key, child in scope.items():
+            translate = child.get(from_, None)
+            key = child.get(to, key)
+            if translate and translate != key:
+                translation[translate] = key
+        return translation
+
+    async def copy_data(
+        self,
+        target,
+        source_info,
+        target_info,
+        diff,
+        scope=None
+    ):
         if not diff:
             return {}
 
-        source_schemas = (
-            {v: k for k, v in translate.get("schemas", {}).items()} if translate else {}
-        )
         keys = []
         values = []
+        translate_schemas = self._get_schema_translation(
+            scope=scope,
+            from_='target',
+            to='source'
+        )
+
         if self.check_all:
             # check all tables
-            for target_schema, target_tables in target.items():
-                source_schema = source_schemas.get(target_schema, target_schema)
+            for target_schema, target_tables in target_info.items():
+                source_schema = translate_schemas.get(target_schema, target_schema)
                 for target_table, table_schema in target_tables.items():
                     source_table = target_table
                     keys.append(target_table)
@@ -353,12 +385,12 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             # only look over diffed tables
             # this is usually sufficient, unless a tables content has changed
             # but min id/max id/count have not changed
-            # this can happen for e.g. an updating session table
+            # this can happen for tables with frequent updates
             for target_schema, schema_changes in diff.items():
                 if target_schema == delete or target_schema == insert:
                     continue
 
-                source_schema = source_schemas.get(target_schema, target_schema)
+                source_schema = translate_schemas.get(target_schema, target_schema)
                 for target_table, changes in schema_changes.items():
                     source_table = target_table
                     if "data" in changes:
@@ -381,18 +413,32 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             values = await gather(*values)
         return dict(zip(keys, values))
 
-    def copy(self, target, translate=None):
+    async def copy(self, target, scope=None):
         schema_diff = await self.diff(
-            target, translate=translate, only="schema", info=False
+            target,
+            scope=scope,
+            info=False,
+            data=False
         )
         schema_changes = await self.copy_metadata(schema_diff)
         source_info, target_info, data_diff = await self.diff(
-            target, translate=translate, info=True, refresh=True
+            target,
+            scope=scope,
+            info=True,
+            refresh=True
         )
         data_changes = await self.copy_data(
-            target, source_info, target_info, data_diff, translate=translate
+            target,
+            source_info,
+            target_info,
+            data_diff,
+            scope=scope
         )
-        final_diff = await self.diff(target, translate, refresh=True)
+        final_diff = await self.diff(
+            target,
+            scope=scope,
+            refresh=True
+        )
         return {
             'schema_diff': schema_diff,
             'schema_changes': schema_changes,

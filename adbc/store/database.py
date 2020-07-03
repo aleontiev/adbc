@@ -1,19 +1,21 @@
 from cached_property import cached_property
 
-from .exceptions import NotIncluded
-from .store import ParentStore, WithConfig
-from .utils import get_version_number, confirm, aecho
-from .model import Model
-from .sql import print_query, get_tagged_number
+from adbc.exceptions import NotIncluded
+from adbc.scope import WithScope
+from adbc.utils import get_version_number, confirm, aecho
+from adbc.model import Model
+from adbc.sql import print_query, get_tagged_number
+from adbc.operations.copy import WithCopy
+from adbc.logging import Loggable
+
 from .namespace import Namespace
 
-from .copy import WithCopy
 
 SEPN = f"\n{'=' * 40}"
 SEP = f"{SEPN}\n"
 
 
-class Database(WithCopy, WithConfig, ParentStore):
+class Database(Loggable, WithCopy, WithScope):
     child_key = "schemas"
     type = "db"
 
@@ -22,7 +24,7 @@ class Database(WithCopy, WithConfig, ParentStore):
         name=None,
         host=None,
         url=None,
-        config=None,
+        scope=None,
         tag=None,
         verbose=False,
         prompt=False,
@@ -30,10 +32,7 @@ class Database(WithCopy, WithConfig, ParentStore):
     ):
         super().__init__(**kwargs)
 
-        self.config = config
-        config_url = self.config.get("url")
-        if config_url and not url:
-            url = config_url
+        self.scope = scope
 
         if url and not host:
             from .host import Host
@@ -44,19 +43,44 @@ class Database(WithCopy, WithConfig, ParentStore):
 
         self.prompt = prompt
         self.name = name
+        self.tag_name = scope.get(tag, name) if isinstance(scope, dict) else name
         self.parent = self.host = host
         self.verbose = verbose
         self.tag = tag
         self._schemas = {}
         self._connection = None
         self._models = {}
+        self._tables = {}
 
     def __str__(self):
         return self.name
 
-    async def model(self, schema, table_name, refresh=False):
+    async def close(self):
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
+        if self._connection:
+            await self._connection.close()
+            self._connection = None
+
+    async def get_model(self, table_name, schema=None, refresh=False):
+        if not schema:
+            assert('.' in table_name)
+            schema, table_name = table_name.split('.')
+
         key = (schema, table_name)
         if key not in self._models or refresh:
+            table = await self.get_table(table_name, refresh=refresh, schema=schema)
+            self._models[key] = Model(database=self, table=table)
+        return self._models[key]
+
+    async def get_table(self, table_name, schema=None, refresh=False):
+        if not schema:
+            assert('.' in table_name)
+            schema, table_name = table_name.split('.')
+
+        key = (schema, table_name)
+        if key not in self._tables or refresh:
             namespace = None
             async for child in self.get_children(refresh=refresh):
                 if child.name == schema:
@@ -73,12 +97,12 @@ class Database(WithCopy, WithConfig, ParentStore):
             if not table:
                 raise ValueError(f"table {schema}.{table_name} not found or no access")
 
-            self._models[key] = Model(table=table)
-        return self._models[key]
+            self._tables[key] = table
+        return self._tables[key]
 
     @cached_property
     async def is_redshift(self):
-        version = await self.full_Version
+        version = await self.full_version
         return "redshift" in version.lower()
 
     @cached_property
@@ -225,21 +249,25 @@ class Database(WithCopy, WithConfig, ParentStore):
     async def version(self):
         return get_version_number(await self.full_version)
 
-    def get_namespaces_query(self):
-        include = self.get_child_include()
-        return self.host._backend.get_namespaces_query(self, include)
+    def get_namespaces_query(self, scope=None):
+        include = self.get_child_include(scope=scope)
+        return self.backend.get_query('namespaces', include, tag=self.tag)
 
-    def get_namespace(self, name, refresh=False):
-        if name not in self._schemas or refresh:
-            config = self.get_child_config(name)
+    def get_namespace(self, name, scope=None, refresh=False):
+        if name not in self._schemas or refresh or scope is not None:
+            scope = self.get_child_scope(name, scope=scope)
             self._schemas[name] = Namespace(
                 name,
                 database=self,
-                config=config,
+                scope=scope,
                 verbose=self.verbose,
                 tag=self.tag
             )
         return self._schemas[name]
+
+    @property
+    def F(self):
+        return self.backend.F
 
     @cached_property
     def backend(self):
@@ -251,11 +279,11 @@ class Database(WithCopy, WithConfig, ParentStore):
     async def get_connection(self):
         return await self.backend.connect(self.host.url)
 
-    async def get_children(self, refresh=False):
-        query = self.get_namespaces_query()
+    async def get_children(self, scope=None, refresh=False):
+        query = self.get_namespaces_query(scope=scope)
         async for row in self.stream(*query):
             try:
-                yield self.get_namespace(row[0], refresh=refresh)
+                yield self.get_namespace(row[0], scope=scope, refresh=refresh)
             except NotIncluded:
                 pass
 
@@ -266,6 +294,8 @@ class Database(WithCopy, WithConfig, ParentStore):
             namespaces[child.name] = child
         return namespaces
 
-    @cached_property
+    @property
     async def pool(self):
-        return await self.get_pool()
+        if not getattr(self, '_pool', None):
+            self._pool = await self.get_pool()
+        return self._pool

@@ -1,4 +1,5 @@
 from .base import DatabaseBackend
+from cached_property import cached_property
 from asyncpg import create_pool, connect
 import json
 
@@ -135,12 +136,60 @@ LEFT JOIN (
 """  # noqa
 
 
+class SQLFormatter(object):
+    @classmethod
+    def identifier(cls, name):
+        return f'"{name}"'
+
+    @classmethod
+    def column(cls, name, table=None, schema=None):
+        name = cls.identifier(name)
+        if table:
+            table = cls.table(name, schema=schema)
+            return f'{table}.{name}'
+        else:
+            return name
+
+    @classmethod
+    def schema(cls, name):
+        return cls.identifier(name)
+
+    @classmethod
+    def constraint(cls, name, schema=None):
+        return cls.table(name, schema=schema)
+
+    @classmethod
+    def index(cls, name, schema=None):
+        return cls.table(name, schema=schema)
+
+    @classmethod
+    def database(cls, name):
+        return cls.identifier(name)
+
+    @classmethod
+    def table(cls, name, schema=None):
+        name = cls.identifier(name)
+        if schema:
+            schema = cls.schema(schema)
+            return f'{schema}.{name}'
+        return name
+
+
+class PostgresSQLFormatter(SQLFormatter):
+    pass
+
+
 class PostgresBackend(DatabaseBackend):
     """Postgres backend based on asyncpg"""
+
     has_json_aggregation = True
 
+    @cached_property
+    def F(self):
+        return PostgresSQLFormatter()
+
     @staticmethod
-    def get_include_clause(include, table, column):
+    def get_include_clause(include, table, column, tag=None):
         """Get query filters that in/exclude based on a particular column"""
 
         if not include or include is True:
@@ -152,7 +201,8 @@ class PostgresBackend(DatabaseBackend):
         count = 1
         includes = excludes = False
         for key, should in include.items():
-            if isinstance(should, dict) and "enabled" in should:
+            should_dict = isinstance(should, dict)
+            if should_dict and "enabled" in should:
                 should = should["enabled"]
             if not should:
                 # disabled config block, skip
@@ -163,12 +213,22 @@ class PostgresBackend(DatabaseBackend):
                 should = not should
                 key = key[1:]
 
+            wild = False
             if "*" in key:
+                wild = True
                 operator = "~~" if should else "!~~"
                 key = key.replace("*", "%")
             else:
                 operator = "=" if should else "!="
-            args.append(key)
+
+            if tag is None:
+                name = key
+            else:
+                name = should.get(tag, key) if should_dict else key
+                if wild and should_dict and tag in should:
+                    raise ValueError(f"Cannot have tag '{name}' for wild key '{key}'")
+
+            args.append(name)
             query.append('({}."{}" {} ${})'.format(table, column, operator, count))
             count += 1
             if should:
@@ -184,32 +244,30 @@ class PostgresBackend(DatabaseBackend):
         return result
 
     @staticmethod
-    def get_databases_query(include):
-        table = 'pg_database'
-        column = 'datname'
+    def get_databases_query(include, tag=None):
+        table = "pg_database"
+        column = "datname"
         args = []
         query, args = PostgresBackend.get_include_clause(
-            include,
-            table,
-            column,
+            include, table, column, tag=tag
         )
         if query:
-            query = ' AND {}'.format(query)
+            query = " AND {}".format(query)
         args.insert(
             0,
             'SELECT "{}" FROM "{}" WHERE datistemplate = false {}'.format(
-                column,
-                table,
-                query
-            )
+                column, table, query
+            ),
         )
         return args
 
     @staticmethod
-    def get_namespaces_query(include):
+    def get_namespaces_query(include, tag=None):
         table = "pg_namespace"
         column = "nspname"
-        query, args = PostgresBackend.get_include_clause(include, table, column)
+        query, args = PostgresBackend.get_include_clause(
+            include, table, column, tag=tag
+        )
         if query:
             query = "WHERE {}".format(query)
         args.insert(0, 'SELECT "{}"\nFROM "{}" {}'.format(column, table, query))
@@ -217,50 +275,57 @@ class PostgresBackend(DatabaseBackend):
 
     @staticmethod
     def get_version_query():
-        return (VERSION_QUERY, )
+        return (VERSION_QUERY,)
+
+    @classmethod
+    def get_query(cls, name, *args, **kwargs):
+        return getattr(cls, f"get_{name}_query")(*args, **kwargs)
 
     @staticmethod
-    def get_tables_query(namespace, include):
+    def get_tables_query(namespace, include, tag=None):
         table = "R"
         column = "relname"
         args = []
-        query, args = PostgresBackend.get_include_clause(include, table, column)
+        query, args = PostgresBackend.get_include_clause(
+            include, table, column, tag=tag
+        )
         if query:
             query = f" AND ({query})"
         args.insert(0, TABLES_QUERY.format(namespace=namespace, query=query))
         return args
 
     @staticmethod
-    def get_table_indexes_query(namespace, include):
+    def get_table_indexes_query(namespace, include, tag=None):
         table = "R"
         column = "relname"
         args = []
-        query, args = PostgresBackend.get_include_query(include, table, column)
+        query, args = PostgresBackend.get_include_query(include, table, column, tag=tag)
         if query:
             query = f" AND ({query})"
         args.insert(0, TABLE_INDEXES_QUERY.format(namespace=namespace, query=query))
         return args
 
     @staticmethod
-    def get_table_constraints_query(namespace, include):
+    def get_table_constraints_query(namespace, include, tag=None):
         table = "R"
         column = "relname"
         args = []
-        query, args = PostgresBackend.get_include_clause(include, table, column)
+        query, args = PostgresBackend.get_include_clause(
+            include, table, column, tag=tag
+        )
         if query:
             query = f" AND ({query})"
-        args.insert(
-            0,
-            TABLE_CONSTRAINTS_QUERY.format(namespace=namespace, query=query)
-        )
+        args.insert(0, TABLE_CONSTRAINTS_QUERY.format(namespace=namespace, query=query))
         return args
 
     @staticmethod
-    def get_table_columns_query(namespace, include):
+    def get_table_columns_query(namespace, include, tag=None):
         table = "R"
         column = "relname"
         args = []
-        query, args = PostgresBackend.get_include_clause(include, table, column)
+        query, args = PostgresBackend.get_include_clause(
+            include, table, column, tag=tag
+        )
         if query:
             query = f" AND ({query})"
         args.insert(0, TABLE_COLUMNS_QUERY.format(namespace=namespace, query=query))
@@ -268,15 +333,19 @@ class PostgresBackend(DatabaseBackend):
 
     @staticmethod
     async def create_pool(*args, **kwargs):
+        if 'init' not in kwargs:
+            # initialize connection with json loading
+            kwargs['init'] = PostgresBackend.initialize
         return await create_pool(*args, **kwargs)
+
+    @staticmethod
+    async def initialize(connection):
+        await connection.set_type_codec(
+            "json", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+        )
 
     @staticmethod
     async def connect(*args, **kwargs):
         connection = await connect(*args, **kwargs)
-        await connection.set_type_codec(
-            "json",
-            encoder=json.dumps,
-            decoder=json.loads,
-            schema="pg_catalog",
-        )
+        await PostgresBackend.initialize(connection)
         return connection

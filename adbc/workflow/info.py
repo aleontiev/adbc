@@ -3,8 +3,15 @@ from .step import Step
 
 class InfoStep(Step):
     def validate(self):
-        self.only = self.config.get("only", None)
-        self._validate("source", read=True)
+        prompt = self.config.get('prompt', False)
+        self._validate("source", read=True, prompt=prompt)
+        self.data = self.config.get('data', True)
+        self.schema = self.config.get('schema', True)
+        self.scope = self.config.get('scope', None)
 
     async def execute(self):
-        return await self.source.get_info(only=self.only)
+        return await self.source.get_info(
+            data=self.data,
+            schema=self.schema,
+            scope=self.scope
+        )

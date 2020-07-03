@@ -3,25 +3,30 @@ from collections import defaultdict
 
 import re
 
-from .exceptions import NotIncluded
-from .store import ParentStore, WithConfig
+from adbc.logging import Loggable
+from adbc.exceptions import NotIncluded
+from adbc.scope import WithScope
+
+from adbc.operations.info import WithInfo
+
 from .table import Table
 
 
 INDEX_COLUMNS_REGEX = re.compile('.*USING [a-z_]+ [(](["A-Za-z_, ]+)[)]$')
 
 
-class Namespace(WithConfig, ParentStore):
+class Namespace(Loggable, WithScope, WithInfo):
     type = "ns"
     child_key = "tables"
 
     def __init__(
-        self, name, database=None, config=None, verbose=False, tag=None, **kwargs
+        self, name, database=None, scope=None, verbose=False, tag=None, **kwargs
     ):
         super().__init__(**kwargs)
         self.name = name
         self.parent = self.database = database
-        self.config = config
+        self.scope = scope
+        self.tag_name = scope.get(tag, name) if isinstance(scope, dict) else name
         self.verbose = verbose
         self.tag = tag
         self._tables = {}
@@ -30,19 +35,25 @@ class Namespace(WithConfig, ParentStore):
         return f"{self.database}.{self.name}"
 
     def get_table(
-        self, name, columns=None, constraints=None, indexes=None, refresh=False
+        self,
+        name,
+        columns=None,
+        constraints=None,
+        indexes=None,
+        scope=None,
+        refresh=False
     ):
-        if name not in self._tables or refresh:
+        if name not in self._tables or refresh or scope is not None:
             assert columns is not None
-            config = self.get_child_config(name)
+            scope = self.get_child_scope(name, scope=scope)
             self._tables[name] = Table(
                 name,
-                config=config,
                 namespace=self,
                 columns=columns,
                 constraints=constraints,
                 indexes=indexes,
                 verbose=self.verbose,
+                scope=scope,
                 tag=self.tag,
             )
         return self._tables[name]
@@ -53,24 +64,26 @@ class Namespace(WithConfig, ParentStore):
             return [x.strip().replace('"', "") for x in match.group(1).split(",")]
         raise Exception(f'invalid index definition: "{definition}"')
 
-    def get_query(self, name):
-        include = self.get_child_include()
-        return self.database.backend.get_query(name, self.name, include)
+    def get_query(self, name, scope=None):
+        include = self.get_child_include(scope=scope)
+        return self.database.backend.get_query(name, self.name, include, tag=self.tag)
 
-    async def get_children(self, refresh=False):
+    async def get_children(self, scope=None, refresh=False):
         json_aggregation = self.database.backend.has("json_aggregation")
         pool = await self.database.pool
         tables = defaultdict(dict)
         async with pool.acquire() as connection:
             async with connection.transaction():
                 if not json_aggregation:
-                    columns_query = self.get_query("table_columns")
-                    constraints_query = self.get_query("table_constraints")
-                    indexes_query = self.get_query("table_indexes")
+                    columns_query = self.get_query("table_columns", scope=scope)
+                    constraints_query = self.get_query("table_constraints", scope=scope)
+                    indexes_query = self.get_query("table_indexes", scope=scope)
+
                     # tried running in parallel, but issues with Redshift
                     # columns, constraints, indexes = await asyncio.gather(
                     #    columns, constraints, indexes
                     # )
+
                     indexes = connection.fetch(*indexes_query)
                     indexes = await indexes
 
@@ -169,7 +182,12 @@ class Namespace(WithConfig, ParentStore):
                     async for row in connection.cursor(*query):
                         try:
                             table = self.get_table(
-                                row[0], row[1], row[2], row[3], refresh=refresh
+                                row[0],
+                                row[1],
+                                row[2],
+                                row[3],
+                                scope=scope,
+                                refresh=refresh
                             )
                         except NotIncluded:
                             pass
@@ -183,6 +201,7 @@ class Namespace(WithConfig, ParentStore):
                     table.get("columns", []),
                     list(table.get("constraints", {}).values()),
                     list(table.get("indexes", {}).values()),
+                    scope=scope,
                     refresh=refresh,
                 )
             except NotIncluded:

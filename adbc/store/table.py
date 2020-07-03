@@ -1,19 +1,19 @@
 import asyncio
 from copy import copy
 from collections import defaultdict
-from .store import Store
+from adbc.logging import Loggable
 from adbc.sql import format_column, format_table, get_pks, can_order
 from cached_property import cached_property
 from adbc.utils import split_field
 
 
-class Table(Store):
+class Table(Loggable):
     type = "table"
 
     def __init__(
         self,
         name,
-        config=None,
+        scope=None,
         namespace=None,
         columns=None,
         constraints=None,
@@ -23,19 +23,20 @@ class Table(Store):
         **kwargs
     ):
         super().__init__(**kwargs)
-        if not isinstance(config, dict):
-            self.config = {}
+        if not isinstance(scope, dict):
+            self.scope = {}
         else:
-            self.config = config
+            self.scope = scope
 
         self.name = name
         self.verbose = verbose
         self.parent = self.namespace = namespace
         self.database = namespace.database
-        self.on_create = self.config.get("on_create", None)
-        self.on_update = self.config.get("on_update", None)
-        self.on_delete = self.config.get("on_update", None)
-        self.immutable = self.config.get(
+        self.tag_name = self.scope.get(tag, name)
+        self.on_create = self.scope.get("on_create", None)
+        self.on_update = self.scope.get("on_update", None)
+        self.on_delete = self.scope.get("on_update", None)
+        self.immutable = self.scope.get(
             "immutable", not (bool(self.on_update) or bool(self.on_delete))
         )
         self.columns = {
@@ -45,12 +46,13 @@ class Table(Store):
             )
         }
 
-        if not self.config.get("sequences", True):
+        if not self.scope.get("sequences", True):
             # ignore nextval / sequence-based default values
             for column in self.columns.values():
-                default = column.get("default", None)
-                if isinstance(default, str) and default.startswith("nextval("):
-                    column["default"] = None
+                if 'default' in column:
+                    default = column['default']
+                    if isinstance(default, str) and default.startswith("nextval("):
+                        column["default"] = None
 
         self.column_names = list(self.columns.keys())
         self.constraints = {
@@ -73,7 +75,7 @@ class Table(Store):
 
         # if disabled, remove constraints/indexes
         # but only after they are used to determine possible primary key
-        constraints = self.config.get("constraints", True)
+        constraints = self.scope.get("constraints", True)
         if not constraints:
             self.constraints = None
         elif isinstance(constraints, str):
@@ -81,7 +83,7 @@ class Table(Store):
                 k: v for k, v in self.constraints.items() if v["type"] in constraints
             }
 
-        if not self.config.get("indexes", True):
+        if not self.scope.get("indexes", True):
             self.indexes = None
 
     def __str__(self):
@@ -106,7 +108,7 @@ class Table(Store):
         return result
 
     def get_schema(self):
-        result = {"name": self.name, "columns": self.columns}
+        result = {"name": self.tag_name, "columns": self.columns}
         if self.constraints is not None:
             result["constraints"] = self.constraints
         if self.indexes is not None:
@@ -132,7 +134,7 @@ class Table(Store):
         if not count and not max_pk and not md5 and not min_pk:
             raise Exception("must pass count or max_pk or md5 or min_pk")
 
-        redshift = "redshift" in (await self.database.full_version).lower()
+        redshift = await self.database.is_redshift
         decode = False
         aggregator = "array_to_string(array_agg"
         end = "), ',')"
@@ -256,12 +258,16 @@ class Table(Store):
         return query
 
     @cached_property
+    def full_name(self):
+        return f'{self.namespace.name}.{self.name}'
+
+    @cached_property
     def sql_name(self):
         return format_table(self.name, schema=self.namespace.name)
 
-    def can_order(self, column_name, uuid=True):
+    def can_order(self, column_name):
         column = self.columns[column_name]
-        return can_order(column["type"], uuid=uuid)
+        return can_order(column["type"])
 
     def is_boolean(self, column_name):
         column = self.columns[column_name]

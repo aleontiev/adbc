@@ -8,57 +8,66 @@ CONSTRAINT_TYPE_MAP = {
 
 
 class WithCreateSQL(object):
-
     def get_column_sql(self, name, column):
-        nullable = "NULL" if column["null"] else "NOT NULL"
-        return f'"{name}" {column["type"]} {nullable}'
+        nullable = "NULL" if column.get("null") else "NOT NULL"
+        name = self.F.column(name)
+        return f'{name} {column["type"]} {nullable}'
 
     def get_constraint_sql(self, name, constraint):
-        columns = constraint["columns"]
-        if columns:
-            columns = ", ".join([f'"{c}"' for c in columns])
-            columns = f" ({columns})"
-        else:
+        check = ""
+        if constraint.get("check"):
+            check = f' {constraint["check"]} '
             columns = ""
+        else:
+            columns = constraint["columns"]
+            if columns:
+                columns = ", ".join([self.F.column(c) for c in columns])
+                columns = f" ({columns})"
+            else:
+                columns = ""
+
         related_name = constraint.get("related_name")
         related = ""
         if related_name:
-            related_columns = ",\n  ".join(constraint["related_columns"])
+            related_columns = ", ".join(
+                [self.F.column(c) for c in constraint["related_columns"]]
+            )
             related = f" REFERENCES {related_name} ({related_columns})"
 
-        deferrable = "DEFERRABLE" if constraint["deferrable"] else "NOT DEFERRABLE"
-        deferred = (
-            "INITIALLY DEFERRED" if constraint["deferred"] else "INITIALLY IMMEDIATE"
-        )
-        check = ""
-        if constraint["check"]:
-            check = f' {constraint["check"]} '
-            columns = ""
+        deferrable = constraint.get("deferrable", False)
+        deferred = constraint.get("deferred", False)
+        deferrable = "DEFERRABLE" if deferrable else "NOT DEFERRABLE"
+        deferred = "INITIALLY DEFERRED" if deferred else "INITIALLY IMMEDIATE"
         return (
             f"CONSTRAINT {name} "
             f'{CONSTRAINT_TYPE_MAP[constraint["type"]]}{check}{columns}{related} '
             f"{deferrable} {deferred}"
         )
 
-    def get_create_schema_query(self, schema):
-        return (f'CREATE SCHEMA "{schema}"',)
+    def get_create_database_query(self, name):
+        database = self.F.database(name)
+        return (f"CREATE DATABASE {database}",)
 
-    def get_create_index_query(self, schema, table, name, index):
+    def get_create_schema_query(self, name):
+        schema = self.F.schema(name)
+        return (f"CREATE SCHEMA {schema}",)
+
+    def get_create_index_query(self, table, name, index, schema=None):
         unique = " UNIQUE" if index["unique"] else ""
-        columns = ", ".join([f'"{c}"' for c in index["columns"]])
+        columns = ", ".join([self.F.column(c) for c in index["columns"]])
         type = index["type"]
-        return (
-            f'CREATE{unique} INDEX {name} ON "{schema}"."{table}"\n'
-            f"USING {type} ({columns})",
-        )
+        table = self.F.table(table, schema=schema)
+        return (f"CREATE{unique} INDEX {name} ON {table} USING {type} ({columns})",)
 
-    def get_create_constraint_query(self, schema, table, name, constraint):
+    def get_create_constraint_query(self, table, name, constraint, schema=None):
         constraint = self.get_constraint_sql(name, constraint)
-        return (f'ALTER TABLE "{schema}"."{table}"\n' f"ADD {constraint}",)
+        table = self.F.table(table, schema=schema)
+        return (f"ALTER TABLE {table} ADD {constraint}",)
 
-    def get_create_column_query(self, schema, table, name, column):
+    def get_create_column_query(self, table, name, column, schema=None):
         column = self.get_column_sql(name, column)
-        return (f'ALTER TABLE "{schema}"."{table}"\n' f"ADD COLUMN {column}",)
+        table = self.F.table(table, schema=schema)
+        return (f"ALTER TABLE {table} ADD COLUMN {column}",)
 
     def get_create_table_columns_sql(self, table, spaces=2):
         table_schema = table.get("schema", {})
@@ -89,50 +98,51 @@ class WithCreateSQL(object):
         constraints = f",\n{spaces}".join(sqls)
         return f"{spaces}{constraints}"
 
-    def get_create_table_query(self, schema, name, table):
+    def get_create_table_query(self, name, table, temporary=False, schema=None):
         columns = self.get_create_table_columns_sql(table)
         constraints = self.get_create_table_constraints_sql(table)
         sep = ""
         if constraints and columns:
             sep = ",\n"
-        return (
-            f'CREATE TABLE "{schema}"."{name}" (\n' f"{columns}{sep}{constraints})",
-        )
 
-    def get_create_table_indexes_query(self, schema, table_name, table):
+        temp = " TEMPORARY " if temporary else " "
+        table = self.F.table(name, schema=schema)
+        return (f"CREATE{temp}TABLE {table} ({columns}{sep}{constraints})",)
+
+    def get_create_table_indexes_query(self, name, table, schema=None):
         indexes = table.get("schema", {}).get("indexes", {})
         statements = []
-        for name, index in indexes.items():
+        for index_name, index in indexes.items():
             if index["primary"] or index["unique"]:
                 # automatically created by constraints
                 continue
-            query = self.get_create_index_query(schema, table_name, name, index)
+            query = self.get_create_index_query(name, index_name, index, schema=schema)
             statements.append(query[0])
         return (";\n".join(statements),) if statements else []
 
 
-class WithCreate(object):
-    async def create_column(self, schema, table, name, column):
+class WithCreate(WithCreateSQL):
+    async def create_column(self, table, name, column, schema=None):
         await self.execute(
-            *self.get_create_column_query(schema, table, name, column)
+            *self.get_create_column_query(table, name, column, schema=schema)
         )
         return True
 
     async def create_columns(self, columns, parents=None):
         return await self.create_table_items("column", columns, parents)
 
-    async def create_constraint(self, schema, table, name, constraint):
+    async def create_constraint(self, table, name, constraint, schema=None):
         await self.execute(
-            *self.get_create_constraint_query(schema, table, name, constraint)
+            *self.get_create_constraint_query(table, name, constraint, schema=schema)
         )
         return True
 
     async def create_constraints(self, constraints, parents=None):
         return await self.create_table_items("constraint", constraints, parents)
 
-    async def create_index(self, schema, table, name, index):
+    async def create_index(self, table, name, index, schema=None):
         await self.execute(
-            *self.get_create_index_query(schema, table, name, index)
+            *self.get_create_index_query(table, name, index, schema=schema)
         )
         return True
 
@@ -155,12 +165,16 @@ class WithCreate(object):
         for item_name, item in data.items():
             if exclude and exclude(item):
                 continue
-            await getattr(self, f"create_{name}")(schema, table, item_name, item)
+            await getattr(self, f"create_{name}")(table, item_name, item, schema=schema)
         return data
 
-    async def create_table(self, schema, name, table):
-        await self.execute(*self.get_create_table_query(schema, name, table))
-        query = self.get_create_table_indexes_query(schema, name, table)
+    async def create_table(self, name, table, schema=None, temporary=False):
+        await self.execute(
+            *self.get_create_table_query(
+                name, table, schema=schema, temporary=temporary
+            )
+        )
+        query = self.get_create_table_indexes_query(name, table, schema=schema)
         if query:
             await self.execute(*query)
         return True
@@ -170,8 +184,12 @@ class WithCreate(object):
         schema = parents[0]
 
         for table_name, table in tables.items():
-            await self.create_table(schema, table_name, table)
+            await self.create_table(table_name, table, schema=schema)
         return tables
+
+    async def create_database(self, name):
+        await self.execute(*self.get_create_database_query(name))
+        return True
 
     async def create_schema(self, schema):
         await self.execute(*self.get_create_schema_query(schema))

@@ -1,37 +1,78 @@
 import re
-from .sql import list_columns, sort_columns, where_clause, should_escape, get_tagged_number
+
+from .sql import (
+    list_columns,
+    sort_columns,
+    where_clause,
+    should_escape,
+    get_tagged_number
+)
 
 
 # TODO: support other backends
-def get_executor(table):
-    return PostgresExecutor(table)
+def get_executor(source):
+    return PostgresExecutor(source)
 
 
 class PostgresExecutor(object):
-    def __init__(self, table):
-        self.table = table
-        self.database = table.database
+    def __init__(self, database):
+        self.database = database
 
-    def get_insert(self, query):
+    def get_insert(self, table, query):
         body = query.data('body')
         columns = list_columns(
             body.keys() if isinstance(body, dict) else body[0].keys()
         )
-        return f'INSERT INTO {self.table.sql_name} ({columns})'
+        return f'INSERT INTO {table.sql_name} ({columns})'
 
-    def get_select(self, query, count=None):
+    def all_columns(self, table, level=None):
+        return list(table.columns.keys())
+
+    def get_columns(self, table, query, level=None):
+        result = set()
+        state = query.get_state(level)
+        method = query.data('method')
+        take = state.get('take', {})
+        if "*" in take:
+            value = take["*"]
+            all_columns = set(self.all_columns(table, level))
+            if value:
+                result |= all_columns
+            else:
+                result -= all_columns
+
+        remove = set()
+        for k, v in take.items():
+            if k == '*':
+                continue
+            if v:
+                result.add(k)
+            else:
+                remove.add(k)
+
+        if not result and method in ("get", "one"):
+            # automatic * for get/one
+            result = self.all_columns(table, level)
+
+        for k in remove:
+            if k in result:
+                result.remove(k)
+
+        return list(sorted(result))
+
+    def get_select(self, table, query, count=None):
         field = query.data('field')
-        if field is not None:
+        if count:
+            columns = 'count(*)'
+        elif field is not None:
             columns = list_columns([field])
         else:
-            columns = list_columns(query.columns())
-        if count:
-            columns = count
+            columns = list_columns(self.get_columns(table, query))
         return f"SELECT {columns}"
 
-    def get_where(self, query):
+    def get_where(self, table, query):
         args = []
-        pks = self.table.pks
+        pks = table.pks
 
         key = query.data('key')
         where = {}
@@ -60,44 +101,24 @@ class PostgresExecutor(object):
         where = where_clause(where, args)
         return [f"WHERE {where}", *args] if where else []
 
-    def get_from(self, query):
-        return f'FROM {self.table.sql_name}'
+    def get_from(self, table, query):
+        return f'FROM {table.sql_name}'
 
-    def get_joins(self, query):
-        columns = query.columns()
-        relations = {}
-        table = self.table
-        for column in columns:
-            if '.' in column:
-                parts = column.split('.')
-                relations.add('.'.join(parts[:-1]))
-        for relation in relations:
-            if '.' in relation:
-                raise NotImplementedError('deep joins not supported')
-            rel = table.relations.get(relation)
-            if not rel:
-                raise ValueError(f'table {table} has no relation {relation}')
-            # name:string (e.g. user)
-            # from_column:string (e.g. user_id)
-            # to_column:string (e.g. id)
-            # from:string (e.g. auth_group)
-            # to:string (e.g. auth_user)
-            # schema:string (e.g. public)
-            # direct:boolean (True)
+    def get_joins(self, table, query):
         # TODO: implement joins
         return ''
 
-    def get_update(self, query):
-        return f'UPDATE {self.table.sql_name}'
+    def get_update(self, table, query):
+        return f'UPDATE {table.sql_name}'
 
-    def get_order(self, query):
+    def get_order(self, table, query):
         sort = query.data('sort')
         if sort:
             columns = sort_columns(sort)
             return f'ORDER BY {columns}'
         return ''
 
-    def get_limit(self, query):
+    def get_limit(self, table, query):
         if query.data('key'):
             return 'LIMIT 1'
         limit = query.data('limit')
@@ -106,7 +127,7 @@ class PostgresExecutor(object):
         return ''
 
     async def count(self, query, **kwargs):
-        kwargs['count'] = 'count(*)'
+        kwargs['count'] = True
         return await self.get(query, **kwargs)
 
     async def one(self, query, **kwargs):
@@ -138,19 +159,22 @@ class PostgresExecutor(object):
         field = query.data('field') is not None
         key = query.data('key') is not None
         connection = kwargs.get('connection', None)
+        source = query.data('source')
+        database = self.database
+        table = await database.get_table(source)
         sql = kwargs.get('sql', None)
         count = kwargs.get('count', False)
-        select = self.get_select(query, count=count)
-        where = self.get_where(query)
+        select = self.get_select(table, query, count=count)
+        where = self.get_where(table, query)
         if where:
             where, *args = where
         else:
             where = None
             args = []
-        from_ = self.get_from(query)
-        joins = self.get_joins(query)
-        order = self.get_order(query)
-        limit = self.get_limit(query)
+        from_ = self.get_from(table, query)
+        joins = self.get_joins(table, query)
+        order = self.get_order(table, query)
+        limit = self.get_limit(table, query)
 
         query = self.build_sql(
             select,
@@ -193,8 +217,8 @@ class PostgresExecutor(object):
             params = f'({params})'
         return f'SET {columns} = {params}'
 
-    def get_returning(self, query):
-        columns = query.columns()
+    def get_returning(self, table, query):
+        columns = self.get_columns(table, query)
         if columns:
             # if no columns are passed explicitly,
             # do not use returning
@@ -262,9 +286,11 @@ class PostgresExecutor(object):
             multiple = False
             body = [body]
 
-        returning = self.get_returning(query)
+        source = query.data('source')
+        table = await self.database.get_table(source)
+        returning = self.get_returning(table, query)
         args = []
-        insert = self.get_insert(query)
+        insert = self.get_insert(table, query)
         values = self.get_values(body, args)
 
         query = self.build_sql(
@@ -309,9 +335,10 @@ class PostgresExecutor(object):
             # each key is a field name and each value is a field value
             assert(isinstance(body, dict))
 
-        returning = self.get_returning(query)
-
-        where = self.get_where(query)
+        source = query.data('source')
+        table = await self.database.get_table(source)
+        returning = self.get_returning(table, query)
+        where = self.get_where(table, query)
         if where:
             where, *args = where
         else:
@@ -323,7 +350,7 @@ class PostgresExecutor(object):
 
         set_ = self.get_set(body, args)
 
-        update = self.get_update(query)
+        update = self.get_update(table, query)
         query = self.build_sql(
             update,
             set_,
@@ -354,16 +381,17 @@ class PostgresExecutor(object):
             number of records deleted
         """
         connection = kwargs.get('connection')
-        returning = self.get_returning(query)
-
-        where = self.get_where(query)
+        source = query.data('source')
+        table = await self.database.get_table(source)
+        returning = self.get_returning(table, query)
+        where = self.get_where(table, query)
         if where:
             where, *args = where
         else:
             where = None
             args = []
 
-        from_ = self.get_from(query)
+        from_ = self.get_from(table, query)
         sql = self.build_sql(
             'DELETE',
             from_,

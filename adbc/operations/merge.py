@@ -4,7 +4,7 @@ from jsondiff.symbols import insert, delete
 
 class WithAlterSQL(object):
     def get_alter_constraint_query(
-        self, schema_name, table_name, name, deferred=None, deferrable=None
+        self, table_name, name, deferred=None, deferrable=None, schema=None
     ):
         remainder = []
         if deferrable is not None:
@@ -16,13 +16,13 @@ class WithAlterSQL(object):
         remainder = " ".join(remainder)
         if not remainder:
             return []
-        return (
-            f'ALTER TABLE "{schema_name}"."{table_name}"\n'
-            f'ALTER CONSTRAINT "{name}" {remainder}',
-        )
+
+        table = self.F.table(table_name, schema=schema)
+        constraint = self.F.constraint(name)
+        return (f"ALTER TABLE {table}\n" f"ALTER CONSTRAINT {constraint} {remainder}",)
 
     def get_alter_column_query(
-        self, schema, table, column, not_null=None, type=None, **kwargs
+        self, table, column, not_null=None, type=None, schema=None, **kwargs
     ):
         has_default = "default" in kwargs
         default = kwargs.get("default") if has_default else None
@@ -38,9 +38,9 @@ class WithAlterSQL(object):
             )
         if not remainder:
             return []
-        return (
-            f'ALTER TABLE "{schema}"."{table}"\n' 'ALTER COLUMN "{column}" {remainder}',
-        )
+        table = self.F.table(table, schema=schema)
+        column = self.F.column(column)
+        return (f"ALTER TABLE {table} ALTER COLUMN {column} {remainder}",)
 
 
 class WithMerge(WithAlterSQL):
@@ -110,7 +110,9 @@ class WithMerge(WithAlterSQL):
                 f"expecting constraint diff to have deferrable or deferred, is: {diff}"
             )
 
-        query = self.get_alter_constraint_query(schema_name, table_name, name, **kwargs)
+        query = self.get_alter_constraint_query(
+            table_name, name, schema=schema_name, **kwargs
+        )
         await self.target.execute(*query)
         return diff
 
@@ -128,7 +130,9 @@ class WithMerge(WithAlterSQL):
         if not kwargs:
             raise Exception("expecting column diff to have null, type, or default")
         schema_name, table_name = parents
-        query = self.get_alter_column_query(schema_name, table_name, column, **kwargs)
+        query = self.get_alter_column_query(
+            table_name, column, schema=schema_name, **kwargs
+        )
         await self.target.execute(*query)
         return diff
 

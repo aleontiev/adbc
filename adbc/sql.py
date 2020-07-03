@@ -1,3 +1,6 @@
+"""
+TODO: deprecate and replace this with backend-agnostic SQLFormatter
+"""
 import re
 from adbc.template import resolve_template, get_context_variables
 from adbc.utils import get_first
@@ -45,7 +48,7 @@ def should_escape(value):
 
 
 def quote(ident):
-    return f'"{ident}"'
+    return '.'.join([f'"{i}"' for i in ident.split('.')])
 
 
 def format_table(table, schema=None, check=True):
