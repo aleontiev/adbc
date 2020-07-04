@@ -202,8 +202,11 @@ class PostgresBackend(DatabaseBackend):
         includes = excludes = False
         for key, should in include.items():
             should_dict = isinstance(should, dict)
-            if should_dict and "enabled" in should:
-                should = should["enabled"]
+            if should_dict:
+                should_dict = should
+                if "enabled" in should:
+                    should = should["enabled"]
+
             if not should:
                 # disabled config block, skip
                 continue
@@ -224,8 +227,8 @@ class PostgresBackend(DatabaseBackend):
             if tag is None:
                 name = key
             else:
-                name = should.get(tag, key) if should_dict else key
-                if wild and should_dict and tag in should:
+                name = should_dict.get(tag, key) if should_dict else key
+                if wild and should_dict and tag in should_dict:
                     raise ValueError(f"Cannot have tag '{name}' for wild key '{key}'")
 
             args.append(name)

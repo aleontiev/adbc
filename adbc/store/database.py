@@ -26,6 +26,7 @@ class Database(Loggable, WithCopy, WithScope):
         url=None,
         scope=None,
         tag=None,
+        alias=None,
         verbose=False,
         prompt=False,
         **kwargs
@@ -43,7 +44,7 @@ class Database(Loggable, WithCopy, WithScope):
 
         self.prompt = prompt
         self.name = name
-        self.tag_name = scope.get(tag, name) if isinstance(scope, dict) else name
+        self.alias = alias or name
         self.parent = self.host = host
         self.verbose = verbose
         self.tag = tag
@@ -112,7 +113,13 @@ class Database(Loggable, WithCopy, WithScope):
     async def stream(self, *query, transaction=True, connection=None):
         pool = await self.pool
         connection = aecho(connection) if connection else pool.acquire()
+        pquery = print_query(query)
         async with connection as conn:
+            if self.prompt:
+                if not confirm(f"{SEP}{pquery}{SEPN}", True):
+                    raise Exception(f"{self}: stream aborted")
+            else:
+                self.log(f"{self}: stream{SEP}{pquery}{SEPN}")
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
                 async for row in conn.cursor(*query):
@@ -255,13 +262,16 @@ class Database(Loggable, WithCopy, WithScope):
 
     def get_namespace(self, name, scope=None, refresh=False):
         if name not in self._schemas or refresh or scope is not None:
+            translation = self.get_scope_translation(scope=scope, from_=self.tag)
             scope = self.get_child_scope(name, scope=scope)
+            alias = translation.get(name, name)
             self._schemas[name] = Namespace(
                 name,
                 database=self,
                 scope=scope,
+                alias=alias,
                 verbose=self.verbose,
-                tag=self.tag
+                tag=self.tag,
             )
         return self._schemas[name]
 

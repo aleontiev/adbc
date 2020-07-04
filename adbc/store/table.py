@@ -20,6 +20,7 @@ class Table(Loggable):
         indexes=None,
         verbose=False,
         tag=None,
+        alias=None,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -32,7 +33,7 @@ class Table(Loggable):
         self.verbose = verbose
         self.parent = self.namespace = namespace
         self.database = namespace.database
-        self.tag_name = self.scope.get(tag, name)
+        self.alias = alias or name
         self.on_create = self.scope.get("on_create", None)
         self.on_update = self.scope.get("on_update", None)
         self.on_delete = self.scope.get("on_update", None)
@@ -108,7 +109,7 @@ class Table(Loggable):
         return result
 
     def get_schema(self):
-        result = {"name": self.tag_name, "columns": self.columns}
+        result = {"columns": self.columns}
         if self.constraints is not None:
             result["constraints"] = self.constraints
         if self.indexes is not None:

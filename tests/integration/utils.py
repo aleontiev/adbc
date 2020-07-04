@@ -33,7 +33,7 @@ class setup_test_database(object):
         await test_database.create_database(name)
         # TODO: more robust DB name replacement
         url = f'{TEST_DATABASE_HOST}/{name}'
-        self.db = Database(url=url, prompt=PROMPT, verbose=self.verbose)
+        self.db = Database(url=url, prompt=PROMPT, verbose=self.verbose, tag=self.name)
         return self.db
 
     async def __aexit__(self, *args):

@@ -12,6 +12,20 @@ def specificity(item):
 
 
 class WithScope(object):
+    def get_scope_translation(self, scope=None, from_=None, to=None):
+        if not scope:
+            return {}
+
+        scope = scope.get(self.child_key, {})
+        translation = {}
+        for key, child in scope.items():
+            if isinstance(child, dict):
+                translate = child.get(from_, None)
+                key = child.get(to, key)
+                if translate and translate != key:
+                    translation[translate] = key
+        return translation
+
     def get_child_include(self, scope=None):
         # TODO: add proper merging of self.config and config
         # so that e.g. a command cannot cross the schema boundary

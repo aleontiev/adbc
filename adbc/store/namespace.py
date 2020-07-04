@@ -20,13 +20,20 @@ class Namespace(Loggable, WithScope, WithInfo):
     child_key = "tables"
 
     def __init__(
-        self, name, database=None, scope=None, verbose=False, tag=None, **kwargs
+        self,
+        name,
+        database=None,
+        scope=None,
+        verbose=False,
+        tag=None,
+        alias=None,
+        **kwargs,
     ):
         super().__init__(**kwargs)
         self.name = name
         self.parent = self.database = database
         self.scope = scope
-        self.tag_name = scope.get(tag, name) if isinstance(scope, dict) else name
+        self.alias = alias or name
         self.verbose = verbose
         self.tag = tag
         self._tables = {}
@@ -41,7 +48,7 @@ class Namespace(Loggable, WithScope, WithInfo):
         constraints=None,
         indexes=None,
         scope=None,
-        refresh=False
+        refresh=False,
     ):
         if name not in self._tables or refresh or scope is not None:
             assert columns is not None
@@ -187,7 +194,7 @@ class Namespace(Loggable, WithScope, WithInfo):
                                 row[2],
                                 row[3],
                                 scope=scope,
-                                refresh=refresh
+                                refresh=refresh,
                             )
                         except NotIncluded:
                             pass

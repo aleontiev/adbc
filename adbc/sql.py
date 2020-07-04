@@ -32,7 +32,7 @@ def get_pks(indexes, constraints, columns):
 
 
 def can_order(type):
-    return type in NO_ORDER_TYPES
+    return type not in NO_ORDER_TYPES
 
 
 def get_tagged_number(value):

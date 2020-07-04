@@ -8,7 +8,7 @@ class WithInfo(object):
     ):
         data = OrderedDict()
         async for child in self.get_children(scope=scope, refresh=refresh):
-            data[child.tag_name] = child.get_info(
+            data[child.alias] = child.get_info(
                 data=data, schema=schema, refresh=refresh
             )
 
