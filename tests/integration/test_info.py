@@ -1,40 +1,28 @@
 import pytest
 from .utils import setup_test_database
+from adbc.generators import G
 
 
 @pytest.mark.asyncio
 async def test_info():
     # 0. define constants
-    column_definition = {
-        "type": "timestamp with time zone",
-        "default": None,
-        "null": True,
-    }
-    constraint_definition = {
-        "type": "u",
-        "columns": ["name"],
-        "deferrable": False,
-        "deferred": False,
-        "check": None,
-        "related_columns": [],
-        "related_name": None,
-    }
+    timestamp_column = G('column', type='timestamp with time zone')
+    unique_name = G(
+        'constraint',
+        type='unique',
+        columns=['name']
+    )
     table_definition = {
         "schema": {
             "columns": {
-                "id": {"type": "integer", "default": None, "null": False},
-                "name": {"type": "text", "default": None, "null": True},
+                "id": G('column', type='integer', null=False),
+                "name": G('column', type='text')
             },
             "constraints": {
-                "id_primary": {
-                    "type": "p",
-                    "columns": ["id"],
-                    "deferrable": False,
-                    "deferred": False,
-                    "check": None,
-                    "related_columns": [],
-                    "related_name": None,
-                }
+                "id_primary": G('constraint',
+                    type='primary',
+                    columns=['id']
+                )
             },
         }
     }
@@ -88,13 +76,13 @@ async def test_info():
         assert test_data["range"] == {"id": {"min": 1, "max": 3}}
 
         # 6. add new schema elements
-        table_definition["schema"]["columns"]["created"] = column_definition
-        table_definition["schema"]["constraints"]["name_unique"] = constraint_definition
+        table_definition["schema"]["columns"]["created"] = timestamp_column
+        table_definition["schema"]["constraints"]["unique_name"] = unique_name
         await source.create_column(
-            "test", "created", column_definition, schema="testing"
+            "test", "created", timestamp_column, schema="testing"
         )
         await source.create_constraint(
-            "test", "name_unique", constraint_definition, schema="testing"
+            "test", "unique_name", unique_name, schema="testing"
         )
 
         # 7. add new data

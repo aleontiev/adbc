@@ -8,10 +8,10 @@ class WithDiff(WithInfo):
         self, target, scope=None, data=True, schema=True, info=False, refresh=False
     ):
         self.log(f"{self}: diff")
-        data = self.get_info(scope=scope, schema=schema, data=data, refresh=refresh)
-        target_data = target.get_info(
+        source_info = self.get_info(scope=scope, schema=schema, data=data, refresh=refresh)
+        target_info = target.get_info(
             scope=scope, schema=schema, data=data, refresh=refresh
         )
-        source_data, target_data = await gather(data, target_data)
-        diff_data = diff(source_data, target_data, syntax="symmetric")
-        return (source_data, target_data, diff_data) if info else diff_data
+        source_info, target_info = await gather(source_info, target_info)
+        diff_info = diff(source_info, target_info, syntax="symmetric")
+        return (source_info, target_info, diff_info) if info else diff_info

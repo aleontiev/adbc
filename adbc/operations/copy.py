@@ -35,7 +35,6 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
     async def _check_shard(
         self,
-        db,
         table_name,
         schema=None,
         md5=True,
@@ -45,7 +44,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         cursor=None,
         limit=None,
     ):
-        model = await db.get_model(table_name, schema=schema)
+        model = await self.get_model(table_name, schema=schema)
         table = model.table
         kwargs = {
             "cursor": cursor,
@@ -129,37 +128,38 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         # for example, row counts will not change as large chunks of rows
         # are deleted and re-added in a transaction
 
-        connection = None  # await self.target.get_connection() if delete else None
+        connection = None  # await self.get_connection() if delete else None
         transaction = AsyncContext()  # connection.transaction() if delete else aecho()
+
+        def get_query(q):
+            if cursor_min:
+                q = q.where({'.and': [{pk: {'>': cursor_min}}, {pk: {'<=': cursor_max}}]})
+            else:
+                q = q.where({pk: {'<=': cursor_max}})
+            return q
+
         try:
             async with transaction:
-                query = await target.get_model(target_table, schema=target_schema)
-                if not truncate:
-                    if cursor_min:
-                        query = query.where(
-                            {
-                                ".and": [
-                                    {pk: {">": cursor_min}},
-                                    {pk: {"<=": cursor_max}},
-                                ]
-                            }
-                        )
-                    elif cursor_max:
-                        query = query.where({pk: {"<=": cursor_max}})
-
+                source_query = await self.get_model(source_table, schema=source_schema)
+                source_query = get_query(source_query)
                 if delete:
                     if truncate:
-                        await self._truncate(target_table, schema=target_schema)
+                        await target._truncate(target_table, schema=target_schema)
                     else:
+                        target_query = await target.get_model(target_table, schema=target_schema)
+                        target_query = get_query(target_query)
                         await query.delete(connection=connection)
 
                 # copy from source to buffer
-                sql = await query.get(sql=True)
+                source_sql = await source_query.get(sql=True)
                 if self.parallel_copy:
                     buffer = AsyncBuffer()
+
                     copy_from, copy_to = await gather(
-                        self.source.copy_from(
-                            query=sql, output=buffer.write, close=buffer
+                        self.copy_from(
+                            query=source_sql,
+                            output=buffer.write,
+                            close=buffer
                         ),
                         target.copy_to(
                             table_name=target_table,
@@ -171,7 +171,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                     return copy_to
                 else:
                     buffer = io.BytesIO()
-                    await self.source.copy_from(query=sql, output=buffer)
+                    await self.copy_from(query=source_sql, output=buffer)
                     buffer.seek(0)
                     return await target.copy_to(
                         table_name=target_table,
@@ -240,7 +240,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             # only delete rows not within the bounds of the source data
             if pk and shard == 0 and source_low:
                 # drop any target rows with id before the lowest source ID
-                await self._delete_before(pk, target_schema, target_table, source_low)
+                await target._delete_before(pk, target_table, source_low, schema=target_schema)
 
             if pk and (target_high is None or cursor and cursor > target_high):
                 # skip the check and move on to delete/copy
@@ -249,7 +249,6 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                 # we still need to get the next ID
                 # but we do not need the md5
                 source_check = self._check_shard(
-                    self.source,
                     source_table,
                     schema=source_schema,
                     md5=False,
@@ -263,14 +262,12 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                 source_max = source_result["max"]
             else:
                 source_check = self._check_shard(
-                    self.source,
                     source_table,
                     schema=source_schema,
                     cursor=cursor,
                     limit=max_size,
                 )
-                target_check = self._check_shard(
-                    target,
+                target_check = target._check_shard(
                     target_table,
                     schema=target_schema,
                     cursor=cursor,
@@ -323,15 +320,18 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
             if not single and pk and shard == last:
                 # drop after the last shard
-                await self._delete_after(pk, target_schema, target_table, source_high)
+                await target._delete_after(pk, target_table, source_high, schema=target_schema)
 
             cursor = source_max
 
         copied = sum(await gather(*copiers)) if copiers else 0
         return {"copied": copied, "skipped": skipped}
 
-    async def copy_metadata(self, diff):
-        return await self.merge(diff, "schema", [])
+    async def copy_metadata(self, diff, scope=None):
+        translate = self.get_scope_translation(
+            scope=scope, to='target'
+        )
+        return await self.merge(diff, "schema", [], translate=translate)
 
     async def copy_data(
         self, target, source_info, target_info, diff, scope=None, check_all=False
@@ -341,19 +341,28 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
         keys = []
         values = []
-        translate_schemas = self.get_scope_translation(
-            scope=scope, from_="target", to="source"
+        to_source = self.get_scope_translation(
+            scope=scope, to="source"
+        )
+        to_target = self.get_scope_translation(
+            scope=scope, to="target"
         )
 
         if check_all:
             # check all tables
-            for target_schema, target_tables in target_info.items():
-                source_schema = translate_schemas.get(target_schema, target_schema)
-                for target_table, table_schema in target_tables.items():
-                    source_table = target_table
-                    keys.append(target_table)
-                    source_metadata = source_info[source_schema][source_table]
-                    target_metadata = target_info[target_schema][target_table]
+            for schema_name, tables in target_info.items():
+                for table_name, table in tables.items():
+                    keys.append(table_name)
+
+                    source_metadata = source_info[schema_name][table_name]
+                    target_metadata = target_info[schema_name][table_name]
+
+                    source_schema = to_source.get(schema_name, schema_name)
+                    target_schema = to_target.get(schema_name, schema_name)
+
+                    # TODO: table name translation here
+                    source_table = target_table = table_name
+
                     values.append(
                         self._copy_table(
                             target,
@@ -370,17 +379,21 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             # this is usually sufficient, unless a tables content has changed
             # but min id/max id/count have not changed
             # this can happen for tables with frequent updates
-            for target_schema, schema_changes in diff.items():
-                if target_schema == delete or target_schema == insert:
+            for schema_name, schema_changes in diff.items():
+                if schema_name == delete or schema_name == insert:
                     continue
 
-                source_schema = translate_schemas.get(target_schema, target_schema)
-                for target_table, changes in schema_changes.items():
-                    source_table = target_table
+                for table_name, changes in schema_changes.items():
                     if "data" in changes:
-                        keys.append(target_table)
-                        source_metadata = source_info[source_schema][source_table]
-                        target_metadata = target_info[target_schema][target_table]
+                        keys.append(table_name)
+
+                        source_metadata = source_info[schema_name][table_name]
+                        target_metadata = target_info[schema_name][table_name]
+
+                        source_schema = to_source.get(schema_name, schema_name)
+                        target_schema = to_target.get(schema_name, schema_name)
+                        source_table = target_table = table_name
+
                         values.append(
                             self._copy_table(
                                 target,
@@ -398,8 +411,8 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         return dict(zip(keys, values))
 
     async def copy(self, target, scope=None, check_all=True):
-        schema_diff = await self.diff(target, scope=scope, info=False, data=False)
-        schema_changes = await self.copy_metadata(schema_diff)
+        schema_diff = await self.diff(target, scope=scope, data=False)
+        schema_changes = await target.copy_metadata(schema_diff, scope=scope)
         source_info, target_info, data_diff = await self.diff(
             target, scope=scope, info=True, refresh=True
         )

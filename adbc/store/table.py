@@ -90,9 +90,9 @@ class Table(Loggable):
     def __str__(self):
         return f"{self.namespace}.{self.name}"
 
-    async def get_info(self, only=None, **kwargs):
+    async def get_info(self, schema=True, data=True, **kwargs):
         result = {}
-        if only == "data" or not only:
+        if data:
             data_range = self.get_data_range()
             # data_hash = self.get_data_hash()
             count = self.get_count()
@@ -102,7 +102,7 @@ class Table(Loggable):
                 "count": count,
                 "range": data_range,
             }
-        if only == "schema" or not only:
+        if schema:
             result["schema"] = self.get_schema()
 
         self.log(f"{self}: info")
@@ -337,14 +337,14 @@ class Table(Loggable):
                 type = key[0:3]
                 key = key[4:]
                 result[key][type] = r
-            return result
+            return dict(result)
         else:
             result = defaultdict(dict)
             for key, value in row.items():
                 type = key[0:3]
                 key = key[4:]
                 result[key][type] = value
-            return result
+            return dict(result)
 
     async def get_min_id(self, limit=None, cursor=None, pk=None):
         query = self.get_min_id_query(limit=limit, cursor=cursor, pk=pk)

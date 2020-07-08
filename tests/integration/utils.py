@@ -18,7 +18,6 @@ PROMPT = os.environ.get(
 ) == '1'
 
 TEST_DATABASE_URL = f'{TEST_DATABASE_HOST}/{TEST_DATABASE_NAME}'
-test_database = Database(url=TEST_DATABASE_URL, prompt=PROMPT)
 
 
 class setup_test_database(object):
@@ -27,10 +26,12 @@ class setup_test_database(object):
         self.verbose = verbose
 
     async def __aenter__(self):
-        self.uid = str(uuid.uuid4())[0:6]
+        self.uid = str(uuid.uuid4())[0:12].replace('-', '')
         name = f'{self.name}_{self.uid}'
         self.full_name = name
-        await test_database.create_database(name)
+        test_database = Database(url=TEST_DATABASE_URL, prompt=PROMPT)
+        self.root = test_database
+        await self.root.create_database(name)
         # TODO: more robust DB name replacement
         url = f'{TEST_DATABASE_HOST}/{name}'
         self.db = Database(url=url, prompt=PROMPT, verbose=self.verbose, tag=self.name)
@@ -38,7 +39,7 @@ class setup_test_database(object):
 
     async def __aexit__(self, *args):
         await self.db.close()
-        await test_database.drop_database(self.full_name)
+        await self.root.drop_database(self.full_name)
 
 
 class TestCase(object):

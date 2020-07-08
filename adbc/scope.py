@@ -20,7 +20,7 @@ class WithScope(object):
         translation = {}
         for key, child in scope.items():
             if isinstance(child, dict):
-                translate = child.get(from_, None)
+                translate = child.get(from_, key)
                 key = child.get(to, key)
                 if translate and translate != key:
                     translation[translate] = key

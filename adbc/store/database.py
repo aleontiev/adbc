@@ -48,6 +48,7 @@ class Database(Loggable, WithCopy, WithScope):
         self.parent = self.host = host
         self.verbose = verbose
         self.tag = tag
+        self._pool = None
         self._schemas = {}
         self._connection = None
         self._models = {}
@@ -296,13 +297,6 @@ class Database(Loggable, WithCopy, WithScope):
                 yield self.get_namespace(row[0], scope=scope, refresh=refresh)
             except NotIncluded:
                 pass
-
-    @cached_property
-    async def namespaces(self):
-        namespaces = {}
-        async for child in self.get_children():
-            namespaces[child.name] = child
-        return namespaces
 
     @property
     async def pool(self):

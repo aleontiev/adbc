@@ -27,10 +27,10 @@ class Host(Loggable, WithScope):
 
     async def get_children(self):
         # ! databases are permanently cached after this query
-        return await self.databases
+        return await self.get_databases()
 
     async def get_databases(self):
-        return await self.main_database.query_one_row(
+        return await self.database.query_one_row(
             *self._backend.get_query('databases')
         )
 
@@ -50,10 +50,5 @@ class Host(Loggable, WithScope):
         return self._databases[name]
 
     @cached_property
-    def main_database(self):
+    def database(self):
         return self.get_database(self.dbname)
-
-    @cached_property
-    async def databases(self):
-        databases = await self.get_databases()
-        return {d.name: d for d in databases}

@@ -19,18 +19,18 @@ class WithAlterSQL(object):
 
         table = self.F.table(table_name, schema=schema)
         constraint = self.F.constraint(name)
-        return (f"ALTER TABLE {table}\n" f"ALTER CONSTRAINT {constraint} {remainder}",)
+        return (f"ALTER TABLE {table} ALTER CONSTRAINT {constraint} {remainder}",)
 
     def get_alter_column_query(
-        self, table, column, not_null=None, type=None, schema=None, **kwargs
+        self, table, column, null=None, type=None, schema=None, **kwargs
     ):
         has_default = "default" in kwargs
         default = kwargs.get("default") if has_default else None
         remainder = ""
         if type is not None:
             remainder = f"TYPE {type}"
-        elif not_null is not None:
-            remainder = f'{"SET" if not_null else "DROP"} NOT NULL'
+        elif null is not None:
+            remainder = f'{"DROP" if null else "SET"} NOT NULL'
         elif has_default:
             remainder = (
                 f'{"SET" if default is not None else "DROP"} DEFAULT '
@@ -44,7 +44,25 @@ class WithAlterSQL(object):
 
 
 class WithMerge(WithAlterSQL):
-    async def merge(self, diff, level, parents=None, parallel=True):
+    async def alter_column(self, table, name, patch=None, schema=None):
+        patch = patch or {}
+        query = self.get_alter_column_query(
+            table, name, schema=schema, **patch
+        )
+        await self.execute(*query)
+        return True
+
+    def _translate(self, d, translate):
+        if isinstance(d, dict) and d and translate:
+            new = {}
+            for k, v in d.items():
+                t = translate.get(k, k)
+                new[t] = v
+            return new
+        else:
+            return d
+
+    async def merge(self, diff, level, parents=None, parallel=True, translate=None):
         if not diff:
             # both schemas are identical
             return {}
@@ -65,20 +83,26 @@ class WithMerge(WithAlterSQL):
             # source and target have no overlap
             # -> copy by dropping all in target not in source
             # and creating all in source not in target
-            source, target = diff
+            create, drop = diff
+
+            create = self._translate(create, translate)
+            drop = self._translate(drop, translate)
+
             # do these two actions in parallel
             inserted, deleted = await gather(
-                create_all(source, parents=parents), drop_all(source, parents=parents)
+                create_all(create, parents=parents), drop_all(drop, parents=parents)
             )
             return {insert: inserted, delete: deleted}
         else:
             assert isinstance(diff, dict)
+            diff = self._translate(diff, translate)
 
             routines = []
             names = []
             results = []
             for name, changes in diff.items():
                 action = None
+
                 if name == delete:
                     action = create_all(changes, parents=parents)
                 elif name == insert:
@@ -99,7 +123,6 @@ class WithMerge(WithAlterSQL):
 
     async def merge_constraint(self, name, diff, parents=None):
         kwargs = {}
-        schema_name, table_name = parents
         kwargs = {}
         if "deferred" in diff:
             kwargs["deferred"] = diff["deferred"][0]
@@ -110,10 +133,16 @@ class WithMerge(WithAlterSQL):
                 f"expecting constraint diff to have deferrable or deferred, is: {diff}"
             )
 
+        if len(parents) == 1:
+            schema_name = None
+            table_name = parents[0]
+        else:
+            schema_name, table_name = parents
+
         query = self.get_alter_constraint_query(
             table_name, name, schema=schema_name, **kwargs
         )
-        await self.target.execute(*query)
+        await self.execute(*query)
         return diff
 
     async def merge_index(self, column, diff, parents=None):
@@ -122,18 +151,24 @@ class WithMerge(WithAlterSQL):
     async def merge_column(self, column, diff, parents=None):
         kwargs = {}
         if "null" in diff:
-            kwargs["not null"] = not diff["null"][0]
+            kwargs["null"] = diff["null"][0]
         if "type" in diff:
             kwargs["type"] = diff["type"][0]
         if "default" in diff:
             kwargs["default"] = diff["default"][0]
         if not kwargs:
             raise Exception("expecting column diff to have null, type, or default")
-        schema_name, table_name = parents
+
+        if len(parents) == 1:
+            schema_name = None
+            table_name = parents[0]
+        else:
+            schema_name, table_name = parents
+
         query = self.get_alter_column_query(
             table_name, column, schema=schema_name, **kwargs
         )
-        await self.target.execute(*query)
+        await self.execute(*query)
         return diff
 
     async def merge_table(self, table_name, diff, parents=None):

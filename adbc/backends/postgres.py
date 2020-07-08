@@ -58,8 +58,97 @@ LEFT JOIN pg_am IA ON IA.oid = IR.relam
 WHERE N.nspname = '{namespace}' and R.relkind = 'r' {query}
 """
 
+"""
+TABLES_JSQL = {
+    "select": {
+        "name": "Columns.name",
+        "columns": "Columns.result",
+        "constraints": "Constraints.result",
+        "indexes": "Indexes.result"
+    },
+    "from": {
+        "select": {
+            "name": "R.relname",
+            "result": {
+                "json_agg": {
+                    "json_build_object": [
+                        "'name'",
+                        "A.attname",
+                        "'type'", {
+                            "pg_catalog.format_type": [
+                                "A.attypid",
+                                "A.atttypmod"
+                            ]
+                        }
+                    ]
+                }
+            }
+        },
+        "from": {
+            "A": "pg_attribute",
+        },
+        "join": {
+            "R": {
+                "from": "pg_class",
+                "on": {
+                    "=": [
+                        "R.oid",
+                        "A.attrelid"
+                    ]
+                }
+            },
+            "N": {
+                "from": "pg_namespace",
+                "on": {
+                    "=": [
+                        "R.relnamespace",
+                        "N.oid"
+                    ]
+                }
+            },
+            "D": {
+                "type": "left",
+                "from": "pg_attrdef",
+                "on": {
+                    "and": [{
+                        "true": "A.atthasdef"
+                    }, {
+                        "=": [
+                            "D.adrelid",
+                            "R.oid"
+                        ]
+                    }, {
+                        "=": [
+                            "D.adnum",
+                            "A.attnum"
+                        ]
+                    }]
+                }
+            }
+        }
+    },
+    "join": {
+        "Constraints": {
+            "type": "left",
+            "from": {
+                ...
+            }
+        },
+        "Indexes": {
+            "type": "left",
+            "on": {
+                "=": [
+                    "Indexes.name",
+                    "Columns.name"
+                ]
+            }
+        }
+    }
+}
+"""
+
 TABLES_QUERY = """SELECT
-    Columns.name,
+    Columns.name as name,
     Columns.result as columns,
     Constraints.result as constraints,
     Indexes.result as indexes
@@ -183,10 +272,7 @@ class PostgresBackend(DatabaseBackend):
     """Postgres backend based on asyncpg"""
 
     has_json_aggregation = True
-
-    @cached_property
-    def F(self):
-        return PostgresSQLFormatter()
+    F = PostgresSQLFormatter()
 
     @staticmethod
     def get_include_clause(include, table, column, tag=None):
@@ -256,11 +342,13 @@ class PostgresBackend(DatabaseBackend):
         )
         if query:
             query = " AND {}".format(query)
+
+        F = PostgresBackend.F
+        column = F.column(column)
+        table = F.table(table)
         args.insert(
             0,
-            'SELECT "{}" FROM "{}" WHERE datistemplate = false {}'.format(
-                column, table, query
-            ),
+            f'SELECT {column} FROM {table} WHERE datistemplate = false {query}'
         )
         return args
 
@@ -273,7 +361,11 @@ class PostgresBackend(DatabaseBackend):
         )
         if query:
             query = "WHERE {}".format(query)
-        args.insert(0, 'SELECT "{}"\nFROM "{}" {}'.format(column, table, query))
+
+        F = PostgresBackend.F
+        column = F.column(column)
+        table = F.table(table)
+        args.insert(0, f'SELECT {column} FROM {table} {query}')
         return args
 
     @staticmethod
