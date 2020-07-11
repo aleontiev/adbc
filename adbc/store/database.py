@@ -49,13 +49,24 @@ class Database(Loggable, WithCopy, WithScope):
         self.verbose = verbose
         self.tag = tag
         self._pool = None
-        self._schemas = {}
         self._connection = None
+        self._schemas = {}
         self._models = {}
         self._tables = {}
 
     def __str__(self):
         return self.name
+
+    def clear_cache(self):
+        self._schemas = {}
+        self._models = {}
+        self._tables = {}
+
+    @cached_property
+    async def shard_size(self):
+        # TODO: support for other database backends
+        is_redshift = await self.is_redshift
+        return 1000 if is_redshift else 16000
 
     async def close(self):
         if self._pool:

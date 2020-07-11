@@ -4,12 +4,12 @@ from asyncio import gather
 
 class WithInfo(object):
     async def get_info(
-        self, scope=None, data=True, schema=True, refresh=False
+        self, scope=None, data=True, schema=True, refresh=False, hashes=False
     ):
         result = OrderedDict()
         async for child in self.get_children(scope=scope, refresh=refresh):
             result[child.alias] = child.get_info(
-                data=data, schema=schema, refresh=refresh
+                data=data, schema=schema, refresh=refresh, hashes=hashes
             )
 
         keys, values = result.keys(), result.values()

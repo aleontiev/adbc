@@ -1,29 +1,32 @@
 import pytest
 import copy
-from .utils import setup_test_database
-from adbc.generators import G
 
-from jsondiff.symbols import delete, insert
+from .utils import setup_test_database
+
+from adbc.generators import G
+from adbc.symbols import delete, insert
 
 
 @pytest.mark.asyncio
 async def test_copy():
     # 0. define constants
-    timestamp_column = G('column', type='timestamp with time zone')
+    timestamp_column = G('column', type='timestamp with time zone', null=True)
     unique_constraint = G('constraint', type='unique', columns=['name'])
     test_size = 100
     table_definition = G(
         'table',
         schema={
             'columns': {'id': G('column', type='integer'), 'name': G('column', type='text')},
-            'constraints': {'test_id': G('constraint', type='primary', columns=['id'])}
+            'constraints': {'test_id': G('constraint', type='primary', columns=['id'])},
+            'indexes': {'test_id': G('index', type='btree', primary=True, unique=True, columns=['id'])}
         }
     )
     copy_definition = G(
         'table',
         schema={
             'columns': {'id': G('column', type='integer'), 'name': G('column', type='text')},
-            'constraints': {'copy_id': G('constraint', type='primary', columns=['id'])}
+            'constraints': {'copy_id': G('constraint', type='primary', columns=['id'])},
+            'indexes': {'copy_id': G('index', type='btree', primary=True, unique=True, columns=['id'])}
         }
     )
     unique_index = G(
@@ -32,7 +35,18 @@ async def test_copy():
         type='btree',
         unique=True
     )
-    scope = {"schemas": {"main": {"source": "public", "target": "testing"}}}
+    scope = {
+        "schemas": {
+            "main": {
+                "source": "public",
+                "target": "testing",
+                "tables": {
+                    "copy": True,
+                    "test": True
+                }
+            }
+        }
+    }
 
     # 1. setup test databases
     async with setup_test_database("source", verbose=True) as source:
@@ -57,7 +71,35 @@ async def test_copy():
 
             # 4. run copy to populate target
             data = await source.copy(target, scope=scope)
-            assert data == {}
+            assert data == {
+                'schema_changes': {
+                    insert: {
+                        'testing': {
+                            'test': table_definition,
+                            'copy': copy_definition
+                        }
+                    }
+                },
+                'data_changes': {
+                    'testing': {
+                        'copy': {
+                            'copied': test_size,
+                            'skipped': 0
+                        },
+                        'test': {
+                            'copied': test_size,
+                            'skipped': 0
+                        }
+                    }
+                },
+                'schema_diff': [{
+                    'main': {
+                        'test': table_definition,
+                        'copy': copy_definition
+                    }
+                }, {}],
+                'final_diff': {}
+            }
 
             # 5. make schema and data changes in source
             await source.create_column(
@@ -73,10 +115,15 @@ async def test_copy():
             await source_model.key(3).delete()
             await source_model.body({'id': test_size + 1, 'name': 'new'}).add()
             await source.create_column(
-                'test', 'updated', timestamp_column, schema='testing'
+                'test', 'updated', timestamp_column
             )
 
             # 6. run copy again
             data = await source.copy(target, scope=scope)
 
-            assert data == {}
+            assert data == {
+                'schema_changes': {},
+                'data_changes': {},
+                'final_diff': {},
+                'schema_diff': {}
+            }

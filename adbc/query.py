@@ -70,6 +70,10 @@ class Query(object):
     async def delete(self, key=None, field=None, **kwargs):
         return await self._call("delete", key=key, field=field, **kwargs)
 
+    # TRUNCATE
+    async def truncate(self, **kwargs):
+        return await self._call("truncate", **kwargs)
+
     async def execute(self, **kwargs):
         executor = self.executor
         if not executor:

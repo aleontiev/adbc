@@ -62,12 +62,12 @@ class WithCreateSQL(object):
     def get_create_constraint_query(self, table, name, constraint, schema=None):
         constraint = self.get_constraint_sql(name, constraint)
         table = self.F.table(table, schema=schema)
-        return (f"ALTER TABLE {table} ADD {constraint}",)
+        return (f"ALTER TABLE {table}\nADD {constraint}",)
 
     def get_create_column_query(self, table, name, column, schema=None):
         column = self.get_column_sql(name, column)
         table = self.F.table(table, schema=schema)
-        return (f"ALTER TABLE {table} ADD COLUMN {column}",)
+        return (f"ALTER TABLE {table}\nADD COLUMN {column}",)
 
     def get_create_table_columns_sql(self, table, spaces=2):
         table_schema = table.get("schema", {})
@@ -107,7 +107,7 @@ class WithCreateSQL(object):
 
         temp = " TEMPORARY " if temporary else " "
         table = self.F.table(name, schema=schema)
-        return (f"CREATE{temp}TABLE {table} ({columns}{sep}{constraints})",)
+        return (f"CREATE{temp}TABLE {table} (\n{columns}{sep}{constraints}\n)",)
 
     def get_create_table_indexes_query(self, name, table, schema=None):
         indexes = table.get("schema", {}).get("indexes", {})
@@ -155,7 +155,7 @@ class WithCreate(WithCreateSQL):
             "index",
             indexes,
             parents,
-            exclude=lambda index: index["primary"] or index["unique"],
+            exclude=lambda index: index["primary"] or index['unique']
         )
 
     async def create_table_items(self, name, data, parents, exclude=None):

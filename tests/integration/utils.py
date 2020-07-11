@@ -1,4 +1,3 @@
-import unittest
 import os
 import uuid
 from adbc.store import Database
@@ -40,18 +39,3 @@ class setup_test_database(object):
     async def __aexit__(self, *args):
         await self.db.close()
         await self.root.drop_database(self.full_name)
-
-
-class TestCase(object):
-    """
-    A fake TestCase which allows the user to use assert*
-    methods without subclassing `unittest.TestCase`.
-    """
-    __unittest = None
-
-    def __getattr__(self, k):
-        if k.startswith("assert"):
-            if self.__unittest is None:
-                self.__unittest = unittest.TestCase()
-            return getattr(self.__unittest, k)
-        raise AttributeError(k)

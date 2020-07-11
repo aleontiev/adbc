@@ -14,100 +14,10 @@ from .diff import WithDiff
 class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
     parallel_copy = True
 
-    async def get_max_copy_size(self):
-        is_redshift = await self.is_redshift
-        return 1000 if is_redshift else 16000
-
-    async def _delete_before(self, pk, table, value, schema=None):
-        return await self._delete_edge(pk, table, value, schema=schema)
-
-    async def _delete_after(self, pk, table, value, schema=None):
-        return await self._delete_edge(pk, table, value, before=False, schema=schema)
-
-    async def _truncate(self, table, schema=None):
-        table = self.F.table(table, schema=schema)
-        return await self.execute("TRUNCATE {table}")
-
-    async def _delete_edge(self, pk, table, value, before=True, schema=None):
-        model = await self.get_model(table, schema=schema)
-        operator = "<" if before else ">"
-        return await model.where({pk: {operator: value}}).delete()
-
-    async def _check_shard(
-        self,
-        table_name,
-        schema=None,
-        md5=True,
-        min_pk=True,
-        max_pk=True,
-        count=True,
-        cursor=None,
-        limit=None,
-    ):
-        model = await self.get_model(table_name, schema=schema)
-        table = model.table
-        kwargs = {
-            "cursor": cursor,
-            "limit": limit,
-            "count": count,
-            "md5": md5,
-            "max_pk": max_pk,
-            "min_pk": min_pk,
-        }
-        split = False
-        if table.pks:
-            pk = table.pks[0]
-            split = table.columns[pk]["type"] == "uuid"
-
-        if not split:
-            return await table.get_statistics(**kwargs)
-        else:
-            # split query
-            kwargs["min_pk"] = False
-            kwargs["max_pk"] = False
-
-            if md5 or count:
-                md5 = table.get_statistics(**kwargs)
-            else:
-                md5 = False
-            if min_pk:
-                min_pk = table.get_min_id(cursor=cursor, limit=limit)
-            if max_pk:
-                max_pk = table.get_max_id(cursor=cursor, limit=limit)
-
-            tasks = []
-            if md5:
-                tasks.append(md5)
-            if min_pk:
-                tasks.append(min_pk)
-            if max_pk:
-                tasks.append(max_pk)
-
-            results = await gather(*tasks)
-            i = 0
-
-            if md5:
-                md5 = results[i]
-                i += 1
-            if min_pk:
-                min_pk = results[i]
-                i += 1
-
-            if max_pk:
-                max_pk = results[i]
-                i += 1
-
-            result = {}
-            if md5:
-                result.update(md5.items())
-            if min_pk:
-                result["min"] = min_pk
-            if max_pk:
-                result["max"] = max_pk
-            return result
-
     async def _copy_shard(
         self,
+        source_model,
+        target_model,
         target,
         pk,
         source_schema,
@@ -140,21 +50,21 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
         try:
             async with transaction:
-                source_query = await self.get_model(source_table, schema=source_schema)
-                source_query = get_query(source_query)
+                source_query = get_query(source_model)
                 if delete:
                     if truncate:
-                        await target._truncate(target_table, schema=target_schema)
+                        await target_model.truncate()
                     else:
-                        target_query = await target.get_model(target_table, schema=target_schema)
-                        target_query = get_query(target_query)
-                        await query.delete(connection=connection)
+                        target_query = get_query(target_model)
+                        await target_query.delete(connection=connection)
 
+                target_columns = list(
+                    sorted(target_model.table.columns.keys())
+                )
                 # copy from source to buffer
                 source_sql = await source_query.get(sql=True)
                 if self.parallel_copy:
                     buffer = AsyncBuffer()
-
                     copy_from, copy_to = await gather(
                         self.copy_from(
                             query=source_sql,
@@ -166,6 +76,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                             schema_name=target_schema,
                             source=buffer,
                             connection=connection,
+                            columns=target_columns
                         ),
                     )
                     return copy_to
@@ -177,6 +88,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                         table_name=target_table,
                         schema_name=target_schema,
                         source=buffer,
+                        columns=target_columns,
                         connection=connection,
                     )
         finally:
@@ -193,6 +105,8 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         target_table,
         target_metadata,
     ):
+        source_model = await self.get_model(source_table, schema=source_schema)
+        target_model = await target.get_model(target_table, schema=target_schema)
         schema = source_metadata["schema"]
         columns = schema["columns"]
         column_names = list(sorted(columns.keys()))
@@ -201,8 +115,8 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         pks = get_pks(indexes, constraints, column_names)
         source_count = source_metadata["data"]["count"]
 
-        source_max = await self.get_max_copy_size()
-        target_max = await target.get_max_copy_size()
+        source_max = await self.shard_size
+        target_max = await target.shard_size
         max_size = min(source_max, target_max)
         num_shards = 1
         pk = None
@@ -218,6 +132,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             shards_label = f" ({num_shards})"
 
         self.log(f"copy (start): {source_schema}.{source_table}{shards_label}")
+
         cursor = None
         num_shards = num_shards if pk else 1
         single = num_shards == 1
@@ -240,7 +155,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             # only delete rows not within the bounds of the source data
             if pk and shard == 0 and source_low:
                 # drop any target rows with id before the lowest source ID
-                await target._delete_before(pk, target_table, source_low, schema=target_schema)
+                await target_model.where({pk: {'<': source_low}}).delete()
 
             if pk and (target_high is None or cursor and cursor > target_high):
                 # skip the check and move on to delete/copy
@@ -248,12 +163,8 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
                 # we still need to get the next ID
                 # but we do not need the md5
-                source_check = self._check_shard(
-                    source_table,
-                    schema=source_schema,
-                    md5=False,
-                    min_pk=False,
-                    count=False,
+                source_check = source_model.table.get_statistics(
+                    max_pk=True,
                     cursor=cursor,
                     limit=max_size,
                 )
@@ -261,15 +172,19 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                 target_count = 0
                 source_max = source_result["max"]
             else:
-                source_check = self._check_shard(
-                    source_table,
-                    schema=source_schema,
+                source_check = source_model.table.get_statistics(
+                    md5=True,
+                    min_pk=True,
+                    count=True,
+                    max_pk=True,
                     cursor=cursor,
                     limit=max_size,
                 )
-                target_check = target._check_shard(
-                    target_table,
-                    schema=target_schema,
+                target_check = target_model.table.get_statistics(
+                    md5=True,
+                    min_pk=True,
+                    count=True,
+                    max_pk=True,
                     cursor=cursor,
                     limit=max_size,
                 )
@@ -305,6 +220,8 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             delete = target_count > 0
             copiers.append(
                 self._copy_shard(
+                    source_model,
+                    target_model,
                     target,
                     pk,
                     source_schema,
@@ -320,7 +237,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
             if not single and pk and shard == last:
                 # drop after the last shard
-                await target._delete_after(pk, target_table, source_high, schema=target_schema)
+                await target_model.where({pk: {'>': source_high}}).delete()
 
             cursor = source_max
 
@@ -334,7 +251,13 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         return await self.merge(diff, "schema", [], translate=translate)
 
     async def copy_data(
-        self, target, source_info, target_info, diff, scope=None, check_all=False
+        self,
+        target,
+        source_info,
+        target_info,
+        diff,
+        scope=None,
+        check_all=False,
     ):
         if not diff:
             return {}
@@ -347,18 +270,18 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         to_target = self.get_scope_translation(
             scope=scope, to="target"
         )
-
         if check_all:
             # check all tables
             for schema_name, tables in target_info.items():
                 for table_name, table in tables.items():
-                    keys.append(table_name)
 
                     source_metadata = source_info[schema_name][table_name]
                     target_metadata = target_info[schema_name][table_name]
 
                     source_schema = to_source.get(schema_name, schema_name)
                     target_schema = to_target.get(schema_name, schema_name)
+
+                    keys.append((target_schema, table_name))
 
                     # TODO: table name translation here
                     source_table = target_table = table_name
@@ -385,13 +308,13 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
                 for table_name, changes in schema_changes.items():
                     if "data" in changes:
-                        keys.append(table_name)
 
                         source_metadata = source_info[schema_name][table_name]
                         target_metadata = target_info[schema_name][table_name]
 
                         source_schema = to_source.get(schema_name, schema_name)
                         target_schema = to_target.get(schema_name, schema_name)
+                        keys.append((target_schema, table_name))
                         source_table = target_table = table_name
 
                         values.append(
@@ -408,13 +331,31 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
         if values:
             values = await gather(*values)
-        return dict(zip(keys, values))
 
-    async def copy(self, target, scope=None, check_all=True):
+        result = {}
+        for i, (schema, table) in enumerate(keys):
+            if schema not in result:
+                result[schema] = {}
+            result[schema][table] = values[i]
+        return result
+
+    async def copy(self, target, scope=None, check_all=True, refresh=True):
+        if refresh:
+            # maybe clear schema caches at the start
+            # useful if some changes were applied after the Database
+            # has been used for other operations
+            self.clear_cache()
+            target.clear_cache()
+
         schema_diff = await self.diff(target, scope=scope, data=False)
         schema_changes = await target.copy_metadata(schema_diff, scope=scope)
+
+        # always clear schema caches after the copy
+        self.clear_cache()
+        target.clear_cache()
+
         source_info, target_info, data_diff = await self.diff(
-            target, scope=scope, info=True, refresh=True
+            target, scope=scope, info=True
         )
         data_changes = await self.copy_data(
             target,
@@ -424,7 +365,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             scope=scope,
             check_all=check_all,
         )
-        final_diff = await self.diff(target, scope=scope, refresh=True)
+        final_diff = await self.diff(target, scope=scope)
         return {
             "schema_diff": schema_diff,
             "schema_changes": schema_changes,

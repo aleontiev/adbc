@@ -1,5 +1,5 @@
 from asyncio import gather
-from jsondiff.symbols import insert, delete
+from adbc.symbols import insert, delete
 
 
 class WithAlterSQL(object):
@@ -19,7 +19,7 @@ class WithAlterSQL(object):
 
         table = self.F.table(table_name, schema=schema)
         constraint = self.F.constraint(name)
-        return (f"ALTER TABLE {table} ALTER CONSTRAINT {constraint} {remainder}",)
+        return (f"ALTER TABLE {table}\nALTER CONSTRAINT {constraint} {remainder}",)
 
     def get_alter_column_query(
         self, table, column, null=None, type=None, schema=None, **kwargs
@@ -40,7 +40,7 @@ class WithAlterSQL(object):
             return []
         table = self.F.table(table, schema=schema)
         column = self.F.column(column)
-        return (f"ALTER TABLE {table} ALTER COLUMN {column} {remainder}",)
+        return (f"ALTER TABLE {table}\nALTER COLUMN {column} {remainder}",)
 
 
 class WithMerge(WithAlterSQL):
@@ -92,7 +92,12 @@ class WithMerge(WithAlterSQL):
             inserted, deleted = await gather(
                 create_all(create, parents=parents), drop_all(drop, parents=parents)
             )
-            return {insert: inserted, delete: deleted}
+            result = {}
+            if inserted:
+                result[insert] = inserted
+            if deleted:
+                result[delete] = deleted
+            return result
         else:
             assert isinstance(diff, dict)
             diff = self._translate(diff, translate)
@@ -105,17 +110,19 @@ class WithMerge(WithAlterSQL):
 
                 if name == delete:
                     action = create_all(changes, parents=parents)
+                    names.append(insert)
                 elif name == insert:
                     action = drop_all(changes, parents=parents)
+                    names.append(delete)
                 elif merge:
                     action = merge(name, changes, parents=parents)
+                    names.append(name)
 
                 if action:
                     if not parallel:
                         results.append(await action)
                     else:
                         routines.append(action)
-                    names.append(name)
 
             if routines:
                 results = await gather(*routines)
@@ -174,15 +181,15 @@ class WithMerge(WithAlterSQL):
     async def merge_table(self, table_name, diff, parents=None):
         parents = parents + [table_name]
         diff = diff.get("schema", {})
-        return [
-            await self.merge(diff[plural], child, parents, parallel=False)
+        return {
+            plural: await self.merge(diff[plural], child, parents, parallel=False)
             for child, plural in (
                 ("column", "columns"),
                 ("constraint", "constraints"),
                 ("index", "indexes"),
             )
             if diff.get(plural)
-        ]
+        }
 
     async def merge_schema(self, schema_name, diff, parents=None):
         # merge schemas in diff (have tables in common but not identical)

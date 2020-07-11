@@ -6,7 +6,7 @@ from adbc.generators import G
 @pytest.mark.asyncio
 async def test_info():
     # 0. define constants
-    timestamp_column = G('column', type='timestamp with time zone')
+    timestamp_column = G('column', type='timestamp with time zone', null=True)
     unique_name = G(
         'constraint',
         type='unique',
@@ -15,8 +15,8 @@ async def test_info():
     table_definition = {
         "schema": {
             "columns": {
-                "id": G('column', type='integer', null=False),
-                "name": G('column', type='text')
+                "id": G('column', type='integer'),
+                "name": G('column', type='text', null=True)
             },
             "constraints": {
                 "id_primary": G('constraint',
@@ -90,10 +90,11 @@ async def test_info():
 
         # 8. get database statistics again with an aliased scope
         # alias scope supports translation during diff/copy
-        info = await source.get_info(scope=alias_scope)
+        info = await source.get_info(scope=alias_scope, hashes=True)
         actual_schema = info["main"]["test"]["schema"]
         test_data = info["main"]["test"]["data"]
         assert expect_schema["columns"] == actual_schema["columns"]
         assert expect_schema["constraints"] == actual_schema["constraints"]
         assert test_data["count"] == 4
         assert test_data["range"] == {"id": {"min": 1, "max": 6}}
+        assert test_data['hashes'] == {1: '38dcabe82cf0aeef4e6601bf3a4c17da'}

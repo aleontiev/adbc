@@ -407,3 +407,24 @@ class PostgresExecutor(object):
         if not returning:
             result = get_tagged_number(result)
         return result
+
+    async def truncate(self, query, **kwargs):
+        """TRUNCATE data
+
+        Arguments:
+            query: Query
+            connection: ?asyncpg.connection
+                useful for transactions
+
+        Returns:
+            True
+        """
+        connection = kwargs.get('connection')
+        source = query.data('source')
+        table = await self.database.get_table(source)
+        sql = f'TRUNCATE {table.sql_name}'
+        method = 'execute'
+        return await getattr(self.database, method)(
+            sql,
+            connection=connection
+        )

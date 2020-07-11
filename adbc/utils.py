@@ -205,6 +205,8 @@ class AsyncBuffer(object):
         self._closed = False
 
     async def write(self, data):
+        if self._debug:
+            print('write buffer:', data)
         self._writes += 1
         self._buffer.append(data)
         self._buffmax = max(self._buffmax, len(self._buffer))
@@ -255,4 +257,6 @@ class AsyncBuffer(object):
         self._read = index
         self.debuffer()
         self._reads += 1
+        if self._debug:
+            print('read buffer: ', result)
         return result
