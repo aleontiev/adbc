@@ -104,25 +104,25 @@ They provide the following features:
         "GROUP BY users.id ",
         'USA'
     )
-    
+
     # execute
     value = await database.execute(*query);
     print(value) #  [{"name": "jay", "num_groups": 2}]
-    
+
     # stream
     value = {}
     async for row in database.stream(*query):
         value[row['name']] = row['num_groups']
     print(value)  # {"jay": 2}
-    
+
     # query_one_row
     value = await database.query_one_row(*query)
     print(value)  # {"name": "jay", "num_groups": 2}
-    
+
     # query_one_value
     value = await database.query_one_value(query, 101);
     print(value) #  "jay"
-    
+
 ```
   - PreQL queries
 ``` python
@@ -148,7 +148,7 @@ They provide the following features:
             "where": {"=": ["id", 101]}
         }
     }
-    
+
     # execute
     value = await database.execute(preql=query)
     print(value) #  [{"name": "jay"}]
@@ -157,24 +157,23 @@ They provide the following features:
     # ... (same, as execute, pass in preql=query)
 ```
   - model-oriented queries
-```
+``` python
     # get_model
     model = await database.get_model('users')
-    
+
     # where, take
     query = model.where(id=101).take('name')
-    
+
     # get
     value = await query.get()
     print(value) #  [{"name": "jay"}]
-    
 ```
 2. Schema introspection: identify all schematic elements of your database:
 ``` python
     # get_info
     info = await database.get_info()
-    print(info) 
-    
+    print(info)
+
     # get_children
     namespaces = await database.get_children()
     tables = await namespaces[0].get_children()
