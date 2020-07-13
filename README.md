@@ -35,7 +35,7 @@
 
 The easiest way to work with `adbc` is by creating a [config file](#config-file) and populating it with a database and workflow, like this:
 
-```
+``` yaml
 databases:
     test:
         url: postgres://localhost/postgres
@@ -53,7 +53,7 @@ You can then run the workflow with `adbc run test-info`
 `adbc` looks for a config file ("adbc.yml" by default) where it expects to find:
 
 Schema:
-```
+``` yaml
 adbc:                                   # adbc metadata
     version: string                         # tool version
 databases:                              # database definitions
@@ -95,7 +95,7 @@ They provide the following features:
 
 1. Async query execution: run queries at different levels of abstractions:
   - parameterized SQL queries
-```
+``` python
     query = (
         "SELECT users.name, count(user_groups.id) AS num_groups "
         "FROM users "
@@ -125,7 +125,7 @@ They provide the following features:
     
 ```
   - PreQL queries
-```
+``` python
     query = {
         "select": {
             "values": {
@@ -170,7 +170,7 @@ They provide the following features:
     
 ```
 2. Schema introspection: identify all schematic elements of your database:
-```
+``` python
     # get_info
     info = await database.get_info()
     print(info) 
@@ -181,14 +181,14 @@ They provide the following features:
 ```
 
 3. Diff: compare schema and data between two different databases
-```
+``` python
     # diff
     diff = await database.diff(other_database)
     print(diff)
 ```
 
 4. Copy: sync schema and data between two different databases
-```
+``` python
     # copy
     copy = await database.copy(other_database)
     print(copy)
