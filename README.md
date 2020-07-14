@@ -220,19 +220,23 @@ A query workflow runs a query against a source database. This can be used to ret
 ### Cross-database denormalization
 
 **What?** updating a table with data from another database.
+
 **How?** See [this test](tests/integration/test_workflow.py) for an implementation example
 
 ### Lazy Replication
 
 **What?** Replicating one datasource to another in cheap, stateless, and interruptable way
+
 **How?** It is implemented by the function `Database.copy` and the *copy* workflow step
 
 ### Fingerprinting
 
 **What?** Capturing a sample of a database that can be used for comparison
+
 **How?** Fingerprinting is implemented by `Database.get_info` and the *info* step
 
 ### Reverse ORM
 
 **What?** interact with an external database using an ORM
+
 **How?** This is made by possible by the *introspection* feature of databases
