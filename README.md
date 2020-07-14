@@ -1,6 +1,6 @@
 # adbc
 
-`adbc` (short for **A**synchronous **D**ata**B**ase **C**onnector) is a library and CLI that provides high-level abstractions for working with databases in Python3 with asyncio.
+`adbc` (short for **A**synchronous **D**ata**B**ase **C**onnector) is a library and CLI that provides high-level abstractions for comparing and copying databases.
 
 ## Support
 
