@@ -52,7 +52,6 @@ You can then run the workflow with `adbc run test-info`
 
 `adbc` looks for a config file ("adbc.yml" by default) where it expects to find:
 
-Schema:
 ``` yaml
 adbc:                                   # adbc metadata
     version: string                         # tool version
@@ -60,32 +59,31 @@ databases:                              # database definitions
     name:                                   # database name
         url: string                             # database URL
         scope: ?object                          # database scope
+        prompt: ?boolean                        # database calls require prompt
 workflows:                              # workflow definitions
     name:                                   # workflow name
+        verbose: ?integer                       # verbosity level
         steps:                                  # step list
-        - type: sql                             # run a SQL query
-          source: string                        # database name
-          query: string                         # query to run
-        - type: query                           # run a PreQL query
-          source: string                        # database name
-          query: string                         # query to run
-        - type: info                            # get info about a database
-          source: string                        # database name
-          scope: ?object                        # scope to a subset of the data
-          schema: boolean                       # include schema information (default: True)
-          data: boolean                         # include data summary information (default: True)
-          hashes: boolean                       # include data hash information (default: True)
-        - type: diff                            # compare two databases
-          source: string                        # database name
-          target: string                        # other database name
-          scope: ?object                        # scope to a subset of the data
-          schema: boolean                       # include schema information (default: True)
-          data: boolean                         # include data summary information (default: True)
-          hashes: boolean                       # include data hash information (default: True)
-        - type: copy                            # copy a database into another
-          source: string                        # database name
-          target: string                        # other database name
-          scope: ?object                        # scope to a subset of the data
+        - type: query                             # run a SQL/PreQL query
+          source: string                            # database name
+          query: string                             # query to run
+        - type: info                              # get info about a database
+          source: string                            # database name
+          scope: ?object                            # scope to a subset of the data
+          schema: boolean                           # include schema information (default: True)
+          data: boolean                             # include data information (default: True)
+          hashes: boolean                           # include data hash information (default: True)
+        - type: diff                              # compare two databases
+          source: string                            # database name
+          target: string                            # other database name
+          scope: ?object                            # scope to a subset of the data
+          schema: boolean                           # include schema information (default: True)
+          data: boolean                             # include data information (default: True)
+          hashes: boolean                           # include data hash information (default: True)
+        - type: copy                              # copy a database into another
+          source: string                            # database name
+          target: string                            # other database name
+          scope: ?object                            # scope to a subset of the data
 ```
 
 ## Databases
