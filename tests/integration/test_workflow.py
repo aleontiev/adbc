@@ -122,12 +122,7 @@ async def test_workflow():
                 config['workflows']['migrate-actions'],
                 config['databases'],
             )
-            try:
-                results = await workflow.execute()
-            except Exception:
-                import traceback
-                traceback.print_exc()
-
+            results = await workflow.execute()
             copy_result = {
                 "data_changes": {
                     "migrate": {

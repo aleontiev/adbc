@@ -152,7 +152,7 @@ They provide the following features:
     # execute
     value = await database.execute(preql=query)
     print(value) #  [{"name": "jay"}]
- 
+
     # stream, query_one_row, query_one_value
     # ... (same, as execute, pass in preql=query)
 ```
@@ -211,4 +211,28 @@ A copy workflow syncs schema and data information from a source database into a 
 
 ### query
 
-A query workflow runs a query against a source database.
+A query workflow runs a query against a source database. This can be used to return information or perform an update or schema change.
+
+## Use Cases
+
+`adbc` workflows enable a few common use-cases:
+
+### Cross-database denormalization
+
+**Cross-database denormalization** is the process of updating a table with data from another database.
+See [this test](tests/integration/test_workflow.py) for implementation.
+
+### Lazy Replication
+
+**Lazy replication** is the process of replicating one datasource to another in a way that is stateless, interruptable, and does not require database replication slots.
+It is implemented by the *copy* command.
+
+### Fingerprinting
+
+**Fingerprinting** is the process of capturing a schema and data sample of a database that can be used for comparison.
+Fingerprinting is implemented by the *info* command and used indirectly by *diff* and *copy*.
+
+### Reverse ORM
+
+A **reverse ORM** allows an application to interact with an outside database using an automatically generated ORM.
+This is made by possible by the *introspection* feature of databases.
