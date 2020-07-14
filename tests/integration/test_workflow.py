@@ -4,7 +4,7 @@ import copy
 from .utils import setup_test_database
 
 from adbc.generators import G
-from adbc.workflow import Workflow
+from adbc.workflow import WorkflowEngine
 from adbc.symbols import delete, insert
 
 
@@ -117,12 +117,8 @@ async def test_workflow():
             }]
             await action.values(actions).add()
 
-            workflow = Workflow(
-                'migrate-actions',
-                config['workflows']['migrate-actions'],
-                config['databases'],
-            )
-            results = await workflow.execute()
+            engine = WorkflowEngine(config)
+            results = await engine.run('migrate-actions')
             copy_result = {
                 "data_changes": {
                     "migrate": {
