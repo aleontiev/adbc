@@ -217,17 +217,11 @@ A query workflow runs a query against a source database. This can be used to ret
 
 `adbc` workflows enable a few common use-cases:
 
-### Cross-database denormalization
-
-**What?** updating a table with data from another database.
-
-**How?** See [this test](tests/integration/test_workflow.py) for an implementation example
-
 ### Lazy Replication
 
-**What?** Replicating one datasource to another in cheap, stateless, and interruptable way
+**What?** copying one database to another in a stateless and interruptible way
 
-**How?** It is implemented by the function `Database.copy` and the *copy* workflow step
+**How?** This type of replication is implemented by the function `Database.copy` and the *copy* workflow step
 
 ### Fingerprinting
 
@@ -237,6 +231,12 @@ A query workflow runs a query against a source database. This can be used to ret
 
 ### Reverse ORM
 
-**What?** interact with an external database using an ORM
+**What?** interact with an unknown database using an ORM
 
 **How?** This is made by possible by the *introspection* feature of databases
+
+### Cross-database denormalization
+
+**What?** updating a table with data from another database
+
+**How?** See [this test](tests/integration/test_workflow.py) for an implementation example
