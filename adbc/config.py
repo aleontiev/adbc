@@ -25,7 +25,7 @@ def get_config(filename=None, data=None, context=None):
     if not context:
         context = initial_context
     else:
-        initial_context.update(context)
+        context.update(initial_context)
 
     return hydrate_config(
         data,
