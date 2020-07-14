@@ -5,20 +5,31 @@ import copy
 import os
 
 
-def get_initial_context():
+def get_initial_context(vault=True, env=True):
     """Return context of available services, such as Vault"""
-    return {"vault": VaultConfig(), "env": dict(os.environ)}
+    context = {}
+    if vault:
+        context['vault'] = VaultConfig()
+    if env:
+        context['env'] = dict(os.environ)
+    return context
 
 
-def get_config(filename=None, data=None):
+def get_config(filename=None, data=None, context=None):
     if not data:
         if not filename:
             filename = os.environ.get('ADBC_CONFIG_PATH') or 'adbc.yml'
         data = read_config_file(filename)
 
+    initial_context = get_initial_context()
+    if not context:
+        context = initial_context
+    else:
+        initial_context.update(context)
+
     return hydrate_config(
         data,
-        context=get_initial_context()
+        context=context
     )
 
 
