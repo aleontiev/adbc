@@ -265,6 +265,8 @@ class Table(Loggable):
         order = ", ".join([F.column(c) for c in pks if self.can_order(c)])
         cast = "::varchar" if cast else ""
 
+        if not md5:
+            columns = pks
         columns_ = [F.column(c) for c in columns]
 
         # concatenate all column names and values in pseudo-json
@@ -272,8 +274,7 @@ class Table(Loggable):
             [f"T.{c}{cast}" for c in columns_]
         )
         aggregate = f"concat_ws(',', {aggregate})"
-        if not md5:
-            columns = pks
+
         inner = ", ".join(
             [
                 self.get_decode_boolean(c)

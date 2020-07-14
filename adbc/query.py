@@ -100,8 +100,8 @@ class Query(object):
     def method(self, name):
         return self._update({"method": name})
 
-    def body(self, body):
-        return self._update({"body": body}, merge=True)
+    def values(self, values):
+        return self._update({"values": values}, merge=True)
 
     def limit(self, limit):
         return self._update({"limit": limit})
@@ -125,11 +125,11 @@ class Query(object):
     def validate_field(self, level, field):
         return True
 
-    def _join(self, level, *args, copy=True):
-        return self._update({"join": args}, level=level, copy=copy)
+    def _join(self, level, *args, **kwargs):
+        return self._update({"join": args}, level=level)
 
-    def _take(self, level, *args, copy=True):
-        kwargs = {}
+    def _take(self, level, *args, **kwargs):
+        options = {}
         if args and isinstance(args[0], str):
             for arg in args:
                 take = arg
@@ -137,12 +137,15 @@ class Query(object):
                     arg = arg[1:]
                     take = None
                 self.validate_field(level, arg)
-                kwargs[arg] = take
+                options[arg] = take
         elif args and isinstance(args[0], dict):
-            kwargs = args[0]
-        else:
+            options = args[0]
+        for k, v in kwargs.items():
+            options[k] = v
+
+        if not options:
             raise ValueError('take: expecting at least one argument')
-        return self._update({'take': kwargs}, copy=copy, level=level, merge=True)
+        return self._update({'take': options}, level=level, merge=True)
 
     async def _call(self, method, key=None, field=None, **kwargs):
         if self.data("method") != method:
@@ -167,26 +170,41 @@ class Query(object):
     def validate_sort(self, level, query):
         return True
 
-    def _where(self, level, query, copy=True):
+    def _where(self, *args, **kwargs):
         """
         Example:
             .where({
-                '.or': [
-                    {'.contains': {'users.location.name': '"New York"'}}},
-                    {'.not': {'.in': {'users': [1, 2]}}}
+                'or': [
+                    {'contains': {'users.location.name': "'New York'"}}},
+                    {'not': {'in': {'users': [1, 2]}}}
                 ]
             })
+            .where(id=1)
         """
-        self.validate_where(level, query)
-        return self._update({"where": query}, copy=copy, level=level)
+        query = None
+        if not args:
+            raise ValueError('at least one argument required')
 
-    def _sort(self, level, *args, copy=True):
+        level = args[0]
+        if len(args) >= 1:
+            query = args[1]
+
+        if not query:
+            query = kwargs
+
+        if not query:
+            raise ValueError('no query arguments defined')
+
+        self.validate_where(level, query)
+        return self._update({"where": query}, level=level)
+
+    def _sort(self, level, *args, **kwargs):
         """
         Example:
             .sort("name", "-created")
         """
         self.validate_sort(level, args)
-        return self._update({"sort": args}, copy=copy, level=level)
+        return self._update({"sort": args}, level=level)
 
     def __str__(self):
         return str(self.state)

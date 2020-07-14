@@ -273,6 +273,7 @@ class PostgresBackend(DatabaseBackend):
 
     has_json_aggregation = True
     F = PostgresSQLFormatter()
+    default_schema = 'public'
 
     @staticmethod
     def get_include_clause(include, table, column, tag=None):

@@ -28,8 +28,10 @@ class setup_test_database(object):
         self.uid = str(uuid.uuid4())[0:12].replace('-', '')
         name = f'{self.name}_{self.uid}'
         self.full_name = name
-        test_database = Database(url=TEST_DATABASE_URL, prompt=PROMPT)
-        self.root = test_database
+        self.root = Database(
+            url=TEST_DATABASE_URL,
+            prompt=PROMPT
+        )
         await self.root.create_database(name)
         # TODO: more robust DB name replacement
         url = f'{TEST_DATABASE_HOST}/{name}'
@@ -39,3 +41,4 @@ class setup_test_database(object):
     async def __aexit__(self, *args):
         await self.db.close()
         await self.root.drop_database(self.full_name)
+        await self.root.close()

@@ -11,20 +11,19 @@ class CopyStep(Step):
     def validate(self):
         # unique prefix for this job
         self.prefix = str(uuid.uuid4()) + "/"
-        self._validate("source", read=True)
-        self._validate("target", read=True, write=True, alter=True)
-        self.translate = self.config.get("translate", None)
+        self._validate("source")
+        self._validate("target")
+        self.scope = self.config.get("scope", None)
 
     async def execute(self):
         start = datetime.now()
-        translate = self.translate
+        scope = self.scope
         source = self.source
         target = self.target
         results = await source.copy(
             target,
-            translate=translate,
+            scope=scope
         )
-
         end = datetime.now()
         results['duration'] = f"{(end-start).total_seconds():.2f} seconds"
         return results

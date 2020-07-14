@@ -29,6 +29,8 @@ class Database(Loggable, WithCopy, WithScope):
         alias=None,
         verbose=False,
         prompt=False,
+        min_pool_size=5,
+        max_pool_size=20,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -42,6 +44,9 @@ class Database(Loggable, WithCopy, WithScope):
             if not name:
                 name = host.dbname
 
+        self.min_pool_size = min_pool_size
+        self.max_pool_size = max_pool_size
+        self.url = url
         self.prompt = prompt
         self.name = name
         self.alias = alias or name
@@ -77,9 +82,12 @@ class Database(Loggable, WithCopy, WithScope):
             self._connection = None
 
     async def get_model(self, table_name, schema=None, refresh=False):
-        if not schema:
-            assert('.' in table_name)
-            schema, table_name = table_name.split('.')
+        if isinstance(table_name, dict):
+            schema = table_name.get('schema', schema)
+            table_name = table_name['table']
+
+        if schema is None:
+            schema = self.backend.default_schema
 
         key = (schema, table_name)
         if key not in self._models or refresh:
@@ -88,9 +96,12 @@ class Database(Loggable, WithCopy, WithScope):
         return self._models[key]
 
     async def get_table(self, table_name, schema=None, refresh=False):
-        if not schema:
-            assert('.' in table_name)
-            schema, table_name = table_name.split('.')
+        if isinstance(table_name, dict):
+            schema = table_name.get('schema', schema)
+            table_name = table_name['table']
+
+        if schema is None:
+            schema = self.backend.default_schema
 
         key = (schema, table_name)
         if key not in self._tables or refresh:
@@ -296,7 +307,11 @@ class Database(Loggable, WithCopy, WithScope):
         return self.host._backend
 
     async def get_pool(self):
-        return await self.backend.create_pool(dsn=self.host.url, max_size=20)
+        return await self.backend.create_pool(
+            dsn=self.host.url,
+            max_size=self.max_pool_size,
+            min_size=self.min_pool_size
+        )
 
     async def get_connection(self):
         return await self.backend.connect(self.host.url)

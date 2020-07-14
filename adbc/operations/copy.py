@@ -77,7 +77,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                             source=buffer,
                             connection=connection,
                             columns=target_columns
-                        ),
+                        )
                     )
                     return copy_to
                 else:
@@ -211,11 +211,6 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                     cursor = source_max
                     skipped += source_count
                     continue
-                else:
-                    if self.verbose:
-                        print(
-                            f"copy: shard mismatch @ {target_schema}.{target_table}#{shard}"
-                        )
 
             delete = target_count > 0
             copiers.append(
@@ -367,7 +362,6 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         )
         final_diff = await self.diff(target, scope=scope)
         return {
-            "schema_diff": schema_diff,
             "schema_changes": schema_changes,
             "data_changes": data_changes,
             "final_diff": final_diff,

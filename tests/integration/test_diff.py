@@ -46,19 +46,19 @@ async def test_diff():
             await target.create_table("copy", copy_definition, schema="testing")
 
             # 3. add data
-            source_model = await source.get_model("test", schema="public")
-            source_copy = await source.get_model("public.copy")
+            source_model = await source.get_model("test")
+            source_copy = await source.get_model("copy")
             source_table = source_model.table
 
-            target_model = await target.get_model("testing.test")
-            target_copy = await target.get_model("testing.copy")
+            target_model = await target.get_model("test", schema='testing')
+            target_copy = await target.get_model("copy", schema='testing')
             target_table = target_model.table
 
             # add (INSERT)
             for model in (source_model, target_model, source_copy, target_copy):
-                await model.body({"id": 1, "name": "Jay"}).take("*").add()
-                await model.body({"id": 2, "name": "Quinn"}).add()
-                await model.body({"id": 3, "name": "Hu"}).add()
+                await model.values({"id": 1, "name": "Jay"}).take("*").add()
+                await model.values({"id": 2, "name": "Quinn"}).add()
+                await model.values({"id": 3, "name": "Hu"}).add()
 
             # 4. check diff -> expect none
             diff = await source.diff(target, scope=scope)
@@ -69,7 +69,7 @@ async def test_diff():
             await source.create_constraint("test", "name_unique", unique_constraint)
 
             # 6. make changes in target
-            await target_model.body(
+            await target_model.values(
                 [{"id": 10, "name": "Jim"}, {"id": 9, "name": "Jane"}]
             ).add()
             await target.create_column(

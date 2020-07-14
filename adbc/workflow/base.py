@@ -1,10 +1,12 @@
-from adbc.store import Loggable
+from adbc.logging import Loggable
 
 from .debug import DebugStep
 from .diff import DiffStep
 from .copy import CopyStep
 from .info import InfoStep
-from .sql import SQLStep
+from .query import QueryStep
+
+from adbc.store import Database
 
 
 class Workflow(Loggable):
@@ -13,15 +15,48 @@ class Workflow(Loggable):
         self.config = config
         self.databases = databases
         self.verbose = verbose
+        self._databases = {}
         steps = config.get("steps", [])
         if not steps:
             raise ValueError(f'workflow "{name}" has no steps')
         self.steps = [AutoStep(self, step) for step in steps]
 
+    def get_database(self, name, tag=None):
+        key = (name, tag)
+        if key not in self._databases:
+            config = self.databases[name]
+            if isinstance(config, dict):
+                prompt = config.get('prompt', False)
+                scope = config.get('scope', False)
+                url = config.get('url')
+            else:
+                url = config
+                scope = None
+                prompt = False
+
+            self._databases[key] = Database(
+                name=name,
+                tag=tag,
+                prompt=prompt,
+                url=url,
+                scope=scope,
+                verbose=self.verbose,
+            )
+        return self._databases[key]
+
+    async def close(self):
+        for database in self._databases.values():
+            await database.close()
+        self._databases = {}
+
     async def execute(self):
         results = []
+        # execute all steps
         for step in self.steps:
             results.append(await step.execute())
+
+        # close all databases
+        await self.close()
         return results
 
 
@@ -41,8 +76,8 @@ class AutoStep(Loggable):
                 step = DiffStep(workflow, config)
             elif type == "info":
                 step = InfoStep(workflow, config)
-            elif type == "sql":
-                step = SQLStep(workflow, config)
+            elif type == "query" or type == "sql":
+                step = QueryStep(workflow, config)
             else:
                 raise Exception(
                     f'the workflow step type "{type}" is not supported'

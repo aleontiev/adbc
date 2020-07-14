@@ -35,7 +35,7 @@ async def test_info():
         await source.create_table("test", table_definition, schema="testing")
 
         # 3. get/add/edit/delete data
-        model = await source.get_model("testing.test")
+        model = await source.get_model("test", schema='testing')
         table = model.table
 
         assert table is not None
@@ -43,9 +43,9 @@ async def test_info():
         assert table.columns == table_definition["schema"]["columns"]
 
         # add (INSERT)
-        jay = await model.body({"id": 1, "name": "Jay"}).take("*").add()
-        await model.body({"id": 2, "name": "Quinn"}).add()
-        await model.body({"id": 3}).add()
+        jay = await model.values({"id": 1, "name": "Jay"}).take("*").add()
+        await model.values({"id": 2, "name": "Quinn"}).add()
+        await model.values({"id": 3}).add()
 
         # count/get (SELECT)
         query = model.where({".or": [{"name": {"contains": "ay"}}, {"id": 3}]})
@@ -57,7 +57,7 @@ async def test_info():
         assert dict(results[1]) == {"id": 3, "name": None}
 
         # UPDATE
-        updated = await model.key(3).body({"name": "Ash"}).set()
+        updated = await model.key(3).values({"name": "Ash"}).set()
         assert updated == 1
 
         # DELETE
@@ -86,7 +86,7 @@ async def test_info():
         )
 
         # 7. add new data
-        await model.body([{"id": 6, "name": "Jim"}, {"id": 5, "name": "Jane"}]).add()
+        await model.values([{"id": 6, "name": "Jim"}, {"id": 5, "name": "Jane"}]).add()
 
         # 8. get database statistics again with an aliased scope
         # alias scope supports translation during diff/copy

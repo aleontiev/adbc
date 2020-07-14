@@ -19,9 +19,9 @@ class PostgresExecutor(object):
         self.database = database
 
     def get_insert(self, table, query):
-        body = query.data('body')
+        values = query.data('values')
         columns = list_columns(
-            body.keys() if isinstance(body, dict) else body[0].keys()
+            sorted(values.keys() if isinstance(values, dict) else values[0].keys())
         )
         return f'INSERT INTO {table.sql_name} ({columns})'
 
@@ -201,11 +201,11 @@ class PostgresExecutor(object):
             connection=connection
         )
 
-    def get_set(self, body, args):
-        multiple = len(body) > 1
+    def get_set(self, values, args):
+        multiple = len(values) > 1
         params = []
         columns = []
-        for key, value in body.items():
+        for key, value in values.items():
             args.append(value)
             columns.append(key)
             params.append(f'${len(args)}')
@@ -238,23 +238,26 @@ class PostgresExecutor(object):
         match = self.INSERTED_ROWS_REGEX.match(result)
         return int(match.group(1))
 
-    def get_values(self, body, args):
-        values = []
-        expected_columns = list(body[0].keys())
-        for data in body:
+    def get_values(self, values, args):
+        output = []
+        expected_columns = list(sorted(values[0].keys()))
+        for data in values:
             value = []
             columns = []
-            for k, v in data.items():
+            for k, v in sorted(data.items(), key=lambda x: x[0]):
                 columns.append(k)
                 if should_escape(v):
                     args.append(v)
                     value.append(f'${len(args)}')
                 else:
                     value.append(v)
-            assert(columns == expected_columns)
-            values.append(f"({', '.join(value)})")
-        values = ', \n'.join(values)
-        return f"VALUES {values}"
+            if columns != expected_columns:
+                raise ValueError(
+                    f'expecting {expected_columns} but got {columns}'
+                )
+            output.append(f"({', '.join(value)})")
+        output = ', \n'.join(output)
+        return f"VALUES {output}"
 
     async def add(self, query, **kwargs):
         """INSERT data (or update on conflict)
@@ -269,29 +272,28 @@ class PostgresExecutor(object):
             connection: *asyncpg.connection
                 useful for transactions
 
-
         Returns:
             numbers of records modified
         """
-        body = query.data('body')
+        values = query.data('values')
         connection = kwargs.get('connection')
         sql = kwargs.get('sql', False)
         # TODO: support ON CONFLICT
         # upsert = kwargs.get('upsert', True)
 
-        # body is either a list of dicts or a dict
-        assert(body)
+        # values is either a list of dicts or a dict
+        assert(values)
         multiple = True
-        if isinstance(body, dict):
+        if isinstance(values, dict):
             multiple = False
-            body = [body]
+            values = [values]
 
         source = query.data('source')
         table = await self.database.get_table(source)
         returning = self.get_returning(table, query)
         args = []
         insert = self.get_insert(table, query)
-        values = self.get_values(body, args)
+        values = self.get_values(values, args)
 
         query = self.build_sql(
             insert,
@@ -326,14 +328,14 @@ class PostgresExecutor(object):
             number of records updated
         """
         field = query.data('field')
-        body = query.data('body')
+        values = query.data('values')
         connection = kwargs.get('connection')
         sql = kwargs.get('sql', False)
-        assert(body)
+        assert(values)
         if not field:
-            # body must be a dict with values
+            # values must be a dict with values
             # each key is a field name and each value is a field value
-            assert(isinstance(body, dict))
+            assert(isinstance(values, dict))
 
         source = query.data('source')
         table = await self.database.get_table(source)
@@ -346,9 +348,9 @@ class PostgresExecutor(object):
             args = []
 
         if field is not None:
-            body = {field: body}
+            values = {field: values}
 
-        set_ = self.get_set(body, args)
+        set_ = self.get_set(values, args)
 
         update = self.get_update(table, query)
         query = self.build_sql(
