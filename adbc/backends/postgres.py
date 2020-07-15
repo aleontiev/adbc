@@ -2,6 +2,7 @@ from .base import DatabaseBackend
 from cached_property import cached_property
 from asyncpg import create_pool, connect
 import json
+import ssl
 
 
 VERSION_QUERY = "SELECT version()"
@@ -432,6 +433,11 @@ class PostgresBackend(DatabaseBackend):
         if 'init' not in kwargs:
             # initialize connection with json loading
             kwargs['init'] = PostgresBackend.initialize
+        if kwargs.pop('skip_ca_check', False):
+            ctx = ssl.create_default_context(cafile='')
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            kwargs['ssl'] = ctx
         return await create_pool(*args, **kwargs)
 
     @staticmethod

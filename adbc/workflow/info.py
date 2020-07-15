@@ -7,10 +7,12 @@ class InfoStep(Step):
         self.data = self.config.get('data', True)
         self.schema = self.config.get('schema', True)
         self.scope = self.config.get('scope', None)
+        self.hashes = self.config.get('hashes', False)
 
     async def execute(self):
         return await self.source.get_info(
             data=self.data,
             schema=self.schema,
-            scope=self.scope
+            scope=self.scope,
+            hashes=self.hashes
         )

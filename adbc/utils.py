@@ -95,9 +95,9 @@ def get(context, path, null=None):
                 else:
                     raise null(f"context index out of bounds: {part}")
         else:
-            if hasattr(context, part):
+            try:
                 context = getattr(context, part)
-            else:
+            except AttributeError:
                 if allow_null:
                     return null
                 else:

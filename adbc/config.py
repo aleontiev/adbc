@@ -5,14 +5,15 @@ import copy
 import os
 
 
-def get_initial_context(vault=True, env=True):
+def get_initial_context(vault=True, env=True, context=None):
     """Return context of available services, such as Vault"""
-    context = {}
+    initial = {}
     if vault:
-        context['vault'] = VaultConfig()
+        # vault should receive the context
+        initial['vault'] = VaultConfig(context=context)
     if env:
-        context['env'] = dict(os.environ)
-    return context
+        initial['env'] = dict(os.environ)
+    return initial
 
 
 def get_config(filename=None, data=None, context=None):
@@ -21,11 +22,11 @@ def get_config(filename=None, data=None, context=None):
             filename = os.environ.get('ADBC_CONFIG_PATH') or 'adbc.yml'
         data = read_config_file(filename)
 
-    initial_context = get_initial_context()
+    initial = get_initial_context(context=context)
     if not context:
-        context = initial_context
+        context = initial
     else:
-        context.update(initial_context)
+        context.update(initial)
 
     return hydrate_config(
         data,
@@ -114,7 +115,7 @@ class VaultConfig(object):
         # e.g. ['kv', 'get', 'secret', 'environments']
         self.__args__ = args or []
         self.__context__ = context
-        self.__context_key__ = context_key
+        self.__context_key__ = context_key or []
         self.__context_mode__ = context_mode
         self.__alias_mode__ = alias_mode
         self.__alias__ = alias
@@ -128,7 +129,8 @@ class VaultConfig(object):
             # still in context mode
             return self.__end_context_mode__().__produce__()
         # TODO: vault integration here
-        return vault(self.__args__)
+        args = self.__args__
+        return vault(args)
 
     def __clone__(self, **kwargs):
         for field in self.__FIELDS__:
@@ -159,7 +161,9 @@ class VaultConfig(object):
                 if self.__context_mode__:
                     return self.__end_context_mode__()
                 else:
-                    return self.__clone__(context_mode=True)
+                    return self.__clone__(
+                        context_mode=True, context_key=None
+                    )
             elif key == "_as_":
                 return self.__clone__(alias_mode=True)
             elif key == "_data_":
@@ -177,12 +181,13 @@ class VaultConfig(object):
             args = None
             if self.__context_mode__:
                 # build context key
-                args = self.__context_key__ or []
+                args = self.__context_key__
+                args.append(key)
+                return self.__clone__(context_key=args)
             else:
                 args = copy.copy(self.__args__)
-
-            args.append(key)
-            return self.__clone__(args=args)
+                args.append(key)
+                return self.__clone__(args=args)
 
 
 class WithAlias(object):

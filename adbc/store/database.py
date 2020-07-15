@@ -1,3 +1,4 @@
+import os
 from cached_property import cached_property
 
 from adbc.exceptions import NotIncluded
@@ -310,7 +311,8 @@ class Database(Loggable, WithCopy, WithScope):
         return await self.backend.create_pool(
             dsn=self.host.url,
             max_size=self.max_pool_size,
-            min_size=self.min_pool_size
+            min_size=self.min_pool_size,
+            skip_ca_check=os.environ.get('ADBC_SKIP_CA_CHECK') == '1'
         )
 
     async def get_connection(self):
