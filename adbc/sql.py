@@ -38,7 +38,7 @@ def can_order(type):
 def get_tagged_number(value):
     match = TAGGED_NUMBER_REGEX.match(value)
     if not match:
-        raise Exception('fnot a tagged number: {value}')
+        raise Exception('not a tagged number: {value}')
 
     return int(match.group(1))
 

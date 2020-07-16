@@ -1,6 +1,7 @@
 import uuid
 from pyaml import UnsafePrettyYAMLDumper, add_representer
 import jsondiff
+import asyncpg
 from .symbols import insert, delete
 
 # replace object symbols with more portable JSON ones: + and -
@@ -15,6 +16,10 @@ add_representer(
 add_representer(
     uuid.UUID,
     UnsafePrettyYAMLDumper.represent_stringish
+)
+add_representer(
+    asyncpg.Record,
+    UnsafePrettyYAMLDumper.represent_dict
 )
 # for pyaml, do not print out aliases
 UnsafePrettyYAMLDumper.ignore_aliases = lambda *a: True

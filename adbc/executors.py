@@ -1,6 +1,6 @@
 import re
 
-from .sql import (
+from adbc.sql import (
     list_columns,
     sort_columns,
     where_clause,

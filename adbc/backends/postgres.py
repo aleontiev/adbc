@@ -1,6 +1,7 @@
 from .base import DatabaseBackend
 from cached_property import cached_property
 from asyncpg import create_pool, connect
+from urllib.parse import urlparse, parse_qs, urlencode
 import json
 import ssl
 
@@ -438,6 +439,21 @@ class PostgresBackend(DatabaseBackend):
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
             kwargs['ssl'] = ctx
+        else:
+            dsn = kwargs.get('dsn', None)
+            if dsn and 'sslrootcert' in dsn:
+                parsed = urlparse(dsn)
+                query = parse_qs(parsed.query)
+                cafile = query.pop('sslrootcert')[0]
+                query = urlencode(query)
+                query = f'?{query}' if query else ''
+                dsn = f'{parsed.scheme}://{parsed.netloc}{parsed.path}{query}'
+                if not cafile.startswith('.') and not cafile.startswith('/'):
+                    # assume relative if starting with normal character
+                    cafile = f'./{cafile}'
+                ctx = ssl.create_default_context(cafile=cafile)
+                kwargs['dsn'] = dsn
+                kwargs['ssl'] = ctx
         return await create_pool(*args, **kwargs)
 
     @staticmethod

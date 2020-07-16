@@ -80,7 +80,7 @@ async def test_diff():
             )
 
             # 7. diff and validate changes
-            diff = await source.diff(target, scope=scope, hashes=True)
+            diff = await source.diff(target, scope=scope, hashes=True, refresh=True)
 
             assert diff == {
                 "main": {

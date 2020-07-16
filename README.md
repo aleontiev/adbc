@@ -62,28 +62,31 @@ databases:                              # database definitions
         prompt: ?boolean                        # database calls require prompt
 workflows:                              # workflow definitions
     name:                                   # workflow name
-        verbose: ?integer                       # verbosity level
+        verbose: ?boolean                       # verbosity
         steps:                                  # step list
         - type: query                             # run a SQL/PreQL query
           source: string                            # database name
           query: string                             # query to run
         - type: info                              # get info about a database
           source: string                            # database name
-          scope: ?object                            # scope to a subset of the data
-          schema: boolean                           # include schema information (default: True)
-          data: boolean                             # include data information (default: True)
-          hashes: boolean                           # include data hash information (default: True)
+          scope: ?object                            # scope the data
+          schema: ?boolean                          # include schema information (default: True)
+          data: ?boolean                            # include data information (default: True)
+          hashes: ?boolean                          # include data hash information (default: True)
+          refresh: ?boolean                         # refresh database schema before operation
         - type: diff                              # compare two databases
           source: string                            # database name
           target: string                            # other database name
-          scope: ?object                            # scope to a subset of the data
-          schema: boolean                           # include schema information (default: True)
-          data: boolean                             # include data information (default: True)
-          hashes: boolean                           # include data hash information (default: True)
+          scope: ?object                            # scope the data
+          schema: ?boolean                          # include schema information (default: True)
+          data: ?boolean                            # include data information (default: True)
+          hashes: ?boolean                          # include data hash information (default: True)
+          refresh: ?boolean                         # refresh database schema before operation
         - type: copy                              # copy a database into another
           source: string                            # database name
           target: string                            # other database name
           scope: ?object                            # scope to a subset of the data
+          refresh: ?boolean                         # refresh database schema before operation
 ```
 
 ## Databases

@@ -14,6 +14,8 @@ class CopyStep(Step):
         self._validate("source")
         self._validate("target")
         self.scope = self.config.get("scope", None)
+        self.refresh = self.config.get("refresh", False)
+        self.final_diff = self.config.get('final_diff', True)
 
     async def execute(self):
         start = datetime.now()
@@ -22,7 +24,8 @@ class CopyStep(Step):
         target = self.target
         results = await source.copy(
             target,
-            scope=scope
+            scope=scope,
+            final_diff=self.final_diff
         )
         end = datetime.now()
         results['duration'] = f"{(end-start).total_seconds():.2f} seconds"

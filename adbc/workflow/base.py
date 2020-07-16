@@ -27,7 +27,7 @@ class Workflow(Loggable):
             config = self.databases[name]
             if isinstance(config, dict):
                 prompt = config.get('prompt', False)
-                scope = config.get('scope', False)
+                scope = config.get('scope', None)
                 url = config.get('url')
             else:
                 url = config

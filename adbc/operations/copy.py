@@ -2,9 +2,9 @@ import io
 from math import ceil
 from asyncio import gather
 from jsondiff.symbols import insert, delete
-from adbc.sql import get_pks, can_order
-from adbc.utils import AsyncContext, AsyncBuffer
-
+from adbc.sql import get_pks, can_order, get_tagged_number, print_query
+from adbc.utils import AsyncBuffer, aecho
+from adbc.constants import SEP, SEPN
 from .merge import WithMerge
 from .drop import WithDrop
 from .create import WithCreate
@@ -39,13 +39,15 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         # are deleted and re-added in a transaction
 
         connection = None  # await self.get_connection() if delete else None
-        transaction = AsyncContext()  # connection.transaction() if delete else aecho()
+        transaction = aecho()  # connection.transaction() if delete else aecho()
 
         def get_query(q):
             if cursor_min:
-                q = q.where({'.and': [{pk: {'>': cursor_min}}, {pk: {'<=': cursor_max}}]})
+                q = q.where(
+                    {".and": [{pk: {">": cursor_min}}, {pk: {"<=": cursor_max}}]}
+                )
             else:
-                q = q.where({pk: {'<=': cursor_max}})
+                q = q.where({pk: {"<=": cursor_max}})
             return q
 
         try:
@@ -58,26 +60,22 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                         target_query = get_query(target_model)
                         await target_query.delete(connection=connection)
 
-                target_columns = list(
-                    sorted(target_model.table.columns.keys())
-                )
+                target_columns = list(sorted(target_model.table.columns.keys()))
                 # copy from source to buffer
                 source_sql = await source_query.get(sql=True)
                 if self.parallel_copy:
                     buffer = AsyncBuffer()
                     copy_from, copy_to = await gather(
                         self.copy_from(
-                            query=source_sql,
-                            output=buffer.write,
-                            close=buffer
+                            query=source_sql, output=buffer.write, close=buffer
                         ),
                         target.copy_to(
                             table_name=target_table,
                             schema_name=target_schema,
                             source=buffer,
                             connection=connection,
-                            columns=target_columns
-                        )
+                            columns=target_columns,
+                        ),
                     )
                     return copy_to
                 else:
@@ -155,7 +153,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             # only delete rows not within the bounds of the source data
             if pk and shard == 0 and source_low:
                 # drop any target rows with id before the lowest source ID
-                await target_model.where({pk: {'<': source_low}}).delete()
+                await target_model.where({pk: {"<": source_low}}).delete()
 
             if pk and (target_high is None or cursor and cursor > target_high):
                 # skip the check and move on to delete/copy
@@ -164,9 +162,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                 # we still need to get the next ID
                 # but we do not need the md5
                 source_check = source_model.table.get_statistics(
-                    max_pk=True,
-                    cursor=cursor,
-                    limit=max_size,
+                    max_pk=True, cursor=cursor, limit=max_size,
                 )
                 source_result = await source_check
                 target_count = 0
@@ -232,7 +228,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
             if not single and pk and shard == last:
                 # drop after the last shard
-                await target_model.where({pk: {'>': source_high}}).delete()
+                await target_model.where({pk: {">": source_high}}).delete()
 
             cursor = source_max
 
@@ -240,31 +236,19 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         return {"copied": copied, "skipped": skipped}
 
     async def copy_metadata(self, diff, scope=None):
-        translate = self.get_scope_translation(
-            scope=scope, to='target'
-        )
+        translate = self.get_scope_translation(scope=scope, to="target")
         return await self.merge(diff, "schema", [], translate=translate)
 
     async def copy_data(
-        self,
-        target,
-        source_info,
-        target_info,
-        diff,
-        scope=None,
-        check_all=False,
+        self, target, source_info, target_info, diff, scope=None, check_all=False,
     ):
         if not diff:
             return {}
 
         keys = []
         values = []
-        to_source = self.get_scope_translation(
-            scope=scope, to="source"
-        )
-        to_target = self.get_scope_translation(
-            scope=scope, to="target"
-        )
+        to_source = self.get_scope_translation(scope=scope, to="source")
+        to_target = self.get_scope_translation(scope=scope, to="target")
         if check_all:
             # check all tables
             for schema_name, tables in target_info.items():
@@ -334,21 +318,25 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             result[schema][table] = values[i]
         return result
 
-    async def copy(self, target, scope=None, check_all=True, refresh=True):
+    async def copy(
+        self, target, scope=None, check_all=True, refresh=True, final_diff=True
+    ):
         if refresh:
-            # maybe clear schema caches at the start
+            # clear schema caches at the start if refresh=True
             # useful if some changes were applied after the Database
             # has been used for other operations
             self.clear_cache()
             target.clear_cache()
 
+        print('starting diff')
         schema_diff = await self.diff(target, scope=scope, data=False)
+        print('starting copy metadaty')
         schema_changes = await target.copy_metadata(schema_diff, scope=scope)
 
-        # always clear schema caches after the copy
-        self.clear_cache()
-        target.clear_cache()
+        if schema_changes:
+            target.clear_cache()
 
+        print('starting data diff')
         source_info, target_info, data_diff = await self.diff(
             target, scope=scope, info=True
         )
@@ -360,9 +348,63 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             scope=scope,
             check_all=check_all,
         )
-        final_diff = await self.diff(target, scope=scope)
+        if final_diff:
+            final_diff = await self.diff(target, scope=scope)
         return {
             "schema_changes": schema_changes,
             "data_changes": data_changes,
             "final_diff": final_diff,
         }
+
+    async def copy_from(self, **kwargs):
+        pool = await self.pool
+        table_name = kwargs.pop("table_name", None)
+        transaction = kwargs.pop("transaction", False)
+        connection = kwargs.pop("connection", self._connection)
+        connection = aecho(connection) if connection else pool.acquire()
+        close = kwargs.pop("close", False)
+        query = kwargs.pop("query", None)
+        async with connection as conn:
+            transaction = conn.transaction() if transaction else aecho()
+            async with transaction:
+                result = None
+                if table_name:
+                    self.log(f"{self}: copy from {table_name}")
+                    result = get_tagged_number(
+                        await conn.copy_from_table(table_name, **kwargs)
+                    )
+                elif query:
+                    self.log(f"{self}: copy from {SEP}{print_query(query)}{SEPN}")
+                    result = get_tagged_number(
+                        await conn.copy_from_query(*query, **kwargs)
+                    )
+                else:
+                    raise NotImplementedError("table or query is required")
+                if close:
+                    if hasattr(close, "close"):
+                        # close passed in object
+                        output = close
+                    else:
+                        # close output object
+                        output = kwargs.get("output")
+
+                    if getattr(output, "close"):
+                        output.close()
+                return result
+
+    async def copy_to(self, **kwargs):
+        pool = await self.pool
+        table_name = kwargs.pop("table_name", None)
+        transaction = kwargs.pop("transaction", False)
+        connection = kwargs.pop("connection", None) or self._connection
+        connection = aecho(connection) if connection else pool.acquire()
+        async with connection as conn:
+            transaction = conn.transaction() if transaction else aecho()
+            async with transaction:
+                if table_name:
+                    self.log(f"{self}: copy to {table_name}")
+                    return get_tagged_number(
+                        await conn.copy_to_table(table_name, **kwargs)
+                    )
+                else:
+                    raise NotImplementedError("table is required")

@@ -5,15 +5,13 @@ from adbc.exceptions import NotIncluded
 from adbc.scope import WithScope
 from adbc.utils import get_version_number, confirm, aecho
 from adbc.model import Model
-from adbc.sql import print_query, get_tagged_number
+from adbc.sql import print_query
 from adbc.operations.copy import WithCopy
 from adbc.logging import Loggable
-
+from adbc.constants import SEP, SEPN
 from .namespace import Namespace
 
-
-SEPN = f"\n{'=' * 40}"
-SEP = f"{SEPN}\n"
+SKIP_CA_CHECK = os.environ.get('ADBC_SKIP_CA_CHECK') == '1'
 
 
 class Database(Loggable, WithCopy, WithScope):
@@ -140,7 +138,7 @@ class Database(Loggable, WithCopy, WithScope):
         pquery = print_query(query)
         async with connection as conn:
             if self.prompt:
-                if not confirm(f"{SEP}{pquery}{SEPN}", True):
+                if not confirm(f"{self.name} ({self.tag}): {SEP}{pquery}{SEPN}", True):
                     raise Exception(f"{self}: stream aborted")
             else:
                 self.log(f"{self}: stream{SEP}{pquery}{SEPN}")
@@ -152,59 +150,6 @@ class Database(Loggable, WithCopy, WithScope):
     def use(self, connection):
         self._connection = connection
 
-    async def copy_from(self, **kwargs):
-        pool = await self.pool
-        table_name = kwargs.pop("table_name", None)
-        transaction = kwargs.pop("transaction", False)
-        connection = kwargs.pop("connection", self._connection)
-        connection = aecho(connection) if connection else pool.acquire()
-        close = kwargs.pop("close", False)
-        query = kwargs.pop("query", None)
-        async with connection as conn:
-            transaction = conn.transaction() if transaction else aecho()
-            async with transaction:
-                result = None
-                if table_name:
-                    self.log(f"{self}: copy from {table_name}")
-                    result = get_tagged_number(
-                        await conn.copy_from_table(table_name, **kwargs)
-                    )
-                elif query:
-                    self.log(f"{self}: copy from {SEP}{print_query(query)}{SEPN}")
-                    result = get_tagged_number(
-                        await conn.copy_from_query(*query, **kwargs)
-                    )
-                else:
-                    raise NotImplementedError("table or query is required")
-                if close:
-                    if hasattr(close, 'close'):
-                        # close passed in object
-                        output = close
-                    else:
-                        # close output object
-                        output = kwargs.get("output")
-
-                    if getattr(output, "close"):
-                        output.close()
-                return result
-
-    async def copy_to(self, **kwargs):
-        pool = await self.pool
-        table_name = kwargs.pop("table_name", None)
-        transaction = kwargs.pop("transaction", False)
-        connection = kwargs.pop("connection", None) or self._connection
-        connection = aecho(connection) if connection else pool.acquire()
-        async with connection as conn:
-            transaction = conn.transaction() if transaction else aecho()
-            async with transaction:
-                if table_name:
-                    self.log(f"{self}: copy to {table_name}")
-                    return get_tagged_number(
-                        await conn.copy_to_table(table_name, **kwargs)
-                    )
-                else:
-                    raise NotImplementedError("table is required")
-
     async def execute(self, *query, connection=None, transaction=False):
         pool = await self.pool
         connection = connection or self._connection
@@ -213,7 +158,7 @@ class Database(Loggable, WithCopy, WithScope):
 
         async with connection as conn:
             if self.prompt:
-                if not confirm(f"{SEP}{pquery}{SEPN}", True):
+                if not confirm(f"{self.name} ({self.tag}): {SEP}{pquery}{SEPN}", True):
                     raise Exception(f"{self}: execute aborted")
             else:
                 self.log(f"{self}: execute{SEP}{pquery}{SEPN}")
@@ -236,7 +181,7 @@ class Database(Loggable, WithCopy, WithScope):
 
         async with connection as conn:
             if self.prompt:
-                if not confirm(f"{SEP}{pquery}{SEPN}", True):
+                if not confirm(f"{self.name} ({self.tag}): {SEP}{pquery}{SEPN}", True):
                     raise Exception(f"{self}: query aborted")
             else:
                 self.log(f"{self}: query{SEP}{pquery}{SEPN}")
@@ -273,6 +218,7 @@ class Database(Loggable, WithCopy, WithScope):
         return await self.query(*query, many=False, columns=False, **kwargs)
 
     async def get_full_version(self):
+        # preql = {"select": {"values": {"version": {"version": []}}}
         version = await self.query_one_value(*self.backend.get_query('version'))
         return version
 
@@ -282,10 +228,12 @@ class Database(Loggable, WithCopy, WithScope):
 
     def get_namespaces_query(self, scope=None):
         include = self.get_child_include(scope=scope)
+        # preql = {
+        #   "select": {"values": "namespace.name"}, "from": {"namespace": "pg_na
         return self.backend.get_query('namespaces', include, tag=self.tag)
 
     def get_namespace(self, name, scope=None, refresh=False):
-        if name not in self._schemas or refresh or scope is not None:
+        if name not in self._schemas or refresh:
             translation = self.get_scope_translation(scope=scope, from_=self.tag)
             scope = self.get_child_scope(name, scope=scope)
             alias = translation.get(name, name)
@@ -312,7 +260,7 @@ class Database(Loggable, WithCopy, WithScope):
             dsn=self.host.url,
             max_size=self.max_pool_size,
             min_size=self.min_pool_size,
-            skip_ca_check=os.environ.get('ADBC_SKIP_CA_CHECK') == '1'
+            skip_ca_check=SKIP_CA_CHECK
         )
 
     async def get_connection(self):
