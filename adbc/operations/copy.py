@@ -3,7 +3,7 @@ from math import ceil
 from asyncio import gather
 from jsondiff.symbols import insert, delete
 from adbc.sql import get_pks, can_order, get_tagged_number, print_query
-from adbc.utils import AsyncBuffer, aecho
+from adbc.utils import AsyncBuffer, aecho, confirm
 from adbc.constants import SEP, SEPN
 from .merge import WithMerge
 from .drop import WithDrop
@@ -328,15 +328,12 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             self.clear_cache()
             target.clear_cache()
 
-        print('starting diff')
         schema_diff = await self.diff(target, scope=scope, data=False)
-        print('starting copy metadaty')
         schema_changes = await target.copy_metadata(schema_diff, scope=scope)
 
         if schema_changes:
             target.clear_cache()
 
-        print('starting data diff')
         source_info, target_info, data_diff = await self.diff(
             target, scope=scope, info=True
         )
@@ -348,6 +345,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             scope=scope,
             check_all=check_all,
         )
+        # TODO: drop and add the FK constraints before/after copy_data
         if final_diff:
             final_diff = await self.diff(target, scope=scope)
         return {
@@ -359,27 +357,37 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
     async def copy_from(self, **kwargs):
         pool = await self.pool
         table_name = kwargs.pop("table_name", None)
+        schema_name = kwargs.get('schema_name', None)
         transaction = kwargs.pop("transaction", False)
         connection = kwargs.pop("connection", self._connection)
         connection = aecho(connection) if connection else pool.acquire()
         close = kwargs.pop("close", False)
         query = kwargs.pop("query", None)
+        if table_name:
+            target_label = f"{schema_name}.{table_name}" if schema_name else table_name
+        else:
+            if not query:
+                raise NotImplementedError("table or query is required")
+            target_label = print_query(query)
+
+        if self.prompt:
+            if not confirm(f"{self.name} ({self.tag}): {SEP}copy from {target_label}{SEPN}", True):
+                raise Exception(f"{self}: copy_from aborted")
+        else:
+            self.log(f"{self}: copy_from{SEP}{target_label}{SEPN}")
+
         async with connection as conn:
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
                 result = None
                 if table_name:
-                    self.log(f"{self}: copy from {table_name}")
                     result = get_tagged_number(
                         await conn.copy_from_table(table_name, **kwargs)
                     )
-                elif query:
-                    self.log(f"{self}: copy from {SEP}{print_query(query)}{SEPN}")
+                else:
                     result = get_tagged_number(
                         await conn.copy_from_query(*query, **kwargs)
                     )
-                else:
-                    raise NotImplementedError("table or query is required")
                 if close:
                     if hasattr(close, "close"):
                         # close passed in object
@@ -396,15 +404,20 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         pool = await self.pool
         table_name = kwargs.pop("table_name", None)
         transaction = kwargs.pop("transaction", False)
+        schema_name = kwargs.get('schema_name', None)
+        target_label = f"{schema_name}.{table_name}" if schema_name else table_name
         connection = kwargs.pop("connection", None) or self._connection
         connection = aecho(connection) if connection else pool.acquire()
+
+        if self.prompt:
+            if not confirm(f"{self.name} ({self.tag}): {SEP}copy to {target_label}{SEPN}", True):
+                raise Exception(f"{self}: copy_to aborted")
+        else:
+            self.log(f"{self}: copy_to{SEP}{target_label}{SEPN}")
+
         async with connection as conn:
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
-                if table_name:
-                    self.log(f"{self}: copy to {table_name}")
-                    return get_tagged_number(
-                        await conn.copy_to_table(table_name, **kwargs)
-                    )
-                else:
-                    raise NotImplementedError("table is required")
+                return get_tagged_number(
+                    await conn.copy_to_table(table_name, **kwargs)
+                )
