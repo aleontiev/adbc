@@ -413,7 +413,7 @@ class Table(Loggable):
         # TODO: move into Q
         return (f'SELECT count(*) FROM {self.sql_name}', )
 
-    async def get_data_range_query(self, keys):
+    def get_data_range_query(self, keys):
         new_keys = []
         F = self.database.F
         for key in keys:
@@ -427,19 +427,20 @@ class Table(Loggable):
         keys = ",\n  ".join(new_keys)
         return (f"SELECT {keys}\n" f'FROM {self.sql_name}', )
 
-    async def get_data_range(self):
-        keys = copy(self.pks) if len(self.pks) == 1 else []
-        keys = [key for key in keys if self.can_order(key)]
-        if self.on_create:
-            keys.append(self.on_create)
-        if self.on_update:
-            keys.append(self.on_update)
+    async def get_data_range(self, keys=None):
+        if keys is None:
+            keys = copy(self.pks) if len(self.pks) == 1 else []
+            keys = [key for key in keys if self.can_order(key)]
+            if self.on_create:
+                keys.append(self.on_create)
+            if self.on_update:
+                keys.append(self.on_update)
+            keys = list(set(keys))
 
         if not keys:
             return None
 
-        keys = list(set(keys))
-        query = await self.get_data_range_query(keys)
+        query = self.get_data_range_query(keys)
         try:
             row = await self.database.query_one_row(*query)
         except Exception as e:

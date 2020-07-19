@@ -6,8 +6,9 @@ from adbc.utils import is_dsn
 class Step(Loggable):
     _log_name = "adbc.workflow"
 
-    def __init__(self, workflow, config, **kwargs):
+    def __init__(self, workflow, config, num, **kwargs):
         super().__init__(**kwargs)
+        self.num = num
         self.workflow = workflow
         self.verbose = self.workflow.verbose
         self.config = config
@@ -23,6 +24,13 @@ class Step(Loggable):
         self, name, tag=None
     ):
         tag = tag or name
+        if name not in self.config:
+            type = self.config['type']
+            raise Exception(
+                f'could not find database "{name}" '
+                f'in workflow "{self.workflow.name}" '
+                f'on step {self.num} ({type})'
+            )
         database_name = self.config.get(name)
         database = self.workflow.get_database(
             database_name,

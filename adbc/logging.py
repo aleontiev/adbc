@@ -8,7 +8,7 @@ class Loggable(object):
             kwargs.get('log_name', getattr(self, '_log_name', __name__))
         )
         self._logger.setLevel(
-            kwargs.get('log_level', getattr(self, '_log_level', logging.DEBUG))
+            kwargs.get('log_level', getattr(self, '_log_level', logging.INFO))
         )
 
     def log(self, *args, **kwargs):

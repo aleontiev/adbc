@@ -19,11 +19,15 @@ class Workflow(Loggable):
         steps = config.get("steps", [])
         if not steps:
             raise ValueError(f'workflow "{name}" has no steps')
-        self.steps = [AutoStep(self, step) for step in steps]
+        self.steps = [AutoStep(self, step, i+1) for i, step in enumerate(steps)]
 
     def get_database(self, name, tag=None):
         key = (name, tag)
         if key not in self._databases:
+            if name not in self.databases:
+                raise Exception(
+                    f'cannot find database "{name}" in workflow config'
+                )
             config = self.databases[name]
             if isinstance(config, dict):
                 prompt = config.get('prompt', False)
@@ -61,7 +65,7 @@ class Workflow(Loggable):
 
 
 class AutoStep(Loggable):
-    def __new__(cls, workflow, config):
+    def __new__(cls, workflow, config, num):
         if cls is AutoStep:
             type = config.get("type", "").lower()
             if not type:
@@ -71,13 +75,13 @@ class AutoStep(Loggable):
                 debug = True
                 type = type[1:]
             if type == "copy":
-                step = CopyStep(workflow, config)
+                step = CopyStep(workflow, config, num)
             elif type == "diff":
-                step = DiffStep(workflow, config)
+                step = DiffStep(workflow, config, num)
             elif type == "info":
-                step = InfoStep(workflow, config)
+                step = InfoStep(workflow, config, num)
             elif type == "query" or type == "sql":
-                step = QueryStep(workflow, config)
+                step = QueryStep(workflow, config, num)
             else:
                 raise Exception(
                     f'the workflow step type "{type}" is not supported'

@@ -12,14 +12,14 @@ def get_context_variables(value):
 
 
 def resolve_template(value, context=None, null=Exception):
-    if not value:
+    if not isinstance(value, str):
         return value
 
-    if '{{' in value:
-        if not context:
-            raise Exception(f'must have context to resolve {value}')
-    else:
+    if '{{' not in value:
         return value
+
+    if not context:
+        raise Exception(f'must have context to resolve "{value}"')
 
     # find matches in the string
     # build new string result consisting of segments
