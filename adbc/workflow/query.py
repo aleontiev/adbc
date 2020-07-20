@@ -27,9 +27,11 @@ class QueryStep(Step):
             if isinstance(split, str):
                 on = split
                 size = QUERY_SPLIT_SIZE
+                skip = 0
             else:
                 on = split['on']
                 size = split.get('size', QUERY_SPLIT_SIZE)
+                skip = split.get('skip', 0)
             # assumption: split field is given with the original table name
             # so that we can look up the table with get_model
             # also assume that we can only split on integer IDs for now
@@ -53,6 +55,13 @@ class QueryStep(Step):
             shard = 0
             shards = int(round((data_max - data_min) / size, 0))
             while cursor <= data_max:
+                if shard < skip:
+                    if self.verbose:
+                        sys.stdout.write(f'query: skipped shard {shard} of {shards}    \r')
+                        sys.stdout.flush()
+                    shard += 1
+                    continue
+
                 # TODO: this is a big hack, would be easier with PreQL
                 # to do this properly in SQL requires a full SQL parser
                 query = f'{base_query} AND {on} >= $1 AND {on} < $2'
