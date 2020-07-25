@@ -60,6 +60,7 @@ class QueryStep(Step):
                         sys.stdout.write(f'query: skipped shard {shard} of {shards}    \r')
                         sys.stdout.flush()
                     shard += 1
+                    cursor += size
                     continue
 
                 # TODO: this is a big hack, would be easier with PreQL
