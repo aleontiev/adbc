@@ -70,47 +70,45 @@ TABLES_JSQL = {
     },
     "from": {
         "select": {
-            "name": "R.relname",
-            "result": {
-                "json_agg": {
-                    "json_build_object": [
-                        "'name'",
-                        "A.attname",
-                        "'type'", {
-                            "pg_catalog.format_type": [
-                                "A.attypid",
-                                "A.atttypmod"
-                            ]
-                        }
-                    ]
+            "values": {
+                "name": "R.relname",
+                "result": {
+                    "json_agg": {
+                        "json_build_object": [
+                            "'name'",
+                            "A.attname",
+                            "'type'", {
+                                "pg_catalog.format_type": [
+                                    "A.attypid",
+                                    "A.atttypmod"
+                                ]
+                            }
+                        ]
+                    }
                 }
             }
-        },
-        "from": {
-            "A": "pg_attribute",
-        },
-        "join": {
-            "R": {
-                "from": "pg_class",
+            "from": {
+                "A": "pg_attribute",
+            },
+            "join": [{
+                "to": {"R": "pg_class"},
                 "on": {
                     "=": [
                         "R.oid",
                         "A.attrelid"
                     ]
                 }
-            },
-            "N": {
-                "from": "pg_namespace",
+            }, {
+                "to": {"N": "pg_namespace"},
                 "on": {
                     "=": [
                         "R.relnamespace",
                         "N.oid"
                     ]
                 }
-            },
-            "D": {
+            }, {
                 "type": "left",
-                "from": "pg_attrdef",
+                "to": {"D": "pg_attrdef"},
                 "on": {
                     "and": [{
                         "true": "A.atthasdef"
@@ -126,7 +124,7 @@ TABLES_JSQL = {
                         ]
                     }]
                 }
-            }
+            }]
         }
     },
     "join": {
