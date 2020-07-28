@@ -1,11 +1,11 @@
-from .dialect import Dialect, Builder
+from ..dialect import Dialect, Backend
 from .postgres import PostgresBuilder
 
 
 builders = {
-    Builder.POSTGRES: PostgresBuilder(),
-    # Builder.MYSQL: MySQLBuilder,
-    # Builder.SQLITE: SQLiteBuilder
+    Backend.POSTGRES: PostgresBuilder(),
+    # Backend.MYSQL: MySQLBuilder,
+    # Backend.SQLITE: SQLiteBuilder
 }
 
 

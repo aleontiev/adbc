@@ -3,9 +3,8 @@ from adbc.preql.validator import Validator
 
 class Builder(Validator):
     INDENT = 4
+    IDENTIFIER_SPLIT_CHARACTER = '.'
     IDENTIFIER_QUOTE_CHARACTER = '"'
-    LITERAL_QUOTE_CHARACTER = "'"
-    RAW_QUOTE_CHARACTER = "`"
     QUOTE_CHARACTERS = {'"', "'", '`'}
     COMMANDS = {
         'select',

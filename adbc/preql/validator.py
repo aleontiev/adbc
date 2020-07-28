@@ -1,5 +1,4 @@
-
-class Valiadator:
+class Validator:
     schema = {
         # data
         'select': True,

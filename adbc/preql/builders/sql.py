@@ -1,6 +1,6 @@
 from adbc.preql.dialect import ParameterStyle, get_default_style
 import re
-from typing import List, Union, Option
+from typing import List, Union, Optional
 from .core import Builder
 
 
@@ -12,9 +12,8 @@ CONSTRAINT_TYPE_MAP = {
     "c": "CHECK",
 }
 
-class SQLBuilder(Builder):
-    FORMAT_IDENTIFIER_QUOTE_CHARACTER = '"'
 
+class SQLBuilder(Builder):
     def get_default_style(self):
         return ParameterStyle.FORMAT
 
@@ -144,11 +143,10 @@ class SQLBuilder(Builder):
 
     def escape_identifier(self, identifier: Union[list, str]):
         """Escape one or more identifiers"""
-        quote = self.FORMAT_IDENTIFIER_QUOTE_CHARACTER
         if isinstance(identifier, list):
-            identifier = [identifier]
-            return [self.escape_identifier(ident) for ident in identifier]
+            return identifier
 
+        quote = self.IDENTIFIER_QUOTE_CHARACTER
         if quote not in identifier:
             return identifier
 
@@ -157,15 +155,25 @@ class SQLBuilder(Builder):
         identifier = re.sub(quote, f"{quote}{quote}", identifier)
         return identifier
 
-    def format_identifier(self, identifier: Union[list, str]):
+    def unpack_identifier(self, identifier: Union[list, str, dict]):
+        split_on = self.IDENTIFIER_SPLIT_CHARACTER
+
+        if isinstance(identifier, dict):
+            if "identifier" not in identifier:
+                raise ValueError('expecting object identifier to have "identifier" key')
+            identifier = identifier["identifier"]
+
         identifier = self.escape_identifier(identifier)
-        quote = self.FORMAT_IDENTIFIER_QUOTE_CHARACTER
         if not isinstance(identifier, list):
-            if "." in identifier:
-                identifier = identifier.split(".")
+            if split_on in identifier:
+                identifier = identifier.split(split_on)
             else:
                 identifier = [identifier]
+        return identifier
 
+    def format_identifier(self, identifier: Union[list, str, dict]):
+        identifier = self.unpack_identifier(identifier)
+        quote = self.IDENTIFIER_QUOTE_CHARACTER
         return ".".join([f"{quote}{ident}{quote}" for ident in identifier])
 
     def build_create_database(
@@ -174,7 +182,7 @@ class SQLBuilder(Builder):
         """Builds $.create.database"""
         indent = " " * self.INDENT * depth
         database = self.format_identifier(clause)
-        query = "{indent}CREATE DATABASE {database}"
+        query = f"{indent}CREATE DATABASE {database}"
         return [(query, params)]
 
     def build_create_schema(
@@ -183,7 +191,7 @@ class SQLBuilder(Builder):
         """Builds $.create.schema"""
         indent = " " * self.INDENT * depth
         schema = self.format_identifier(clause)
-        query = "{indent}CREATE SCHEMA {schema}"
+        query = f"{indent}CREATE SCHEMA {schema}"
         return [(query, params)]
 
     def build_create_table(
@@ -194,9 +202,11 @@ class SQLBuilder(Builder):
         params=None,
     ) -> List[tuple]:
         """Builds $.create.table"""
+
+        indent = " " * self.INDENT * depth
         if isinstance(clause, str):
             # name only, no columns or source
-            name = self.format_identifier(clause)
+            name = clause
             as_ = None
             columns = None
             constraints = None
@@ -212,36 +222,43 @@ class SQLBuilder(Builder):
             return results
         else:
             # object
-            name = self.format_identifier(command["name"])
-            columns = command.get("columns", None)
-            constraints = command.get("constraints", None)
-            as_ = command.get("as", None)
-            temporary = command.get("temporary", False)
-            if_not_exists = command.get("if_not_exists", False)
+            name = clause['name']
+            columns = clause.get("columns", None)
+            constraints = clause.get("constraints", None)
+            as_ = clause.get("as", None)
+            temporary = clause.get("temporary", False)
+            if_not_exists = clause.get("if_not_exists", False)
 
         params = self.get_parameters(style, params)
         temporary = " TEMPORARY " if temporary else " "
         if_not_exists = " IF NOT EXISTS " if if_not_exists else " "
+        name = self.format_identifier(name)
         if as_:
             # CREATE TABLE name AS (SELECT ...)
             subquery = self.build(as_, style, depth=depth + 1, params=params)
             if len(subquery) != 1:
                 # expecting subquery to build to exactly one query for this to work
-                raise ValueError(f"create table: invalid subquery {as_}")
+                raise ValueError(f'create table {name}: invalid subquery {as_}')
             subquery, params = subquery[0]
             return [
-                (f"CREATE{temporary}TABLE{if_not_exists}{name} AS ({subquery})", params)
+                (
+                    f"{indent}CREATE{temporary}TABLE{if_not_exists}{name} AS ({subquery})",
+                    params,
+                )
             ]
         else:
             # CREATE TABLE name
             if not columns:
-                return [(f"CREATE{temporary}TABLE{if_not_exists}{name}", None)]
+                return [(f"{indent}CREATE{temporary}TABLE{if_not_exists}{name}", None)]
             # CREATE TABLE name (...columns, constraints...)
             items = self.get_create_table_items(
                 columns, style, params, constraints=constraints, depth=depth + 1
             )
             return [
-                (f"CREATE{temporary}TABLE{if_not_exists}{name} (\n{items}\n)", params,)
+                (
+                    f"{indent}CREATE{temporary}TABLE{if_not_exists}{name} (\n{items}\n)",
+                    params,
+                )
             ]
 
     def is_command(self, name):
@@ -287,16 +304,10 @@ class SQLBuilder(Builder):
                 and expression[0] == expression[-1]
                 and expression[0] in self.QUOTE_CHARACTERS
             ):
-                # if the entire string is quoted, assume it is either a literal, identifier, or raw SQL
-                # depending on which quote is used
+                # if quotes with ', ", or `, assume this is a literal
                 char = expression[0]
                 expression = expression[1:-1]
-                if char == self.LITERAL_QUOTE_CHARACTER:
-                    return self.add_parameter(expression, style, params)
-                elif char == self.IDENTIFIER_QUOTE_CHARACTER:
-                    return self.format_identifier(expression)
-                elif char == self.RAW_QUOTE_CHARACTER:
-                    return expression
+                return self.add_parameter(expression, style, params)
             else:
                 # if unquoted, always assume an identifier
                 return self.format_identifier(expression)
@@ -366,7 +377,7 @@ class SQLBuilder(Builder):
                             f"({key} {expression})" if left else f"({expression} {key})"
                         )
 
-                # special cases / unique operators
+                # special cases
                 if key == "case":
                     raise NotImplementedError("case is not implemented yet")
                 if key == "between":
@@ -382,6 +393,8 @@ class SQLBuilder(Builder):
                     symmetric = value.get("symmetric", False)
                     symmetric = " SYMMETRIC " if symmetric else " "
                     return f"{val} BETWEEN{symmetric}{min_value} AND {max_value}"
+                if key == "identifier":
+                    return self.format_identifier(value)
                 if key == "literal":
                     return self.add_parameter(value, style, params)
                 if key == "raw":
@@ -418,23 +431,45 @@ class SQLBuilder(Builder):
         params: Union[dict, list],
         depth: int = 0,
     ) -> str:
+        name = constraint.get("name")
+        type = constraint.get("type")
+        indent = " " * self.INDENT * depth
+
+        if not name:
+            raise ValueError('constraint must have "name"')
+        if not type:
+            raise ValueError(f'constraint "{name}" must have key: "type"')
+
+        if type not in CONSTRAINT_TYPE_MAP:
+            raise ValueError(f'constraint "{name}" has invalid type: "{type}"')
+
+        type = CONSTRAINT_TYPE_MAP[constraint["type"]]
         check = ""
         if constraint.get("check"):
-            check = f' {constraint["check"]} '
+            # check constraints use an expression
+            check = self.format_expression(check, style, params, depth=depth)
+            check = f" {check} "
             columns = ""
         else:
+            # non-check constraints must have columns
+            if "columns" not in constraint:
+                raise ValueError(f'{type} constraint: "{name}" must have key: "columns"')
             columns = constraint["columns"]
-            if columns:
-                columns = ", ".join([self.format_identifier(c) for c in columns])
-                columns = f" ({columns})"
-            else:
-                columns = ""
+            columns = ", ".join([self.format_identifier(c) for c in columns])
+            columns = f" ({columns})"
 
-        related_name = constraint.get("related_name")
         related = ""
-        if related_name:
+        if type == "FOREIGN KEY":
+            related_name = constraint.get("related_name")
+            related_columns = constraint.get("related_columns")
+            if not related_name or not related_columns:
+                raise ValueError(
+                    f'{type} constraint must have "related_columns" and "related_name"'
+                )
+
+            related_name = self.format_identifier(related_name)
             related_columns = ", ".join(
-                [self.format_identifier(c) for c in constraint["related_columns"]]
+                [self.format_identifier(c) for c in related_columns]
             )
             related = f" REFERENCES {related_name} ({related_columns})"
 
@@ -442,8 +477,8 @@ class SQLBuilder(Builder):
         deferred = constraint.get("deferred", False)
         deferrable = "DEFERRABLE" if deferrable else "NOT DEFERRABLE"
         deferred = "INITIALLY DEFERRED" if deferred else "INITIALLY IMMEDIATE"
-        type = CONSTRAINT_TYPE_MAP[constraint['type']]
-        return f"CONSTRAINT {name} {type} {check}{columns}{related} {deferrable} {deferred}"
+        name = self.format_identifier(name)
+        return f"{indent}CONSTRAINT {name} {type}{check}{columns}{related} {deferrable} {deferred}"
 
     def get_create_table_column(
         self,
@@ -452,27 +487,36 @@ class SQLBuilder(Builder):
         params: Union[dict, list],
         depth: int = 0,
     ) -> str:
-        name = column["name"]
-        type = column["type"]
-        null = column["null"]
-        default = column["default"]
-        name = self.format_identifier(name)
-        null = " NOT NULL " if not null else ""  # null is default
+        # name and type are required
+        indent = " " * self.INDENT * depth
+        name = column.get("name")
+        type = column.get("type")
+        if not name:
+            raise ValueError("column must have name")
+        if not type:
+            raise ValueError(f'column "{name}" must have type')
+
+        # null, default are optional
+        null = column.get("null", True)
+        default = column.get("default", None)
+        null = " NOT NULL" if not null else ""  # null is default
         if default is None:
             default = ""
         else:
             default = self.format_expression(
                 default, style, params, allow_subquery=False
             )
-            default = f" DEFAULT {default} "
-        return f"{name} {type}{null}{default}"
+            default = f" DEFAULT {default}"
+
+        name = self.format_identifier(name)
+        return f"{indent}{name} {type}{null}{default}"
 
     def get_create_table_items(
         self,
         columns: List[dict],
         style: ParameterStyle,
         params: Union[dict, list],
-        constraints: Option[List[dict]] = None,
+        constraints: Optional[List[dict]] = None,
         depth: int = 0,
     ) -> str:
         """Gets the create table definition body
@@ -482,11 +526,11 @@ class SQLBuilder(Builder):
         items = []
         for c in columns:
             items.append(
-                self.get_create_table_column(c, style, params, depth=depth + 1)
+                self.get_create_table_column(c, style, params, depth=depth)
             )
         if constraints:
             for c in constraints:
                 items.append(
-                    self.get_create_table_constraint(c, style, params, depth=depth + 1)
+                    self.get_create_table_constraint(c, style, params, depth=depth)
                 )
         return ",\n".join(items)
