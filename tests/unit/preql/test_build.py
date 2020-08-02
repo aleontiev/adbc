@@ -49,6 +49,12 @@ def test_build_create():
                             'type': 'p',
                             'columns': ['id'],
                             'name': 'test__id__pk',
+                        }, {
+                            'type': 'c',
+                            'name': 'test__id__name__check',
+                            'check': {'!=': ['name', 'id']},
+                            'deferrable': True,
+                            'deferred': True
                         }],
                     }
                 }
@@ -59,7 +65,8 @@ def test_build_create():
                     '    "id" int NOT NULL,\n'
                     '    "name" text,\n'
                     '    CONSTRAINT "test__id__pk" PRIMARY KEY ("id") NOT DEFERRABLE INITIALLY IMMEDIATE\n'
-                    ')', ()
+                    '    CONSTRAINT "test__id__name__check" CHECK ("name" != "id") DEFERRABLE INITIALLY DEFERRED\n'
+                    ')', []
                 )
             ]
         )

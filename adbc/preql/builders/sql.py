@@ -4,12 +4,24 @@ from typing import List, Union, Optional
 from .core import Builder
 
 
-CONSTRAINT_TYPE_MAP = {
-    "x": "EXCLUDE",
-    "p": "PRIMARY KEY",
-    "f": "FOREIGN KEY",
-    "u": "UNIQUE",
-    "c": "CHECK",
+CONSTRAINT_TYPES = {
+    "x": "exclude",
+    "p": "primary key",
+    "f": "foreign key",
+    "u": "unique",
+    "c": "check",
+    "exclude": "exclude",
+    "primary": "primary key",
+    "foreign": "foreign key",
+    "unique": "unique",
+    "check": "check"
+}
+JOIN_TYPES = {
+    'inner',
+    'left',
+    'right',
+    'full',
+    'cross'
 }
 
 
@@ -135,8 +147,241 @@ class SQLBuilder(Builder):
     def build_update(self, clause: dict, style: ParameterStyle) -> List[tuple]:
         raise NotImplementedError()
 
-    def build_select(self, clause: dict, style: ParameterStyle) -> List[tuple]:
+    def build_select(self, clause: Union[dict, list], style: ParameterStyle, depth=0) -> List[tuple]:
+        """Builds $.select; read data"""
+        if isinstance(clause, list):
+            # SELECT ... UNION ALL ... UNION ALL ...
+            queries = []
+            params = []
+            for c in clause:
+                query = self.build(c, style, depth=depth+1)
+                if len(query) > 1:
+                    raise ValueError('select union: expecting one result for each query')
+
+                query, param = query[0]
+                queries.append(query)
+                if param:
+                    params.extend(param)
+            return [
+                self.combine(queries, separator=' UNION ALL '),
+                params
+            ]
+
+        params = self.get_empty_parameters()
+        results = []
+        for child in [
+            'with',
+            'data',
+            'from',
+            'join',
+            'where',
+            'group',
+            'having',
+            'union',
+            'order',
+            'limit',
+            'offset'
+        ]:
+            data = clause.get(child)
+            results.append(getattr(self, f'get_select_{child}')(data, style, params, depth=depth))
+
+        return self.combine(results, check=True)
+
+    def combine(self, segments, separator='\n', check=False):
+        if check:
+            return separator.join([s for s in segments if s])
+        return separator.join(segments)
+
+    def get_select_with(self, with_, style, params, prefix=True, depth=0) -> str:
+        # - with:    dict         ({"as": "...", "query": {"select": {...}})                          # basic subquery
+        #                         ({"as": "...", "query": ..., "recursive": True})                    # recursive subquery
+        #            list         ([...])                                                             # list of ...
+        if prefix:
+            prefix = 'WITH '
+        else:
+            prefix = ''
+
+        if isinstance(with_, list):
+            withs = [
+                self.get_select_with(w, style, params, prefix=False, depth=depth+1)
+                for w in with_
+            ]
+            return f'{prefix}{withs}'
+        if isinstance(with_, dict):
+            query = with_.get('query')
+            as_ = with_.get('as')
+            if not query:
+                raise ValueError('select: with must have "query"')
+            subquery = self.get_subquery(query, style, params, depth=depth+1)
+            as_ = self.format_identifier(as_)
+            return f'{prefix}{as_} AS ({query})'
+
         raise NotImplementedError()
+
+    def get_select_data(self, data, style, params, depth=0) -> str:
+        # - data:    string       ("*")                                 # single literal or identifier value
+        #            dict         ({"name": "first_name"})              # fully aliased expression list
+        #            list[]       ([...])                               # combination of aliased and unaliased values
+        if not data:
+            raise ValueError('select: must have "data"')
+
+        if isinstance(data, list):
+            return self.combine([
+                self.get_select_data(d, style, params, depth=depth)
+                for d in data
+            ])
+
+        if isinstance(data, str):
+            return self.get_expression(
+                data, style, params, depth=depth, allow_subquery=False
+            )
+
+        if isinstance(data, dict):
+            for name, value in data.items():
+                name = self.format_identifier(name)
+                expression = self.get_expression(
+                    value, style, params, depth=depth, allow_subquery=True
+                )
+                results.append(f'{expression} AS {name}')
+            return self.combine(results, separator=', ')
+
+        raise NotImplementedError()
+
+    def get_select_from(self, from_, style, params, depth=0):
+        # - from:    string       ("users")                  # table by name
+        #            dict[string] ({"U": "users"})           # aliased name
+        #            dict[dict]   ({"U": {"select": ...}})   # aliased subquery
+        #                         ({"U": {"lateral": {...}}  # modifier e.g. LATERAL
+        #            list         ([...])                    # list of the above
+        if isinstance(from_, string):
+            return self.format_identifier(from_)
+        if isinstance(from_, dict):
+            for name, target in from_.items():
+                name = self.format_identifier(name)
+                if isinstance(target, str):
+                    target = self.format_identifier(target)
+                elif isinstance(target, dict):
+                    # TODO: support for LATERAL
+                    subquery = self.get_subquery(target, style, params, depth=depth+1)
+                results.append(f'{target} AS {name}')
+                return self.combine(results, separator=', ')
+        if isinstance(from_, list):
+            return self.combine([
+                self.get_select_from(f, style, params, depth=depth)
+                for f in from_
+            ], separator=', ')
+
+        raise NotImplementedError()
+
+    def get_select_join(self, join, style, params, depth=0) -> str:
+        # - join: dict ({"type": "inner", "to": "user", "on": {...}, "as": "u"}} # one join
+        #         list ([...])                                                   # list of joins
+        if isinstance(join, list):
+            return self.combine([
+                self.get_select_join(j, style, params, depth=depth)
+                for j in join
+            ], separator=', ')
+        if isinstance(join, dict):
+            to = join.get('to')
+            is_subquery = False
+            if not to:
+                raise ValueError('select: join must have "to"')
+            if isinstance(to, dict):
+                # subquery join
+                to = self.get_subquery(to, style, params, depth=depth+1)
+                to = f'({to})'
+                is_subquery = True
+            else:
+                # table join
+                to = self.format_identifier(to)
+
+            as_ = join.get('as')
+            if as_:
+                as_ = self.format_identifier(as_)
+                as_ = f' AS {as_}'
+            else:
+                if is_subquery:
+                    raise ValueError('select: subquery join must have "as"')
+                as_ = ''
+            on = join.get('on')
+            if on:
+                on = self.get_expression(on, style, params, depth=depth)
+                on = f' ON {on}'
+            else:
+                on = ''
+            type = join.get('type', 'inner').lower()
+            if type not in JOIN_TYPES:
+                raise ValueError(f'select: invalid join type "{type}"')
+            return f'{type} JOIN {to}{on}{as_}'
+
+    def get_select_where(self, where, style, params, depth=0) -> str:
+        # - where:   dict         ({"=": ["id", "1"]})                  # expression
+        return self.get_expression(where, style, params, depth=0)
+
+    def get_select_group(self, group, style, params, depth=0) -> str:
+        # - group:   string       ("name")                              # simple group by (no rollup)
+        #            dict         ({"by": "name", "rollup": True})      # group by condition
+        #            list[dict]   ([...])                               # list of conditions
+        raise NotImplementedError()
+
+    def get_select_having(self, having, style, params, depth=0) -> str:
+        # - having:  dict         ({"!=": ["num_users", 1]})            # an expression
+        return self.get_expression(having, style, params, depth=0)
+
+    def get_select_union(self, union, style, params, depth=0) -> str:
+        # - union:   dict         ({"select": ...})                     # union query
+        #            list[dict]   ([...])
+        if isinstance(union, list):
+            result = self.combine([
+                self.get_select_union(u, style, params, depth=0)
+                for u in union
+            ], separator=' UNION ')
+            return f'UNION {result}'
+        if isinstance(union, dict):
+            subquery = self.get_subquery(union, style, params, depth=depth+1)
+            return f'UNION {subquery}'
+
+        raise NotImplementedError()
+
+    def get_select_order(self, order, style, params, depth=0, prefix=True) -> str:
+        # - order:   string       ("name")                              # simple order by (ascending)
+        #            dict         ({"by": "name", "asecending": True})  # order by condition
+        #            list[dict]   ([...])                               # list thereof
+        if prefix:
+            prefix = 'ORDER BY '
+        else:
+            prefix = ''
+
+        if isinstance(order, list):
+            order = self.combine([
+                self.get_select_order(o, style, params, depth=depth, prefix=False)
+                for o in order
+            ], separator=', ')
+            return f'{prefix}{order}'
+        if isinstance(order, str):
+            order = self.format_identifier(order)
+            return f'{prefix}{order} ASC'
+        if isinstance(order, dict):
+            by = order.get('by')
+            if not by:
+                raise ValueError('select: order object must have "by"')
+            ascending = order.get('ascending', True)
+            # default order always ascending
+            direction = '' if ascending else ' DESC'
+            by = self.format_identifier(by)
+            return f'{prefix}{by}{direction}'
+
+    def get_select_limit(self, limit, style, params) -> str:
+        # - limit:   integer      (1)                                   # an integer
+        if limit is None:
+            return None
+        return str(int(limit))
+
+    def get_select_offset(self, union, style, params) -> str:
+        # - offset:  integer      (1)                                   # an integer
+        if offset is None:
+            return None
+        return str(int(offset))
 
     def build_delete(self, clause: dict, style: ParameterStyle) -> List[tuple]:
         raise NotImplementedError()
@@ -174,7 +419,7 @@ class SQLBuilder(Builder):
     def format_identifier(self, identifier: Union[list, str, dict]):
         identifier = self.unpack_identifier(identifier)
         quote = self.IDENTIFIER_QUOTE_CHARACTER
-        return ".".join([f"{quote}{ident}{quote}" for ident in identifier])
+        return self.combine([f"{quote}{ident}{quote}" for ident in identifier], separator=".")
 
     def build_create_database(
         self, clause: str, style: ParameterStyle, depth: int = 0, params=None
@@ -227,7 +472,7 @@ class SQLBuilder(Builder):
             constraints = clause.get("constraints", None)
             as_ = clause.get("as", None)
             temporary = clause.get("temporary", False)
-            if_not_exists = clause.get("if_not_exists", False)
+            if_not_exists = clause.get("maybe", False)
 
         params = self.get_parameters(style, params)
         temporary = " TEMPORARY " if temporary else " "
@@ -235,11 +480,7 @@ class SQLBuilder(Builder):
         name = self.format_identifier(name)
         if as_:
             # CREATE TABLE name AS (SELECT ...)
-            subquery = self.build(as_, style, depth=depth + 1, params=params)
-            if len(subquery) != 1:
-                # expecting subquery to build to exactly one query for this to work
-                raise ValueError(f'create table {name}: invalid subquery {as_}')
-            subquery, params = subquery[0]
+            subquery = self.get_subquery(as_, style, params, depth=depth+1)
             return [
                 (
                     f"{indent}CREATE{temporary}TABLE{if_not_exists}{name} AS ({subquery})",
@@ -261,6 +502,13 @@ class SQLBuilder(Builder):
                 )
             ]
 
+    def get_subquery(self, data, style, params, depth=0) -> str:
+        result = self.build(as_, style, depth=depth + 1, params=params)
+        if len(result) != 1:
+            # expecting subquery to build to exactly one query for this to work
+            raise ValueError(f'subquery: expecting one query')
+        return result[0]
+
     def is_command(self, name):
         return name in self.COMMANDS
 
@@ -279,7 +527,7 @@ class SQLBuilder(Builder):
             return True
         return False
 
-    def format_expression(
+    def get_expression(
         self,
         expression,
         style: ParameterStyle,
@@ -288,7 +536,7 @@ class SQLBuilder(Builder):
         depth: int = 0,
     ) -> str:
         if isinstance(expression, (int, float, bool)):
-            # literals and identifiers
+            # literal
             return expression
 
         if expression is None:
@@ -299,6 +547,8 @@ class SQLBuilder(Builder):
             return self.format_identifier(expression)
 
         if isinstance(expression, str):
+            if expression == self.WILDCARD_CHARACTER:
+                return expression
             if (
                 len(expression) > 1
                 and expression[0] == expression[-1]
@@ -313,9 +563,10 @@ class SQLBuilder(Builder):
                 return self.format_identifier(expression)
 
         if isinstance(expression, dict):
-            if len(expression.keys()) != 1:
+            keys = list(expression.keys())
+            if len(keys) != 1:
                 raise ValueError("object-type expression must have one key")
-            key = expression.keys()[0].lower()
+            key = keys[0].lower()
             value = expression[key]
             if value is None:
                 # keyword expression, e.g. {"default": null} -> DEFAULT (in a VAULES statement)
@@ -344,9 +595,9 @@ class SQLBuilder(Builder):
                     # operator expression, e.g. {"+": [1, 2]} -> 1 + 2
                     num_args = len(value)
                     if num_args > 1:
-                        result = f" {key} ".join(
+                        result = self.combine(
                             [
-                                self.format_expression(
+                                self.get_expression(
                                     arg,
                                     style,
                                     params,
@@ -354,12 +605,13 @@ class SQLBuilder(Builder):
                                     depth=depth,
                                 )
                                 for arg in value
-                            ]
+                            ],
+                            separator=f' {key} '
                         )
                         return f"({result})"
                     else:
                         # e.g. {"not": ...}
-                        expression = self.format_expression(
+                        expression = self.get_expression(
                             value[0],
                             style,
                             params,
@@ -381,13 +633,13 @@ class SQLBuilder(Builder):
                 if key == "case":
                     raise NotImplementedError("case is not implemented yet")
                 if key == "between":
-                    val = self.format_expression(
+                    val = self.get_expression(
                         value["value"], style, params, allow_subquery, depth
                     )
-                    min_value = self.format_expression(
+                    min_value = self.get_expression(
                         value["min"], style, params, allow_subquery, depth
                     )
-                    max_value = self.format_expression(
+                    max_value = self.get_expression(
                         value["max"], style, params, allow_subquery, depth
                     )
                     symmetric = value.get("symmetric", False)
@@ -408,9 +660,9 @@ class SQLBuilder(Builder):
                 if not value:
                     arguments = ""
                 else:
-                    arguments = ", ".join(
+                    arguments = self.combine(
                         [
-                            self.format_expression(
+                            self.get_expression(
                                 arg,
                                 style,
                                 params,
@@ -418,7 +670,8 @@ class SQLBuilder(Builder):
                                 depth=depth,
                             )
                             for arg in value
-                        ]
+                        ],
+                        separator=', '
                     )
                 return f"{key}({arguments})"
 
@@ -440,26 +693,27 @@ class SQLBuilder(Builder):
         if not type:
             raise ValueError(f'constraint "{name}" must have key: "type"')
 
-        if type not in CONSTRAINT_TYPE_MAP:
+        if type not in CONSTRAINT_TYPES:
             raise ValueError(f'constraint "{name}" has invalid type: "{type}"')
 
-        type = CONSTRAINT_TYPE_MAP[constraint["type"]]
+        type = CONSTRAINT_TYPES[type]
         check = ""
         if constraint.get("check"):
             # check constraints use an expression
-            check = self.format_expression(check, style, params, depth=depth)
-            check = f" {check} "
+            check = constraint['check']
+            check = self.get_expression(check, style, params, depth=depth)
+            check = f" {check}"
             columns = ""
         else:
             # non-check constraints must have columns
             if "columns" not in constraint:
                 raise ValueError(f'{type} constraint: "{name}" must have key: "columns"')
             columns = constraint["columns"]
-            columns = ", ".join([self.format_identifier(c) for c in columns])
+            columns = self.combine([self.format_identifier(c) for c in columns], separator=', ')
             columns = f" ({columns})"
 
         related = ""
-        if type == "FOREIGN KEY":
+        if type == "foreign key":
             related_name = constraint.get("related_name")
             related_columns = constraint.get("related_columns")
             if not related_name or not related_columns:
@@ -468,8 +722,9 @@ class SQLBuilder(Builder):
                 )
 
             related_name = self.format_identifier(related_name)
-            related_columns = ", ".join(
-                [self.format_identifier(c) for c in related_columns]
+            related_columns = self.combine(
+                [self.format_identifier(c) for c in related_columns],
+                separator=', '
             )
             related = f" REFERENCES {related_name} ({related_columns})"
 
@@ -478,6 +733,7 @@ class SQLBuilder(Builder):
         deferrable = "DEFERRABLE" if deferrable else "NOT DEFERRABLE"
         deferred = "INITIALLY DEFERRED" if deferred else "INITIALLY IMMEDIATE"
         name = self.format_identifier(name)
+        type = type.upper()  # costmetic
         return f"{indent}CONSTRAINT {name} {type}{check}{columns}{related} {deferrable} {deferred}"
 
     def get_create_table_column(
@@ -503,7 +759,7 @@ class SQLBuilder(Builder):
         if default is None:
             default = ""
         else:
-            default = self.format_expression(
+            default = self.get_expression(
                 default, style, params, allow_subquery=False
             )
             default = f" DEFAULT {default}"
@@ -533,4 +789,4 @@ class SQLBuilder(Builder):
                 items.append(
                     self.get_create_table_constraint(c, style, params, depth=depth)
                 )
-        return ",\n".join(items)
+        return self.combine(items, separator=',\n')
