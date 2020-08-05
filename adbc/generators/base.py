@@ -14,6 +14,9 @@ class Column(Generator):
     type: str
     default: str = None
     null: bool = False
+    sequential: bool = False
+    primary: bool = False
+    unique: bool = False
 
 
 @dataclass_json

@@ -4,9 +4,15 @@ from asyncio import gather
 
 class WithInfo(object):
     async def get_info(
-        self, scope=None, data=True, schema=True, refresh=False, hashes=False
+        self,
+        scope=None,
+        data=True,
+        schema=True,
+        refresh=False,
+        hashes=False,
+        exclude=None,
     ):
-        last_scope = getattr(self, '_last_scope', self.scope)
+        last_scope = getattr(self, "_last_scope", self.scope)
         if last_scope != scope:
             # force refresh if running get_info
             # with different scope
@@ -19,7 +25,7 @@ class WithInfo(object):
 
         async for child in self.get_children(scope=scope):
             result[child.alias] = child.get_info(
-                data=data, schema=schema, hashes=hashes
+                data=data, schema=schema, hashes=hashes, exclude=exclude
             )
 
         keys, values = result.keys(), result.values()

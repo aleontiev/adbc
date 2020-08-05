@@ -11,7 +11,7 @@ class WithAlterSQL(object):
             remainder.append("DEFERRABLE" if deferrable else "NOT DEFERRABLE")
         if deferred is not None:
             remainder.append(
-                "INTIIALLY DEFERRED" if deferred else "INITIALLY IMMEDIATE"
+                "INITIALLY DEFERRED" if deferred else "INITIALLY IMMEDIATE"
             )
         remainder = " ".join(remainder)
         if not remainder:
@@ -40,6 +40,15 @@ class WithAlterSQL(object):
             return []
         table = self.F.table(table, schema=schema)
         column = self.F.column(column)
+        # preql: {
+        #   "alter": {
+        #       "column": {
+        #           "name": "public.a.b",
+        #           "default": default,
+        #           "type": "type",
+        #           ""
+        #       }
+        #  }
         return (f"ALTER TABLE {table}\nALTER COLUMN {column} {remainder}",)
 
 

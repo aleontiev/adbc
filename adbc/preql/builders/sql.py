@@ -1,5 +1,6 @@
 from adbc.preql.dialect import ParameterStyle, get_default_style
 import re
+from collections import defaultdict
 from typing import List, Union, Optional
 from .core import Builder
 
@@ -14,21 +15,38 @@ CONSTRAINT_TYPES = {
     "c": "check",
     "exclude": "exclude",
     "primary": "primary key",
+    "primary key": "primary key",
+    "foreign key": "foreign key",
     "foreign": "foreign key",
     "unique": "unique",
     "check": "check",
 }
-JOIN_TYPES = {"inner", "left", "right", "full", "cross"}
+INDEX_TYPES = {"btree": "btree", "hash": "hash", "gist": "gist", "gin": "gin"}
+
+JOIN_TYPES = {
+    "inner": "inner",
+    "left": "left",
+    "left outer": "left",
+    "right": "right",
+    "right outer": "right",
+    "full": "full",
+    "cross": "cross",
+}
 
 
 class SQLBuilder(Builder):
     def get_default_style(self):
         return ParameterStyle.FORMAT
 
-    def add_parameter(self, value, style: ParameterStyle, params: Union[list, dict]):
+    def add_parameter(
+        self, value, style: ParameterStyle, params: Union[list, dict], name=None
+    ):
         num = len(params)
+        if name and not style == ParameterStyle.NAMED:
+            raise ValueError("can only add named parameters with style NAMED")
+
         if style == ParameterStyle.NAMED:
-            label = f"p{num}"
+            label = name if name else f"p{num}"
             params[param] = value
             return f":{label}"
         elif style == ParameterStyle.NUMERIC:
@@ -101,7 +119,8 @@ class SQLBuilder(Builder):
         style: ParameterStyle,
         depth: int = 0,
         params=None,
-    ) -> List[tuple]:
+        by_table=False,
+    ) -> Union[List[tuple], dict]:
         """Builds $.create: create schematic elements
 
         Can create one or more of the following:
@@ -113,11 +132,41 @@ class SQLBuilder(Builder):
         - sequence (CREATE SEQUENCE)
         - index (CREATE INDEX)
         """
+        indent = " " * self.INDENT * depth
         if isinstance(clause, list):
-            results = []
+            all_results = []
+            table_results = {}
             for c in clause:
-                results.extend(self.build_create(c, style, depth=depth, params=params))
-            return results
+                # try to get results by table
+                subresults = self.build_create(
+                    c, style, depth=depth, params=params, by_table=True
+                )
+                if isinstance(subresults, list):
+                    all_results.extend(subresults)
+                elif isinstance(subresults, dict):
+                    # results by tables, only for "column" and "constraint"
+                    for key, value in subresults.items():
+                        value, ps = value
+                        if key not in table_results:
+                            # add table
+                            table_results[key] = (value, ps)
+                        else:
+                            # merge table
+                            table_results[key][0].extend(value)
+                            self.extend_parameters(table_results[key][1], ps)
+            if by_table:
+                return table_results
+
+            indent2 = " " * self.INDENT * (depth + 1)
+            for name, results in table_results.items():
+                name = self.format_identifier(name)
+                results, params = results
+                separator = f"\n{indent2}" if len(results) > 1 else " "
+                results = self.combine(results, separator=separator)
+                results = f"{indent}ALTER TABLE {name}{separator}{results}"
+                all_results.append((results, params))
+
+            return all_results
 
         children = (
             "database",
@@ -135,14 +184,86 @@ class SQLBuilder(Builder):
                 break
 
         if method:
-            return getattr(self, method)(
-                clause[child], style, depth=depth, params=params
-            )
+            method = getattr(self, method)
+            kwargs = {"depth": depth, "params": params}
+            if by_table and child == "column" or child == "constraint":
+                kwargs["by_table"] = True
+            return method(clause[child], style, **kwargs)
         else:
             raise NotImplementedError(f"create expecting to contain one of: {children}")
 
-    def build_alter(self, clause: dict, style: ParameterStyle) -> List[tuple]:
-        raise NotImplementedError()
+    def build_alter(
+        self, clause: dict, style: ParameterStyle, params=None, depth: int = 0, by_table=False
+    ) -> List[tuple]:
+        """Builds $.alter: modifies schematic elements
+
+        Can alter the following:
+            database: (ALTER DATABASE)
+            schema: (ALTER SCHEMA)
+            table: (ALTER TABLE *)
+            column (ALTER TABLE ALTER COLUMN)
+            constraint (ALTER TABLE ALTER CONSTRAINT)
+            sequence (ALTER SEQUENCE)
+        """
+        indent = " " * self.INDENT * depth
+        if isinstance(clause, list):
+            all_results = []
+            table_results = {}
+            for c in clause:
+                # try to get results by table
+                subresults = self.build_alter(
+                    c, style, depth=depth, params=params, by_table=True
+                )
+                if isinstance(subresults, list):
+                    all_results.extend(subresults)
+                elif isinstance(subresults, dict):
+                    # results by tables, only for "column" and "constraint"
+                    for key, value in subresults.items():
+                        value, ps = value
+                        if key not in table_results:
+                            # add table
+                            table_results[key] = (value, ps)
+                        else:
+                            # merge table
+                            table_results[key][0].extend(value)
+                            self.extend_parameters(table_results[key][1], ps)
+            if by_table:
+                return table_results
+
+            indent2 = " " * self.INDENT * (depth + 1)
+            for name, results in table_results.items():
+                name = self.format_identifier(name)
+                results, params = results
+                separator = f"\n{indent2}" if len(results) > 1 else " "
+                results = self.combine(results, separator=separator)
+                results = f"{indent}ALTER TABLE {name}{separator}{results}"
+                all_results.append((results, params))
+
+            return all_results
+
+        children = (
+            "database",
+            "schema",
+            "table",
+            "column",
+            "constraint",
+            "sequence",
+            "index",
+        )
+        method = None
+        for child in children:
+            if child in clause:
+                method = f"build_create_{child}"
+                break
+
+        if method:
+            method = getattr(self, method)
+            kwargs = {"depth": depth, "params": params}
+            if by_table and child == "column" or child == "constraint":
+                kwargs["by_table"] = True
+            return method(clause[child], style, **kwargs)
+        else:
+            raise NotImplementedError(f"create expecting to contain one of: {children}")
 
     def build_show(self, clause: dict, style: ParameterStyle) -> List[tuple]:
         raise NotImplementedError()
@@ -359,7 +480,7 @@ class SQLBuilder(Builder):
             type = join.get("type", "inner").lower()
             if type not in JOIN_TYPES:
                 raise ValueError(f'select: invalid join type "{type}"')
-            type = type.upper()  # cosmetic
+            type = JOIN_TYPES[type].upper()
             return f"{indent}{type} JOIN {to}{as_}{on}"
 
     def get_select_where(self, where, style, params, depth=0) -> str:
@@ -535,6 +656,186 @@ class SQLBuilder(Builder):
         query = f"{indent}CREATE SCHEMA {schema}"
         return [(query, params)]
 
+    def build_create_sequence(
+        self,
+        clause: Union[str, dict],
+        style: ParameterStyle,
+        depth: int = 0,
+        params=None,
+    ):
+        """Builds $.create.sequence"""
+        indent = " " * self.INDENT * depth
+        if isinstance(clause, str):
+            name = clause
+            temporary = False
+            maybe = False
+            min_value = None
+            max_value = None
+            start = None
+            owned_by = None
+            increment = None
+        else:
+            name = clause["name"]
+            temporary = clause.get("temporary", False)
+            maybe = clause.get("maybe", False)
+            min_value = clause.get("min_value")
+            if min_value:
+                min_value = int(min_value)
+            max_value = clause.get("max_value")
+            if max_value:
+                max_value = int(max_value)
+            start = clause.get("start")
+            if start:
+                start = int(start)
+            increment = clause.get("increment")
+            if increment:
+                increment = int(increment)
+            owned_by = clause.get("owned_by")
+            if owned_by:
+                owned_by = self.format_identifier(owned_by)
+
+        name = self.format_identifier(name)
+        temporary = " TEMPORARY " if temporary else " "
+        maybe = " IF NOT EXISTS " if maybe else " "
+        owned_by = f" OWNED BY {owned_by}"
+        min_value = f" MINVALUE {min_value}" if min_value else ""
+        max_value = f" MAXVALUE {max_value}" if max_value else ""
+        start = f" START WITH {start}" if start else ""
+        increment = f" INCREMENT BY {increment}" if increment else ""
+        query = (
+            f"{indent}CREATE{temporary}SEQUENCE{maybe}{name}"
+            f"{increment}{min_value}{max_value}{start}{owned_by}"
+        )
+        return [(query, params)]
+
+    def build_create_column(
+        self,
+        clause: Union[list, dict],
+        style: ParameterStyle,
+        depth: int = 0,
+        params=None,
+        by_table=False,
+    ):
+        return self.build_create_table_item(
+            "column", clause, style, depth=depth, params=params, by_table=by_table,
+        )
+
+    def build_create_table_item(
+        self,
+        type,
+        clause: Union[list, dict],
+        style: ParameterStyle,
+        depth: int = 0,
+        params=None,
+        by_table=False,
+    ):
+        """Builds $.create.{column, constraint}"""
+        if type == "column":
+            # optional prefix for column definitions
+            prefix = f"COLUMN "
+        else:
+            prefix = ""
+
+        indent = " " * self.INDENT * depth
+        indent2 = " " * self.INDENT * (depth + 1)
+        if by_table:
+            indent2 = ""
+
+        if not isinstance(clause, list):
+            clause = [clause]
+
+        tables = defaultdict(lambda: ([], self.get_empty_parameters(style)))
+
+        create_method = getattr(self, f"get_create_{type}")
+        # group by "on"
+
+        for item in clause:
+            on = item["on"]
+            items, params = tables[on]
+            item = create_method(item, style, params)
+            item = f"{indent2}ADD {prefix}{item}"
+            items.append(item)
+
+        if by_table:
+            return tables
+
+        results = []
+        for table, items in tables.items():
+            adds, params = items
+            separator = "\n" if len(adds) > 1 else " "
+            adds = self.combine(adds, separator=separator)
+            on = self.format_identifier(table)
+            results.append((f"{indent}ALTER TABLE {on}{separator}{adds}", params))
+        return results
+
+    def build_create_constraint(
+        self,
+        clause: Union[list, dict],
+        style: ParameterStyle,
+        depth: int = 0,
+        params=None,
+        by_table=False,
+    ):
+        """Builds $.create.constraint"""
+        return self.build_create_table_item(
+            "constraint", clause, style, depth, params, by_table
+        )
+
+    def build_create_index(
+        self,
+        clause: Union[list, dict],
+        style: ParameterStyle,
+        depth: int = 0,
+        params=None,
+    ):
+        """Builds $.create.index"""
+        indent = " " * self.INDENT * depth
+        if isinstance(clause, list):
+            # multiple indexes
+            results = []
+            for c in clause:
+                results.extend(
+                    self.build_create_index(c, style, depth=depth, params=params)
+                )
+                return results
+        if isinstance(clause, dict):
+            name = clause["name"]
+            on = clause["on"]
+            type = clause.get("type")
+            if type:
+                if type not in INDEX_TYPES:
+                    raise ValueError(f'create index: invalid type "{type}"')
+                type = INDEX_TYPES[type]
+                type = f" USING {type}"
+            else:
+                # default (btree)
+                type = ""
+            on = self.format_identifier(on)
+            name = self.format_identifier(name)
+            concurrently = clause.get("concurrently", False)
+            if concurrently:
+                concurrently = " CONCURRENTLY "
+            else:
+                concurrently = " "
+            columns = clause.get("columns")
+            expression = clause.get("expression")
+            if columns:
+                expression = self.combine(
+                    [self.format_identifier(c) for c in columns], separator=", "
+                )
+            elif expression:
+                expression = self.get_expression(
+                    expression, style, params, depth=depth, allow_subquery=False
+                )
+            return [
+                (
+                    f"{indent}CREATE INDEX{concurrently}{name} ON {on}{type} ({expression})",
+                    [],
+                )
+            ]
+
+        raise NotImplementedError()
+
     def build_create_table(
         self,
         clause: Union[list, str, dict],
@@ -551,6 +852,7 @@ class SQLBuilder(Builder):
             as_ = None
             columns = None
             constraints = None
+            indexes = None
             temporary = False
             maybe = False
         elif isinstance(clause, list):
@@ -558,7 +860,7 @@ class SQLBuilder(Builder):
             results = []
             for c in clause:
                 results.extend(
-                    self.build_create_table(c, style=style, depth=depth, params=params)
+                    self.build_create_table(c, style, depth=depth, params=params)
                 )
             return results
         else:
@@ -566,23 +868,47 @@ class SQLBuilder(Builder):
             name = clause["name"]
             columns = clause.get("columns", None)
             constraints = clause.get("constraints", None)
+            indexes = clause.get("indexes", None)
             as_ = clause.get("as", None)
             temporary = clause.get("temporary", False)
             maybe = clause.get("maybe", False)
+
+        if indexes:
+            # only create non-unique and non-primary indexes directly
+            # unique and primary key are created automatically as constraints
+            # if they are specified here, ignore them
+            indexes = [
+                i
+                for i in indexes
+                if not i.get("primary", False) and not i.get("unique", False)
+            ]
+            new_indexes = []
+            for i in indexes:
+                if i.get("primary", False) or i.get("unique", False):
+                    continue
+                i["on"] = name
+            new_indexex = indexes
 
         params = self.get_parameters(style, params)
         temporary = " TEMPORARY " if temporary else " "
         maybe = " IF NOT EXISTS " if maybe else " "
         name = self.format_identifier(name)
+        index_queries = []
+        if indexes:
+            index_queries = self.build_create_index(
+                indexes, style, depth=depth, params=params
+            )
         if as_:
             # CREATE TABLE name AS (SELECT ...)
             subquery = self.get_subquery(as_, style, params, depth=depth)
-            return [
+            result = [
                 (
                     f"{indent}CREATE{temporary}TABLE{maybe}{name} AS (\n{subquery}\n)",
                     params,
                 )
             ]
+            result.extend(index_queries)
+            return result
         else:
             # CREATE TABLE name
             if not columns:
@@ -591,9 +917,11 @@ class SQLBuilder(Builder):
             items = self.get_create_table_items(
                 columns, style, params, constraints=constraints, depth=depth + 1
             )
-            return [
+            result = [
                 (f"{indent}CREATE{temporary}TABLE{maybe}{name} (\n{items}\n)", params)
             ]
+            result.extend(index_queries)
+            return result
 
     def get_subquery(self, data, style, params, depth=0) -> str:
         result = self.build(data, style, depth=depth + 1, params=params)
@@ -804,7 +1132,7 @@ class SQLBuilder(Builder):
 
         raise ValueError(f"cannot format expression {expression}")
 
-    def get_create_table_constraint(
+    def get_create_constraint(
         self,
         constraint: dict,
         style: ParameterStyle,
@@ -866,7 +1194,7 @@ class SQLBuilder(Builder):
         type = type.upper()  # costmetic
         return f"{indent}CONSTRAINT {name} {type}{check}{columns}{related} {deferrable} {deferred}"
 
-    def get_create_table_column(
+    def get_create_column(
         self,
         column: dict,
         style: ParameterStyle,
@@ -911,10 +1239,8 @@ class SQLBuilder(Builder):
         """
         items = []
         for c in columns:
-            items.append(self.get_create_table_column(c, style, params, depth=depth))
+            items.append(self.get_create_column(c, style, params, depth=depth))
         if constraints:
             for c in constraints:
-                items.append(
-                    self.get_create_table_constraint(c, style, params, depth=depth)
-                )
+                items.append(self.get_create_constraint(c, style, params, depth=depth))
         return self.combine(items, separator=",\n")

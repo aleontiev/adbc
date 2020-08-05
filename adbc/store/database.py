@@ -228,9 +228,8 @@ class Database(Loggable, WithCopy, WithScope):
 
     def get_namespaces_query(self, scope=None):
         include = self.get_child_include(scope=scope)
-        # preql = {
-        #   "select": {"values": "namespace.name"}, "from": {"namespace": "pg_na
-        return self.backend.get_query('namespaces', include, tag=self.tag)
+        tag = self.tag
+        return self.backend.get_query('namespaces', include, tag=tag)
 
     def get_namespace(self, name, scope=None, refresh=False):
         if name not in self._schemas or refresh:

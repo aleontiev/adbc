@@ -47,14 +47,6 @@ class Table(Loggable):
             )
         }
 
-        if not self.scope.get("sequences", True):
-            # ignore nextval / sequence-based default values
-            for column in self.columns.values():
-                if "default" in column:
-                    default = column["default"]
-                    if isinstance(default, str) and default.startswith("nextval("):
-                        column["default"] = None
-
         self.column_names = list(self.columns.keys())
         self.constraints = {
             k: v
@@ -74,6 +66,26 @@ class Table(Loggable):
 
         self.pks = get_pks(self.indexes, self.constraints, self.column_names)
 
+        # set computed field values:
+        # - sequential: based on auto-increment or nextval
+        # - primary: based on primary constraint or index
+        # - unique: based on unique constraints
+        unique_columns = {}
+        for name, constraint in self.constraints.items():
+            if constraint['type'] == 'unique' and len(constraint.get('columns', [])) == 1:
+                unique_columns.add(constraint['columns'][0])
+
+        for name, column in self.columns.items():
+            if "default" in column:
+                default = column["default"]
+                if isinstance(default, str) and default.startswith("nextval("):
+                    column['sequential'] = column.get('sequential', True)
+                else:
+                    column['sequential'] = column.get('sequential', False)
+
+            column['primary'] = (name in self.pks)
+            column['unique'] = (name in unique_columns)
+
         # if disabled, remove constraints/indexes
         # but only after they are used to determine possible primary key
         constraints = self.scope.get("constraints", True)
@@ -92,6 +104,7 @@ class Table(Loggable):
 
     async def get_info(self, schema=True, data=True, hashes=False, **kwargs):
         result = {}
+        exclude = kwargs.get('exclude', None)
         if data:
             data_range = self.get_data_range()
             count = self.get_count()
@@ -114,17 +127,54 @@ class Table(Loggable):
             if hashes:
                 result["data"]["hashes"] = data_hashes
         if schema:
-            result["schema"] = self.get_schema()
+            result["schema"] = self.get_schema(exclude=exclude)
 
         self.log(f"{self}: info")
         return result
 
-    def get_schema(self):
-        result = {"columns": self.columns}
+    def get_schema(self, exclude=None):
+        """
+        exclude:
+            e.g: {
+                "columns": {
+                    'names': ['id'],
+                    'fields': ['default']
+                },
+                "constraints": {
+                    'fields': ['deferrable', 'deferred']
+                }
+            }
+        """
+        exclude = exclude or {}
+        result = {
+            "columns": (
+                self.exclude(self.columns, exclude.get('columns'))
+            )
+        }
         if self.constraints is not None:
-            result["constraints"] = self.constraints
+            result["constraints"] = (
+                self.exclude(self.constraints, exclude.get('constraints'))
+            )
+
         if self.indexes is not None:
-            result["indexes"] = self.indexes
+            result["indexes"] = (
+                self.exclude(self.indexes, exclude.get('indexes'))
+            )
+        return result
+
+    def exclude(self, source: dict, exclude: dict) -> dict:
+        if not exclude:
+            return source
+        names = exclude.get('names', None)
+        fields = exclude.get('fields', None)
+        result = {}
+        for key, value in source.items():
+            if names and key in names:
+                continue
+            if fields:
+                for f in fields:
+                    value.pop(f, None)
+            result[key] = value
         return result
 
     def get_decode_boolean(self, column):

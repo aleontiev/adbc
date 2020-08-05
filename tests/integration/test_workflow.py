@@ -15,7 +15,7 @@ async def test_workflow():
         'table',
         schema={
             'columns': {
-                'id': G('column', type='integer'),
+                'id': G('column', type='integer', primary=True),
                 'name': G('column', type='text', null=True),
                 'email': G('column', type='text')
             },
@@ -31,7 +31,7 @@ async def test_workflow():
         'table',
         schema={
             'columns': {
-                'id': G('column', type='integer'),
+                'id': G('column', type='integer', primary=True),
                 'data': G('column', type='text'),
                 'user_email': G('column', type='text'),
                 'user_name': G('column', type='text', null=True)

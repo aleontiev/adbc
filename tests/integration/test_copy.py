@@ -19,7 +19,7 @@ async def test_copy():
     table_definition = G(
         'table',
         schema={
-            'columns': {'id': G('column', type='integer'), 'name': G('column', type='text')},
+            'columns': {'id': G('column', type='integer', primary=True), 'name': G('column', type='text')},
             'constraints': {'test_id': G('constraint', type='primary', columns=['id'])},
             'indexes': {'test_id': G('index', type='btree', primary=True, unique=True, columns=['id'])}
         }
@@ -27,7 +27,7 @@ async def test_copy():
     copy_definition = G(
         'table',
         schema={
-            'columns': {'id': G('column', type='integer'), 'name': G('column', type='text')},
+            'columns': {'id': G('column', type='integer', primary=True), 'name': G('column', type='text')},
             'constraints': {'copy_id': G('constraint', type='primary', columns=['id'])},
             'indexes': {'copy_id': G('index', type='btree', primary=True, unique=True, columns=['id'])}
         }
@@ -35,7 +35,7 @@ async def test_copy():
     other_definition = G(
         'table',
         schema={
-            'columns': {'id': G('column', type='integer'), 'name': G('column', type='text')},
+            'columns': {'id': G('column', type='integer', primary=True), 'name': G('column', type='text')},
             'constraints': {'other_id': G('constraint', type='primary', columns=['id'])},
             'indexes': {'other_id': G('index', type='btree', primary=True, unique=True, columns=['id'])}
         }

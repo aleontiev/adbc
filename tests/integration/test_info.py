@@ -15,7 +15,7 @@ async def test_info():
     table_definition = {
         "schema": {
             "columns": {
-                "id": G('column', type='integer'),
+                "id": G('column', type='integer', primary=True),
                 "name": G('column', type='text', null=True)
             },
             "constraints": {
