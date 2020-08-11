@@ -9,6 +9,7 @@ from adbc.sql import print_query
 from adbc.operations.copy import WithCopy
 from adbc.logging import Loggable
 from adbc.constants import SEP, SEPN
+from adbc.preql import build
 from .namespace import Namespace
 
 SKIP_CA_CHECK = os.environ.get('ADBC_SKIP_CA_CHECK') == '1'
@@ -132,29 +133,40 @@ class Database(Loggable, WithCopy, WithScope):
     async def full_version(self):
         return await self.get_full_version()
 
-    async def stream(self, *query, transaction=True, connection=None):
-        pool = await self.pool
-        connection = aecho(connection) if connection else pool.acquire()
-        pquery = print_query(query)
-        async with connection as conn:
-            if self.prompt:
-                if not confirm(f"{self.name} ({self.tag}): {SEP}{pquery}{SEPN}", True):
-                    raise Exception(f"{self}: stream aborted")
-            else:
-                self.log(f"{self}: stream{SEP}{pquery}{SEPN}")
-            transaction = conn.transaction() if transaction else aecho()
-            async with transaction:
-                async for row in conn.cursor(*query):
-                    yield row
+    async def stream(self, query, params=None, transaction=True, connection=None):
+        if isinstance(query, (dict, list)):
+            # build PreQL
+            queries = build(query, dialect=self.backend.dialect)
+        else:
+            queries = [(query, params)]
+
+        for query, params in queries:
+            pool = await self.pool
+            connection = aecho(connection) if connection else pool.acquire()
+            pquery = print_query(query, params)
+            async with connection as conn:
+                if self.prompt:
+                    if not confirm(f"{self.name} ({self.tag}): {SEP}{pquery}{SEPN}", True):
+                        raise Exception(f"{self}: stream aborted")
+                else:
+                    self.log(f"{self}: stream{SEP}{pquery}{SEPN}")
+                transaction = conn.transaction() if transaction else aecho()
+                async with transaction:
+                    async for row in self.backend.cursor(conn, query, params):
+                        yield row
 
     def use(self, connection):
         self._connection = connection
 
-    async def execute(self, *query, connection=None, transaction=False):
+    async def execute(self, query, params=None, connection=None, transaction=False):
+        if isinstance(query, (dict, list)):
+            # build PreQL
+            query, params = build(query, dialect=self.backend.dialect, combine=True)
+
         pool = await self.pool
         connection = connection or self._connection
         connection = aecho(connection) if connection else pool.acquire()
-        pquery = print_query(query)
+        pquery = print_query(query, params)
 
         async with connection as conn:
             if self.prompt:
@@ -165,61 +177,77 @@ class Database(Loggable, WithCopy, WithScope):
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
                 try:
-                    return await conn.execute(*query)
+                    return await self.backend.execute(
+                        conn, query, params
+                    )
                 except Exception as e:
                     err = f"{self}: execute failed; {e.__class__.__name__}: {e}"
                     err += f"\nQuery:{SEP}{pquery}{SEPN}"
                     raise Exception(err)
 
     async def query(
-        self, *query, connection=None, many=True, columns=True, transaction=False
+        self, query, params=None, connection=None, many=True, columns=True, transaction=False
     ):
         pool = await self.pool
         connection = connection or self._connection
         connection = aecho(connection) if connection else pool.acquire()
-        pquery = print_query(query)
 
-        async with connection as conn:
-            if self.prompt:
-                if not confirm(f"{self.name} ({self.tag}): {SEP}{pquery}{SEPN}", True):
-                    raise Exception(f"{self}: query aborted")
-            else:
-                self.log(f"{self}: query{SEP}{pquery}{SEPN}")
-            transaction = conn.transaction() if transaction else aecho()
-            async with transaction:
-                try:
-                    results = await conn.fetch(*query)
-                except Exception as e:
-                    err = f"{self}: query failed; {e.__class__.__name__}: {e}"
-                    err += f"\nQuery:{SEP}{pquery}{SEPN}"
-                    raise Exception(err)
-                if many:
-                    return results if columns else [r[0] for r in results]
+        if isinstance(query, (dict, list)):
+            # build PreQL
+            queries = build(query, dialect=self.backend.dialect)
+        else:
+            queries = [(query, params)]
+
+        one = len(queries) == 1
+        all_results = []
+        for query, params in queries:
+            pquery = print_query(query, params)
+            async with connection as conn:
+                if self.prompt:
+                    if not confirm(f"{self.name} ({self.tag}): {SEP}{pquery}{SEPN}", True):
+                        raise Exception(f"{self}: query aborted")
                 else:
-                    num = len(results)
-                    if num == 0:
-                        # no results -> return None
-                        return None
-                    if num != 1:
-                        raise Exception(
-                            f"{self}: query failed; expecting <=1 row, got {num}\n"
-                            f"Query:{SEP}{query}{SEPN}"
+                    self.log(f"{self}: query{SEP}{pquery}{SEPN}")
+                transaction = conn.transaction() if transaction else aecho()
+                async with transaction:
+                    try:
+                        results = await self.backend.fetch(conn, query, params)
+                    except Exception as e:
+                        err = f"{self}: query failed; {e.__class__.__name__}: {e}"
+                        err += f"\nQuery:{SEP}{pquery}{SEPN}"
+                        raise Exception(err)
+                    if many:
+                        all_results.append(
+                            results if columns else [r[0] for r in results]
                         )
-                    result = results[0]
-                    return result if columns else result[0]
+                        continue
+                    else:
+                        num = len(results)
+                        if num == 0:
+                            # no results -> return None
+                            all_results.append(None)
+                            continue
+                        if num != 1:
+                            raise Exception(
+                                f"{self}: query failed; expecting <=1 row, got {num}\n"
+                                f"Query:{SEP}{query}{SEPN}"
+                            )
+                        result = results[0]
+                        all_results.append(result if columns else result[0])
 
-    async def query_one_row(self, *query, **kwargs):
-        return await self.query(*query, many=False, columns=True, **kwargs)
+        return all_results[0] if one else all_results
 
-    async def query_one_column(self, *query, **kwargs):
-        return await self.query(*query, many=True, columns=False, **kwargs)
+    async def query_one_row(self, query, params=None, **kwargs):
+        return await self.query(query, params=params, many=False, columns=True, **kwargs)
 
-    async def query_one_value(self, *query, **kwargs):
-        return await self.query(*query, many=False, columns=False, **kwargs)
+    async def query_one_column(self, query, params=None, **kwargs):
+        return await self.query(query, params=params, many=True, columns=False, **kwargs)
+
+    async def query_one_value(self, query, params=None, **kwargs):
+        return await self.query(query, params=params, many=False, columns=False, **kwargs)
 
     async def get_full_version(self):
-        # preql = {"select": {"values": {"version": {"version": []}}}
-        version = await self.query_one_value(*self.backend.get_query('version'))
+        version = await self.query_one_value(self.backend.get_query('version'))
         return version
 
     @cached_property
@@ -267,7 +295,7 @@ class Database(Loggable, WithCopy, WithScope):
 
     async def get_children(self, scope=None, refresh=False):
         query = self.get_namespaces_query(scope=scope)
-        async for row in self.stream(*query):
+        async for row in self.stream(query):
             try:
                 yield self.get_namespace(row[0], scope=scope, refresh=refresh)
             except NotIncluded:

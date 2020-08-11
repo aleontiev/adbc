@@ -1,9 +1,9 @@
 CONSTRAINT_TYPE_MAP = {
-    "x": "EXCLUDE",
-    "p": "PRIMARY KEY",
-    "f": "FOREIGN KEY",
-    "u": "UNIQUE",
-    "c": "CHECK",
+    "exclude": "EXCLUDE",
+    "primary": "PRIMARY KEY",
+    "foreign": "FOREIGN KEY",
+    "unique": "UNIQUE",
+    "check": "CHECK",
 }
 
 
@@ -51,6 +51,20 @@ class WithCreateSQL(object):
     def get_create_schema_query(self, name):
         schema = self.F.schema(name)
         return (f"CREATE SCHEMA {schema}",)
+
+    def get_create_sequence_query(
+        self, name, owned_by=None, temporary=False, maybe=False
+    ):
+        return {
+            'create': {
+                'sequence': {
+                    'name': name,
+                    'owned_by': owned_by,
+                    'temporary': temporary,
+                    'maybe': maybe
+                }
+            }
+        }
 
     def get_create_index_query(self, table, name, index, schema=None):
         unique = " UNIQUE" if index["unique"] else ""

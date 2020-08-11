@@ -62,12 +62,15 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
                 target_columns = list(sorted(target_model.table.columns.keys()))
                 # copy from source to buffer
-                source_sql = await source_query.get(sql=True)
+                source_sql, source_params = await source_query.get(sql=True)
                 if self.parallel_copy:
                     buffer = AsyncBuffer()
                     copy_from, copy_to = await gather(
                         self.copy_from(
-                            query=source_sql, output=buffer.write, close=buffer
+                            query=source_sql,
+                            params=source_params,
+                            output=buffer.write,
+                            close=buffer
                         ),
                         target.copy_to(
                             table_name=target_table,
@@ -319,7 +322,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         return result
 
     async def copy(
-        self, target, scope=None, check_all=True, refresh=True, final_diff=True
+        self, target, scope=None, check_all=True, refresh=True, final_diff=True, exclude=None
     ):
         if refresh:
             # clear schema caches at the start if refresh=True
@@ -328,14 +331,22 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             self.clear_cache()
             target.clear_cache()
 
-        schema_diff = await self.diff(target, scope=scope, data=False)
-        schema_changes = await target.copy_metadata(schema_diff, scope=scope)
+        schema_diff = await self.diff(
+            target,
+            scope=scope,
+            data=False,
+            exclude=exclude
+        )
+        schema_changes = await target.copy_metadata(
+            schema_diff,
+            scope=scope
+        )
 
         if schema_changes:
             target.clear_cache()
 
         source_info, target_info, data_diff = await self.diff(
-            target, scope=scope, info=True
+            target, scope=scope, info=True, exclude=exclude
         )
         data_changes = await self.copy_data(
             target,
@@ -347,7 +358,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         )
         # TODO: drop and add the FK constraints before/after copy_data
         if final_diff:
-            final_diff = await self.diff(target, scope=scope)
+            final_diff = await self.diff(target, scope=scope, exclude=exclude)
         return {
             "schema_changes": schema_changes,
             "data_changes": data_changes,
@@ -363,12 +374,16 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         connection = aecho(connection) if connection else pool.acquire()
         close = kwargs.pop("close", False)
         query = kwargs.pop("query", None)
+        params = kwargs.pop('params', None)
         if table_name:
             target_label = f"{schema_name}.{table_name}" if schema_name else table_name
         else:
             if not query:
                 raise NotImplementedError("table or query is required")
-            target_label = print_query(query)
+            if isinstance(query, (list, dict)):
+                # compile from PreQL
+                query, params = build(query, dialect=self.backend.dialect, combine=True)
+            target_label = print_query(query, params)
 
         if self.prompt:
             if not confirm(f"{self.name} ({self.tag}): {SEP}copy from {target_label}{SEPN}", True):
@@ -382,11 +397,11 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                 result = None
                 if table_name:
                     result = get_tagged_number(
-                        await conn.copy_from_table(table_name, **kwargs)
+                        await self.backend.copy_from_table(conn, table_name, **kwargs)
                     )
                 else:
                     result = get_tagged_number(
-                        await conn.copy_from_query(*query, **kwargs)
+                        await self.backend.copy_from_query(conn, query, params, **kwargs)
                     )
                 if close:
                     if hasattr(close, "close"):
@@ -419,5 +434,5 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
                 return get_tagged_number(
-                    await conn.copy_to_table(table_name, **kwargs)
+                    await self.backend.copy_to_table(conn, table_name, **kwargs)
                 )

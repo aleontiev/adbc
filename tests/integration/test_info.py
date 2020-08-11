@@ -91,10 +91,25 @@ async def test_info():
         # 8. get database statistics again with an aliased scope
         # alias scope supports translation during diff/copy
         info = await source.get_info(scope=alias_scope, hashes=True)
+
         actual_schema = info["main"]["test"]["schema"]
         test_data = info["main"]["test"]["data"]
+        # expect unique to be set 
+        expect_schema['columns']['name']['unique'] = True
         assert expect_schema["columns"] == actual_schema["columns"]
         assert expect_schema["constraints"] == actual_schema["constraints"]
         assert test_data["count"] == 4
         assert test_data["range"] == {"id": {"min": 1, "max": 6}}
         assert test_data['hashes'] == {1: '38dcabe82cf0aeef4e6601bf3a4c17da'}
+
+        # 9. test exclusion: ignore certain fields
+        info = await source.get_info(scope=alias_scope, hashes=True, exclude={
+            'columns': {
+                'fields': ['unique', 'primary']
+            }
+        })
+        actual_schema = info['main']['test']['schema']
+        for name, column in expect_schema['columns'].items():
+            column.pop('primary')
+            column.pop('unique')
+        assert expect_schema['columns'] == actual_schema['columns']

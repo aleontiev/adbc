@@ -218,10 +218,9 @@ def where_clause(where, args):
         return ''
 
 
-def print_query(query, sep='\n-----\n'):
-    query, *args = query
-    if not args:
+def print_query(query, params, sep='\n-----\n'):
+    if not params:
         return query
     else:
-        args = '\n'.join([f'${i+1}: {a}' for i, a in enumerate(args)])
+        args = '\n'.join([f'${i+1}: {a}' for i, a in enumerate(params)])
         return f'{query}{sep}{args}'

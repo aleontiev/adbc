@@ -2,7 +2,7 @@ import asyncio
 from copy import copy
 from collections import defaultdict
 from adbc.logging import Loggable
-from adbc.sql import get_pks, can_order
+from adbc.sql import get_pks, can_order, get_sequence_name
 from cached_property import cached_property
 from adbc.utils import split_field
 
@@ -21,6 +21,7 @@ class Table(Loggable):
         verbose=False,
         tag=None,
         alias=None,
+        type=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -29,11 +30,14 @@ class Table(Loggable):
         else:
             self.scope = scope
 
+        self.type = type or 'table'
         self.name = name
         self.verbose = verbose
         self.parent = self.namespace = namespace
         self.database = namespace.database
         self.alias = alias or name
+        self.tag = tag
+
         self.on_create = self.scope.get("on_create", None)
         self.on_update = self.scope.get("on_update", None)
         self.on_delete = self.scope.get("on_update", None)
@@ -48,6 +52,11 @@ class Table(Loggable):
         }
 
         self.column_names = list(self.columns.keys())
+
+        if self.type == 'sequence':
+            # sequences do not have constraints/indexes
+            return
+
         self.constraints = {
             k: v
             for k, v in split_field(
@@ -61,16 +70,14 @@ class Table(Loggable):
             )
         }
 
-        self.tag = tag
         self.pks = []
-
         self.pks = get_pks(self.indexes, self.constraints, self.column_names)
 
         # set computed field values:
-        # - sequential: based on auto-increment or nextval
+        # - sequence: based on auto-increment or nextval
         # - primary: based on primary constraint or index
         # - unique: based on unique constraints
-        unique_columns = {}
+        unique_columns = set()
         for name, constraint in self.constraints.items():
             if constraint['type'] == 'unique' and len(constraint.get('columns', [])) == 1:
                 unique_columns.add(constraint['columns'][0])
@@ -79,9 +86,9 @@ class Table(Loggable):
             if "default" in column:
                 default = column["default"]
                 if isinstance(default, str) and default.startswith("nextval("):
-                    column['sequential'] = column.get('sequential', True)
+                    column['sequence'] = column.get('sequence', get_sequence_name(default))
                 else:
-                    column['sequential'] = column.get('sequential', False)
+                    column['sequence'] = column.get('sequence', False)
 
             column['primary'] = (name in self.pks)
             column['unique'] = (name in unique_columns)
@@ -129,6 +136,8 @@ class Table(Loggable):
         if schema:
             result["schema"] = self.get_schema(exclude=exclude)
 
+        result['type'] = self.type
+
         self.log(f"{self}: info")
         return result
 
@@ -138,10 +147,11 @@ class Table(Loggable):
             e.g: {
                 "columns": {
                     'names': ['id'],
-                    'fields': ['default']
+                    'fields': ['default'],
                 },
                 "constraints": {
-                    'fields': ['deferrable', 'deferred']
+                    'fields': ['deferrable', 'deferred'],
+                    'types': 'foreign'
                 }
             }
         """
@@ -167,13 +177,17 @@ class Table(Loggable):
             return source
         names = exclude.get('names', None)
         fields = exclude.get('fields', None)
+        types = exclude.get('types', None)
         result = {}
         for key, value in source.items():
             if names and key in names:
                 continue
+            if types and value.get('type') in types:
+                continue
             if fields:
                 for f in fields:
                     value.pop(f, None)
+
             result[key] = value
         return result
 

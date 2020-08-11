@@ -41,7 +41,7 @@ class SQLBuilder(Builder):
     def add_parameter(
         self, value, style: ParameterStyle, params: Union[list, dict], name=None
     ):
-        num = len(params)
+        num = len(params) + 1
         if name and not style == ParameterStyle.NAMED:
             raise ValueError("can only add named parameters with style NAMED")
 
@@ -351,10 +351,7 @@ class SQLBuilder(Builder):
             raise ValueError('select: must have "data"')
 
         indent = " " * self.INDENT * depth
-        if prefix:
-            prefix = f"{indent}SELECT\n"
-        else:
-            prefix = indent
+        indent2 = " " * self.INDENT * (depth + 1)
 
         if isinstance(data, list):
             result = self.combine(
@@ -368,15 +365,21 @@ class SQLBuilder(Builder):
                     )
                     for d in data
                 ],
-                separator=",\n",
+                separator=f",\n{indent2}",
             )
-            return f"{prefix}{result}"
+            if prefix:
+                return f"{indent}SELECT\n{indent2}{result}"
+            else:
+                return result
 
         if isinstance(data, str):
             result = self.get_expression(
-                data, style, params, indent=False, depth=depth, allow_subquery=False
+                data, style, params, indent=False, depth=depth+1, allow_subquery=False
             )
-            return f"{prefix}{result}"
+            if prefix:
+                return f"{indent}SELECT {result}"
+            else:
+                return result
 
         if isinstance(data, dict):
             results = []
@@ -387,9 +390,10 @@ class SQLBuilder(Builder):
                 )
                 results.append(f"{expression} AS {name}")
             result = self.combine(results, separator=",\n")
-            if prefix == indent:
-                prefix = ""
-            return f"{prefix}{result}"
+            if prefix:
+                return f'{indent}SELECT\n{result}'
+            else:
+                return result
 
         raise NotImplementedError()
 
@@ -413,13 +417,17 @@ class SQLBuilder(Builder):
             return f"{prefix}{from_}"
 
         if isinstance(from_, dict):
+            results = []
             for name, target in from_.items():
                 name = self.format_identifier(name)
                 if isinstance(target, str):
                     target = self.format_identifier(target)
+
                 elif isinstance(target, dict):
                     # TODO: support for LATERAL
-                    subquery = self.get_subquery(target, style, params, depth=depth)
+                    target = self.get_subquery(target, style, params, depth=depth)
+                    target = f'(\n{target}\n{indent})'
+
                 results.append(f"{target} AS {name}")
                 result = self.combine(results, separator=", ")
                 return f"{prefix}{result}"
@@ -457,7 +465,7 @@ class SQLBuilder(Builder):
             if isinstance(to, dict):
                 # subquery join
                 to = self.get_subquery(to, style, params, depth=depth)
-                to = f"({to})"
+                to = f"(\n{to}\n{indent})"
                 is_subquery = True
             else:
                 # table join
@@ -499,7 +507,7 @@ class SQLBuilder(Builder):
         if prefix:
             prefix = f"{indent}GROUP BY "
         else:
-            prefix = f"{indent}"
+            prefix = ''
 
         if isinstance(group, list):
             group = self.combine(
@@ -511,7 +519,7 @@ class SQLBuilder(Builder):
             )
             return f"{prefix}{group}"
         if isinstance(group, str):
-            order = self.format_identifier(group)
+            group = self.format_identifier(group)
             return f"{prefix}{group}"
         if isinstance(group, dict):
             by = group.get("by")
@@ -600,6 +608,12 @@ class SQLBuilder(Builder):
 
     def build_delete(self, clause: dict, style: ParameterStyle) -> List[tuple]:
         raise NotImplementedError()
+
+    def escape_literal(self, literal):
+        quote = self.LITERAL_QUOTE_CHARACTER
+        if quote in literal:
+            literal = re.sub(quote, f"{quote}{quote}", literal)
+        return f"{quote}{literal}{quote}"
 
     def escape_identifier(self, identifier: Union[list, str]):
         """Escape one or more identifiers"""
@@ -948,6 +962,55 @@ class SQLBuilder(Builder):
             return True
         return False
 
+    def get_case_expression(
+        self,
+        cases,
+        style,
+        params,
+        allow_subquery=True,
+        depth = 0,
+        indent=False
+    ):
+        num = len(cases)
+        whens = []
+        else_ = None
+        if num < 2:
+            raise ValueError('case: must have at least two cases')
+        for i, case in enumerate(cases):
+            if i == num - 1:
+                # last case
+                if case.get('else'):
+                    # it may be either "else" or another "when"/"then" case
+                    else_ = case['else']
+                    else_ = self.get_expression(else_, style, params, allow_subquery=allow_subquery, depth=depth, indent=indent)
+                    else_ = f' ELSE {else_}'
+            if not else_:
+                when = case.get('when')
+                then = case.get('then')
+                if not when or not then:
+                    raise ValueError('case: must have when and then')
+                when = self.get_expression(
+                    when,
+                    style,
+                    params,
+                    allow_subquery=allow_subquery,
+                    depth=depth,
+                    indent=indent
+                )
+                then = self.get_expression(
+                    then,
+                    style,
+                    params,
+                    allow_subquery=allow_subquery,
+                    depth=depth,
+                    indent=indent
+                )
+                whens.append(f'WHEN {when} THEN {then}')
+        whens = self.combine(whens, separator=' ')
+        if not else_:
+            else_ = ''
+        return f'CASE {whens}{else_} END'
+
     def get_expression(
         self,
         expression,
@@ -984,10 +1047,15 @@ class SQLBuilder(Builder):
                 and expression[0] == expression[-1]
                 and expression[0] in self.QUOTE_CHARACTERS
             ):
-                # if quotes with ', ", or `, assume this is a literal
+                # if quotes with ' or " or ` assume this is a literal
                 char = expression[0]
-                expression = expression[1:-1]
-                result = self.add_parameter(expression, style, params)
+                result = expression[1:-1]
+                if expression[0] == self.RAW_QUOTE_CHARACTER:
+                    # add inline 
+                    result = self.escape_literal(result)
+                else:
+                    # add as parameter
+                    result = self.add_parameter(result, style, params)
                 return f"{indent}{result}"
             else:
                 # if unquoted, always assume an identifier
@@ -1014,13 +1082,22 @@ class SQLBuilder(Builder):
                         raise ValueError(
                             f'cannot build "{key}", subqueries not allowed in this expression'
                         )
-                    subquery = self.get_subquery(value, style, params, depth=depth)
-                    return f"{indent}{result}"
+                    subquery = self.get_subquery(
+                        expression,
+                        style,
+                        params,
+                        depth=depth
+                    )
+                    return f"{indent}{subquery}"
 
                 operator = self.get_operator(key)
 
                 if operator:
                     # operator expression, e.g. {"+": [1, 2]} -> 1 + 2
+                    if not isinstance(value, list):
+                        # dict -> [dict]
+                        value = [value]
+
                     num_args = len(value)
                     if num_args > 1:
                         result = self.combine(
@@ -1065,14 +1142,22 @@ class SQLBuilder(Builder):
 
                 # special cases
                 if key == "case":
-                    raise NotImplementedError("case is not implemented yet")
+                    result = self.get_case_expression(
+                        value,
+                        style,
+                        params,
+                        allow_subquery=allow_subquery,
+                        depth=depth,
+                        indent=False
+                    )
+                    return f"{indent}{result}"
                 if key == "between":
                     val = self.get_expression(
                         value["value"],
                         style,
                         params,
                         allow_subquery,
-                        depth,
+                        depth=depth,
                         indent=False,
                     )
                     min_value = self.get_expression(
@@ -1101,6 +1186,8 @@ class SQLBuilder(Builder):
                 # functions can be qualified by a schema
                 if not self.validate_function(key):
                     raise ValueError(f'"{key}" is not a valid function')
+
+                newline = newline_indent = ''
                 if not value:
                     arguments = ""
                 else:
@@ -1120,6 +1207,11 @@ class SQLBuilder(Builder):
                             separator=", ",
                         )
                     else:
+                        if isinstance(value, dict) and self.is_command(list(value.keys())[0]):
+                            newline = '\n'
+                            newline_indent = " " * self.INDENT * depth
+                            newline_indent = f'\n{newline_indent}'
+
                         arguments = self.get_expression(
                             value,
                             style,
@@ -1128,7 +1220,7 @@ class SQLBuilder(Builder):
                             allow_subquery=allow_subquery,
                             depth=depth,
                         )
-                return f"{indent}{key}({arguments})"
+                return f"{indent}{key}({newline}{arguments}{newline_indent})"
 
         raise ValueError(f"cannot format expression {expression}")
 

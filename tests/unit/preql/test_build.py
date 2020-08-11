@@ -39,26 +39,23 @@ def test_build_create():
                         'columns': [{
                             'name': 'id',
                             'type': 'int',
+                            'sequence': True,  # automatic autonamed sequence
                             'null': False,
+                            'primary': 'pk'  # automatic named constraint
                         }, {
                             'name': 'location_id',
                             'type': 'int',
+                            'related': {
+                                'to': 'locations',
+                                'by': 'id'
+                            }
                         }, {
                             'name': 'name',
                             'type': 'text',
+                            'unique': True,  # automatic autonamed constraint
                             'null': True
                         }],
-                        'constraints': [{
-                            'type': 'foreign key',
-                            'columns': ['location_id'],
-                            'related_name': 'locations',
-                            'related_columns': ['id'],
-                            'name': 'fk'
-                        }, {
-                            'type': 'primary key',
-                            'columns': ['id'],
-                            'name': 'pk',
-                        }, {
+                        'constraints': [{ # composite constraint
                             'type': 'check',
                             'name': 'ck',
                             'check': {'!=': ['name', 'id']},
@@ -69,7 +66,7 @@ def test_build_create():
                             'primary': True,
                             'name': 'pk',
                             'columns': ['id'],
-                        }, {
+                        }, { # composite index
                             'name': 'composite',
                             'type': 'hash',
                             'columns': ['id', 'name'],
@@ -80,13 +77,19 @@ def test_build_create():
             [
                 (
                     'CREATE TABLE "one"."test" (\n'
-                    '    "id" int NOT NULL,\n'
+                    '    "id" int NOT NULL\n',
                     '    "location_id" int,\n'
                     '    "name" text,\n'
                     '    CONSTRAINT "fk" FOREIGN KEY ("location_id") REFERENCES "locations" ("id") NOT DEFERRABLE INITIALLY IMMEDIATE,\n'  # noqa
                     '    CONSTRAINT "pk" PRIMARY KEY ("id") NOT DEFERRABLE INITIALLY IMMEDIATE,\n'
                     '    CONSTRAINT "ck" CHECK ("name" != "id") DEFERRABLE INITIALLY DEFERRED\n'
                     ')', []
+                ),
+                (
+                    'CREATE SEQUENCE IF NOT EXISTS "one"."test_id_seq" OWNED BY "one"."test"."id"', []
+                ),
+                (
+                    'ALTER TABLE "one"."test" ALTER COLUMN "id" SET DEFAULT nextval(\'one.test_id_seq\')'
                 ),
                 ('CREATE INDEX "composite" ON "one"."test" USING hash ("id", "name")', [])
             ],
@@ -243,6 +246,7 @@ def test_build_alter():
                 "alter": {
                     "table": {
                         "name": "test",
+                        "rename": "test2",
                         "add": [{
                             "column": [{
                                 "name": "created",
@@ -294,7 +298,10 @@ def test_build_alter():
             ), (
                 'ALTER TABLE "test" RENAME COLUMN "name" TO "full_name"',
                 []
-            )]
+            ), (
+                'ALTER TABLE "test" RENAME TO "test2"'
+                []
+            ])
         ),
         (
             {

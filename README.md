@@ -198,21 +198,62 @@ They provide the following features:
 
 Workflows provide a high-level interface for defining multi-database operations in a sequence of steps. A workflow has a name and one or more steps of the following types:
 
-### info
+### Types
+
+#### info
 
 An **info** workflow obtains schema/data information from a source database.
 
-### diff
+#### diff
 
 A diff workflow obtains schema/data information from source and target databases, then compares the two.
 
-### copy
+#### copy
 
 A copy workflow syncs schema and data information from a source database into a target database.
 
-### query
+#### query
 
 A query workflow runs a query against a source database. This can be used to return information or perform an update or schema change.
+
+### Scope
+
+Except for `query`, all of the commands accept a `scope` parameter which defines the scope of interaction with the selected database. For example, an `info` step can capture information about an entire database (if `scope` is not provided), or it can capture information about one or more schemas, or a specific table or set of tables.
+
+#### null (default)
+
+If `scope` is omitted or explicitly set to `null`, then the entire database is considered in scope for the operation.
+
+#### object
+
+If `scope` is an object (dict), it is expected to contain a child object called `schemas`.
+There are two types of keys in `schemas` which are referred to as selectors:
+
+- Identifiers or key field selectors (e.g. "*", "name")
+- Other field selectors, prefixed by "&" (e.g. "&type")
+
+Selectors are composed together with precedence given to specificity (less wildcards match with more precedence, identifier selectors match before other field selectors)
+
+This means you can define a scope which uses selectors like mixins for shorter and less redundant configuration, e.g:
+
+``` yaml
+scope:
+    schemas:
+        public:  # only the public schema, ignore other schemas
+            '*': # apply this to all tables
+                'enabled': False  # not enabled
+                'constraints': 
+                    '&type': # only primary key checks
+                        'unique': False  
+                        'check': False
+                        'foreign': False
+            'auth_*': # sync these tables 
+                'enabled': True
+            'auth_user': 
+                'constraints': True  # all constraints
+    
+```
+For multi-datasource operations `diff` and `copy`, `scope` can also be used to translate between schema, table, and column names. This is only allowed inside identifier selectors.
 
 ## Use Cases
 

@@ -30,10 +30,6 @@ class Constraint(Generator):
     related_columns: List[str] = field(default_factory=list)
     related_name: str = None
 
-    def __post_init__(self):
-        if len(self.type) > 0:
-            self.type = self.type[0]
-
 
 @dataclass_json
 @dataclass
@@ -56,7 +52,7 @@ class TableSchema(Generator):
 @dataclass
 class Table(Generator):
     schema: Dict[str, TableSchema] = field(default_factory=dict)
-
+    type: str = 'table'
 
 registry = {
     'table': Table,

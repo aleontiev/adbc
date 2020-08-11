@@ -135,7 +135,7 @@ class WithMerge(WithAlterSQL):
 
             if routines:
                 results = await gather(*routines)
-            return {r[0]: r[1] for r in zip(names, results)}
+            return {r[0]: r[1] for r in zip(names, results) if r[1] is not None}
 
     async def merge_constraint(self, name, diff, parents=None):
         kwargs = {}
@@ -173,7 +173,8 @@ class WithMerge(WithAlterSQL):
         if "default" in diff:
             kwargs["default"] = diff["default"][0]
         if not kwargs:
-            raise Exception("expecting column diff to have null, type, or default")
+            # can only change null, type, or default
+            return None
 
         if len(parents) == 1:
             schema_name = None

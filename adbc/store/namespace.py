@@ -52,6 +52,7 @@ class Namespace(Loggable, WithScope, WithInfo):
         indexes=None,
         scope=None,
         refresh=False,
+        type=None,
     ):
         if name not in self._tables or refresh:
             assert columns is not None
@@ -65,6 +66,7 @@ class Namespace(Loggable, WithScope, WithInfo):
                 verbose=self.verbose,
                 scope=scope,
                 tag=self.tag,
+                type=type
             )
         return self._tables[name]
 
@@ -102,8 +104,12 @@ class Namespace(Loggable, WithScope, WithInfo):
             constraints = await constraints
 
             for record in columns:
-                # name, column, type, default, null
+                # name, kind, column, type, default, null
                 name = record[0]
+                kind = record[1]
+
+                if "type" not in tables[name]:
+                    tables[name]["type"] = kind
                 if "name" not in tables[name]:
                     tables[name]["name"] = name
 
@@ -112,10 +118,10 @@ class Namespace(Loggable, WithScope, WithInfo):
 
                 tables[name]["columns"].append(
                     {
-                        "name": record[1],
-                        "type": record[2],
-                        "default": record[3],
-                        "null": record[4],
+                        "name": record[2],
+                        "type": record[3],
+                        "default": record[4],
+                        "null": record[5],
                     }
                 )
             for record in constraints:
@@ -186,14 +192,16 @@ class Namespace(Loggable, WithScope, WithInfo):
                         "columns": columns,
                     }
         else:
-            query = self.get_query("tables")
-            async for row in database.stream(*query):
+            query = self.get_query("tables", scope=scope)
+            print(query)
+            async for row in database.stream(query):
                 try:
                     table = self.get_table(
                         row[0],
-                        row[1],
-                        row[2],
-                        row[3],
+                        columns=row[1],
+                        constraints=row[2],
+                        indexes=row[3],
+                        type=row[4],
                         scope=scope,
                         refresh=refresh,
                     )
@@ -206,9 +214,10 @@ class Namespace(Loggable, WithScope, WithInfo):
             try:
                 yield self.get_table(
                     table["name"],
-                    table.get("columns", []),
-                    list(table.get("constraints", {}).values()),
-                    list(table.get("indexes", {}).values()),
+                    columns=table.get("columns", []),
+                    constraints=list(table.get("constraints", {}).values()),
+                    indexes=list(table.get("indexes", {}).values()),
+                    type=table['type'],
                     scope=scope,
                     refresh=refresh,
                 )

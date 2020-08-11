@@ -6,7 +6,9 @@ class Builder(Validator):
     IDENTIFIER_SPLIT_CHARACTER = '.'
     WILDCARD_CHARACTER = '*'
     IDENTIFIER_QUOTE_CHARACTER = '"'
+    LITERAL_QUOTE_CHARACTER = "'"
     QUOTE_CHARACTERS = {'"', "'", '`'}
+    RAW_QUOTE_CHARACTER = '`'
     COMMANDS = {
         'select',
         'insert',
@@ -58,6 +60,8 @@ class Builder(Validator):
         '<>': 2,
         'like': 2,
         'ilike': 2,
+        '~~': 2,
+        '!~~': 2,
         '>': 2,
         '>=': 2,
         'and': 2,

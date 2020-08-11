@@ -230,7 +230,7 @@ class PostgresExecutor(object):
         last = args[-1]
         args = args[:-1]
         sql = '\n'.join([a for a in args if a])
-        return (sql, *last)
+        return (sql, last)
 
     INSERTED_ROWS_REGEX = re.compile('INSERT [0-9]+ ([0-9]+)')
 
@@ -295,20 +295,21 @@ class PostgresExecutor(object):
         insert = self.get_insert(table, query)
         values = self.get_values(values, args)
 
-        query = self.build_sql(
+        query, params = self.build_sql(
             insert,
             values,
             returning,
             args
         )
         if sql:
-            return query
+            return query, params
         if returning:
             method = 'query' if multiple else 'query_one_row'
         else:
             method = 'execute'
         result = await getattr(self.database, method)(
-            *query,
+            query,
+            params=params,
             connection=connection
         )
         if not returning:
@@ -353,7 +354,7 @@ class PostgresExecutor(object):
         set_ = self.get_set(values, args)
 
         update = self.get_update(table, query)
-        query = self.build_sql(
+        query, params = self.build_sql(
             update,
             set_,
             where,
@@ -361,10 +362,11 @@ class PostgresExecutor(object):
             args
         )
         if sql:
-            return query
+            return query, params
         method = 'query' if returning else 'execute'
         result = await getattr(self.database, method)(
-            *query,
+            query,
+            params=params,
             connection=connection
         )
         if not returning:
@@ -394,7 +396,7 @@ class PostgresExecutor(object):
             args = []
 
         from_ = self.get_from(table, query)
-        sql = self.build_sql(
+        query, params = self.build_sql(
             'DELETE',
             from_,
             where,
@@ -403,7 +405,8 @@ class PostgresExecutor(object):
         )
         method = 'query' if returning else 'execute'
         result = await getattr(self.database, method)(
-            *sql,
+            query,
+            params=params,
             connection=connection
         )
         if not returning:
@@ -424,9 +427,9 @@ class PostgresExecutor(object):
         connection = kwargs.get('connection')
         source = query.data('source')
         table = await self.database.get_table(source)
-        sql = f'TRUNCATE {table.sql_name}'
+        query = f'TRUNCATE {table.sql_name}'
         method = 'execute'
         return await getattr(self.database, method)(
-            sql,
+            query,
             connection=connection
         )

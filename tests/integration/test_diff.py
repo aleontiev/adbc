@@ -96,7 +96,10 @@ async def test_diff():
                             "columns": {
                                 insert: {"updated": timestamp_column},
                                 delete: {"created": timestamp_column},
-                                "name": {"null": [True, False]},
+                                "name": {
+                                    "null": [True, False],
+                                    "unique": [True, False]
+                                },
                             },
                             "constraints": {delete: {"name_unique": unique_constraint}},
                             "indexes": {delete: {"name_unique": unique_index}},
