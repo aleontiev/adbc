@@ -13,17 +13,15 @@ async def test_info():
         columns=['name']
     )
     table_definition = {
-        "schema": {
-            "columns": {
-                "id": G('column', type='integer', primary=True),
-                "name": G('column', type='text', null=True)
-            },
-            "constraints": {
-                "id_primary": G('constraint',
-                    type='primary',
-                    columns=['id']
-                )
-            },
+        "columns": {
+            "id": G('column', type='integer', primary=True),
+            "name": G('column', type='text', null=True)
+        },
+        "constraints": {
+            "id_primary": G('constraint',
+                type='primary',
+                columns=['id']
+            )
         }
     }
     scope = {"schemas": {"testing": True}}
@@ -40,7 +38,7 @@ async def test_info():
 
         assert table is not None
         assert table.pks == ["id"]
-        assert table.columns == table_definition["schema"]["columns"]
+        assert table.columns == table_definition["columns"]
 
         # add (INSERT)
         jay = await model.values({"id": 1, "name": "Jay"}).take("*").add()
@@ -67,17 +65,17 @@ async def test_info():
 
         # 5. get database statistics
         info = await source.get_info(scope=scope)
-        expect_schema = table_definition["schema"]
-        actual_schema = info["testing"]["test"]["schema"]
-        test_data = info["testing"]["test"]["data"]
+        expect_schema = table_definition
+        actual_schema = info["testing"]["test"]
+        actual_data = actual_schema['rows']
         assert expect_schema["columns"] == actual_schema["columns"]
         assert expect_schema["constraints"] == actual_schema["constraints"]
-        assert test_data["count"] == 2
-        assert test_data["range"] == {"id": {"min": 1, "max": 3}}
+        assert actual_data["count"] == 2
+        assert actual_data["range"] == {"id": {"min": 1, "max": 3}}
 
         # 6. add new schema elements
-        table_definition["schema"]["columns"]["created"] = timestamp_column
-        table_definition["schema"]["constraints"]["unique_name"] = unique_name
+        table_definition["columns"]["created"] = timestamp_column
+        table_definition["constraints"]["unique_name"] = unique_name
         await source.create_column(
             "test", "created", timestamp_column, schema="testing"
         )
@@ -92,15 +90,15 @@ async def test_info():
         # alias scope supports translation during diff/copy
         info = await source.get_info(scope=alias_scope, hashes=True)
 
-        actual_schema = info["main"]["test"]["schema"]
-        test_data = info["main"]["test"]["data"]
+        actual_schema = info["main"]["test"]
+        actual_data = actual_schema["rows"]
         # expect unique to be set 
         expect_schema['columns']['name']['unique'] = True
         assert expect_schema["columns"] == actual_schema["columns"]
         assert expect_schema["constraints"] == actual_schema["constraints"]
-        assert test_data["count"] == 4
-        assert test_data["range"] == {"id": {"min": 1, "max": 6}}
-        assert test_data['hashes'] == {1: '38dcabe82cf0aeef4e6601bf3a4c17da'}
+        assert actual_data["count"] == 4
+        assert actual_data["range"] == {"id": {"min": 1, "max": 6}}
+        assert actual_data['hashes'] == {1: '566991d4b9cf37367cab89ab93b74a3d'}
 
         # 9. test exclusion: ignore certain fields
         info = await source.get_info(scope=alias_scope, hashes=True, exclude={
@@ -108,7 +106,7 @@ async def test_info():
                 'fields': ['unique', 'primary']
             }
         })
-        actual_schema = info['main']['test']['schema']
+        actual_schema = info['main']['test']
         for name, column in expect_schema['columns'].items():
             column.pop('primary')
             column.pop('unique')

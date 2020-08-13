@@ -4,12 +4,12 @@ from cached_property import cached_property
 from adbc.backends.postgres import PostgresBackend
 from adbc.logging import Loggable
 from adbc.scope import WithScope
+from adbc.cache import WithCache
 
 from .database import Database
 
 
 class Host(Loggable, WithScope):
-    type = 'host'
     child_key = 'databases'
 
     def __init__(
@@ -22,32 +22,44 @@ class Host(Loggable, WithScope):
         self.dbname = self.parsed_url.path.replace('/', '')
         self.name = self.parsed_url.netloc
         self.scope = scope
-        self._databases = {}
         self._backend = PostgresBackend()
 
-    async def get_children(self):
-        # ! databases are permanently cached after this query
-        return await self.get_databases()
-
-    async def get_databases(self):
-        return await self.database.query_one_row(
-            *self._backend.get_query('databases')
+    async def get_children(self, scope=None):
+        scope = scope or self.scope
+        return await self.cache_by_async(
+            'children',
+            scope,
+            lambda: self.get_databases(scope=scope),
         )
 
-    def get_database(self, name, scope=None, refresh=False):
-        if name not in self._databases or refresh or scope is not None:
-            scope = self.get_child_scope(name, scope=scope)
-            if not scope:
-                raise Exception(
-                    f'{self}: database "{name}" is not included'
-                )
+    async def get_databases(self, scope=None):
+        databases = await self.database.query_one_column(
+            *self._backend.get_query('databases')
+        )
+        return [
+            self.get_database(name, scope=scope) for name in databases
+        ]
 
-            self._databases[name] = Database(
-                name,
-                host=self,
-                scope=scope
+    def get_database(self, name, scope=None):
+        scope = scope or self.scope
+        return self.cache_by(
+            'databases',
+            {'scope': scope, 'name': name},
+            lambda: self._get_database(name, scope=scope)
+        )
+
+    def _get_database(self, name, scope):
+        scope = self.get_child_scope(name, scope=scope)
+        if not scope:
+            raise Exception(
+                f'{self}: database "{name}" is not included'
             )
-        return self._databases[name]
+
+        return Database(
+            name,
+            host=self,
+            scope=scope
+        )
 
     @cached_property
     def database(self):

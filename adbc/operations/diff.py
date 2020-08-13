@@ -11,7 +11,6 @@ class WithDiff(WithInfo):
         data=True,
         schema=True,
         info=False,
-        refresh=False,
         hashes=False,
         exclude=None,
     ):
@@ -20,7 +19,6 @@ class WithDiff(WithInfo):
             scope=scope,
             schema=schema,
             data=data,
-            refresh=refresh,
             hashes=hashes,
             exclude=exclude,
         )
@@ -28,7 +26,6 @@ class WithDiff(WithInfo):
             scope=scope,
             schema=schema,
             data=data,
-            refresh=refresh,
             hashes=hashes,
             exclude=exclude,
         )

@@ -11,10 +11,12 @@ class InfoStep(Step):
         self.refresh = self.config.get('refresh', False)
 
     async def execute(self):
+        if self.refresh:
+            self.source.reset()
+
         return await self.source.get_info(
             data=self.data,
             schema=self.schema,
             scope=self.scope,
             hashes=self.hashes,
-            refresh=self.refresh
         )

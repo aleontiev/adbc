@@ -17,7 +17,6 @@ SKIP_CA_CHECK = os.environ.get('ADBC_SKIP_CA_CHECK') == '1'
 
 class Database(Loggable, WithCopy, WithScope):
     child_key = "schemas"
-    type = "db"
 
     def __init__(
         self,
@@ -55,17 +54,9 @@ class Database(Loggable, WithCopy, WithScope):
         self.tag = tag
         self._pool = None
         self._connection = None
-        self._schemas = {}
-        self._models = {}
-        self._tables = {}
 
     def __str__(self):
         return self.name
-
-    def clear_cache(self):
-        self._schemas = {}
-        self._models = {}
-        self._tables = {}
 
     @cached_property
     async def shard_size(self):
@@ -81,48 +72,59 @@ class Database(Loggable, WithCopy, WithScope):
             await self._connection.close()
             self._connection = None
 
-    async def get_model(self, table_name, schema=None, refresh=False):
-        if isinstance(table_name, dict):
-            schema = table_name.get('schema', schema)
-            table_name = table_name['table']
+    async def get_model(self, table_name, schema=None, scope=None):
+        scope = scope or self.scope
 
         if schema is None:
             schema = self.backend.default_schema
 
-        key = (schema, table_name)
-        if key not in self._models or refresh:
-            table = await self.get_table(table_name, refresh=refresh, schema=schema)
-            self._models[key] = Model(database=self, table=table)
-        return self._models[key]
+        key = (scope, schema, table_name)
+        return await self.cache_by_async(
+            'models',
+            key,
+            lambda: self._get_model(table_name, schema, scope=scope)
+        )
 
-    async def get_table(self, table_name, schema=None, refresh=False):
-        if isinstance(table_name, dict):
-            schema = table_name.get('schema', schema)
-            table_name = table_name['table']
+    async def _get_model(self, table_name, schema=None, scope=None):
+        table = await self.get_table(table_name, schema=schema, scope=scope)
+        return Model(database=self, table=table)
+
+    async def get_table(self, table_name, schema=None, scope=None):
+        scope = scope or self.scope
+
+        if isinstance(table_name, list):
+            schema, table_name = table_name
 
         if schema is None:
             schema = self.backend.default_schema
 
-        key = (schema, table_name)
-        if key not in self._tables or refresh:
-            namespace = None
-            async for child in self.get_children(refresh=refresh):
-                if child.name == schema:
-                    namespace = child
-                    break
-            if not namespace:
-                raise ValueError(f"schema {schema} not found or no access")
+        key = (scope, schema, table_name)
+        return await self.cache_by_async(
+            'tables',
+            key,
+            lambda: self._get_table(table_name, schema, scope)
+        )
 
-            table = None
-            async for child in namespace.get_children(refresh=refresh):
-                if child.name == table_name:
-                    table = child
-                    break
-            if not table:
-                raise ValueError(f"table {schema}.{table_name} not found or no access")
+    async def _get_table(self, table_name, schema, scope):
+        namespace = None
+        children = await self.get_children(scope=scope)
+        for child in children:
+            if child.name == schema:
+                namespace = child
+                break
 
-            self._tables[key] = table
-        return self._tables[key]
+        if not namespace:
+            raise ValueError(f"schema {schema} not found or no access")
+
+        table = None
+        children = await namespace.get_children()
+        for child in children:
+            if child.name == table_name:
+                table = child
+                break
+        if not table:
+            raise ValueError(f"table {schema}.{table_name} not found or no access")
+        return table
 
     @cached_property
     async def is_redshift(self):
@@ -140,20 +142,22 @@ class Database(Loggable, WithCopy, WithScope):
         else:
             queries = [(query, params)]
 
-        for query, params in queries:
-            pool = await self.pool
-            connection = aecho(connection) if connection else pool.acquire()
-            pquery = print_query(query, params)
-            async with connection as conn:
-                if self.prompt:
-                    if not confirm(f"{self.name} ({self.tag}): {SEP}{pquery}{SEPN}", True):
-                        raise Exception(f"{self}: stream aborted")
-                else:
-                    self.log(f"{self}: stream{SEP}{pquery}{SEPN}")
-                transaction = conn.transaction() if transaction else aecho()
-                async with transaction:
-                    async for row in self.backend.cursor(conn, query, params):
-                        yield row
+        pool = await self.pool
+        connection = connection or self._connection
+        connection = aecho(connection) if connection else pool.acquire()
+
+        async with connection as conn:
+            transaction = conn.transaction() if transaction else aecho()
+            async with transaction:
+                for query, params in queries:
+                    pquery = print_query(query, params)
+                    if self.prompt:
+                        if not confirm(f"{self.name} ({self.tag}): {SEP}{pquery}{SEPN}", True):
+                            raise Exception(f"{self}: stream aborted")
+                    else:
+                        # self.log(f"{self}: stream{SEP}{pquery}{SEPN}")
+                        async for row in self.backend.cursor(conn, query, params):
+                            yield row
 
     def use(self, connection):
         self._connection = connection
@@ -200,16 +204,16 @@ class Database(Loggable, WithCopy, WithScope):
 
         one = len(queries) == 1
         all_results = []
-        for query, params in queries:
-            pquery = print_query(query, params)
-            async with connection as conn:
-                if self.prompt:
-                    if not confirm(f"{self.name} ({self.tag}): {SEP}{pquery}{SEPN}", True):
-                        raise Exception(f"{self}: query aborted")
-                else:
-                    self.log(f"{self}: query{SEP}{pquery}{SEPN}")
-                transaction = conn.transaction() if transaction else aecho()
-                async with transaction:
+        async with connection as conn:
+            transaction = conn.transaction() if transaction else aecho()
+            async with transaction:
+                for query, params in queries:
+                    pquery = print_query(query, params)
+                    if self.prompt:
+                        if not confirm(f"{self.name} ({self.tag}): {SEP}{pquery}{SEPN}", True):
+                            raise Exception(f"{self}: query aborted")
+                    else:
+                        self.log(f"{self}: query{SEP}{pquery}{SEPN}")
                     try:
                         results = await self.backend.fetch(conn, query, params)
                     except Exception as e:
@@ -259,20 +263,26 @@ class Database(Loggable, WithCopy, WithScope):
         tag = self.tag
         return self.backend.get_query('namespaces', include, tag=tag)
 
-    def get_namespace(self, name, scope=None, refresh=False):
-        if name not in self._schemas or refresh:
-            translation = self.get_scope_translation(scope=scope, from_=self.tag)
-            scope = self.get_child_scope(name, scope=scope)
-            alias = translation.get(name, name)
-            self._schemas[name] = Namespace(
-                name,
-                database=self,
-                scope=scope,
-                alias=alias,
-                verbose=self.verbose,
-                tag=self.tag,
-            )
-        return self._schemas[name]
+    def get_namespace(self, name, scope=None):
+        scope = scope or self.scope
+        return self.cache_by(
+            'schemas',
+            {'name': name, 'scope': scope},
+            lambda: self._get_namespace(name, scope)
+        )
+
+    def _get_namespace(self, name, scope):
+        translation = self.get_scope_translation(scope=scope, from_=self.tag)
+        scope = self.get_child_scope(name, scope=scope)
+        alias = translation.get(name, name)
+        return Namespace(
+            name,
+            database=self,
+            scope=scope,
+            alias=alias,
+            verbose=self.verbose,
+            tag=self.tag,
+        )
 
     @property
     def F(self):
@@ -293,13 +303,26 @@ class Database(Loggable, WithCopy, WithScope):
     async def get_connection(self):
         return await self.backend.connect(self.host.url)
 
-    async def get_children(self, scope=None, refresh=False):
+    async def get_children(self, scope=None):
+        scope = scope or self.scope
+        return await self.cache_by_async(
+            'children',
+            scope,
+            lambda: self.get_namespaces(scope=scope)
+        )
+
+    async def get_namespaces(self, scope=None):
         query = self.get_namespaces_query(scope=scope)
-        async for row in self.stream(query):
+        rows = await self.query(query)
+        result = []
+        for row in rows:
             try:
-                yield self.get_namespace(row[0], scope=scope, refresh=refresh)
+                result.append(
+                    self.get_namespace(row[0], scope=scope)
+                )
             except NotIncluded:
                 pass
+        return result
 
     @property
     async def pool(self):

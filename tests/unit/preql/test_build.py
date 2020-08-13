@@ -45,7 +45,7 @@ def test_build_create():
                         }, {
                             'name': 'location_id',
                             'type': 'int',
-                            'related': {
+                            'related': {  # automatic FK
                                 'to': 'locations',
                                 'by': 'id'
                             }
@@ -77,10 +77,10 @@ def test_build_create():
             [
                 (
                     'CREATE TABLE "one"."test" (\n'
-                    '    "id" int NOT NULL\n',
+                    '    "id" int NOT NULL,\n',
                     '    "location_id" int,\n'
                     '    "name" text,\n'
-                    '    CONSTRAINT "fk" FOREIGN KEY ("location_id") REFERENCES "locations" ("id") NOT DEFERRABLE INITIALLY IMMEDIATE,\n'  # noqa
+                    '    CONSTRAINT "test_location_id_fk" FOREIGN KEY ("location_id") REFERENCES "locations" ("id") NOT DEFERRABLE INITIALLY IMMEDIATE,\n'  # noqa
                     '    CONSTRAINT "pk" PRIMARY KEY ("id") NOT DEFERRABLE INITIALLY IMMEDIATE,\n'
                     '    CONSTRAINT "ck" CHECK ("name" != "id") DEFERRABLE INITIALLY DEFERRED\n'
                     ')', []
@@ -299,9 +299,9 @@ def test_build_alter():
                 'ALTER TABLE "test" RENAME COLUMN "name" TO "full_name"',
                 []
             ), (
-                'ALTER TABLE "test" RENAME TO "test2"'
+                'ALTER TABLE "test" RENAME TO "test2"',
                 []
-            ])
+            )]
         ),
         (
             {

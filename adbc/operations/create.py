@@ -84,8 +84,8 @@ class WithCreateSQL(object):
         return (f"ALTER TABLE {table}\nADD COLUMN {column}",)
 
     def get_create_table_columns_sql(self, table, spaces=2):
-        table_schema = table.get("schema", {})
-        columns = table_schema.get("columns", {})
+        columns = table.get("columns", {})
+
         if not columns:
             return ""
 
@@ -98,8 +98,7 @@ class WithCreateSQL(object):
         return f"{spaces}{sqls}"
 
     def get_create_table_constraints_sql(self, table, spaces=2):
-        table_schema = table.get("schema", {})
-        constraints = table_schema.get("constraints", {})
+        constraints = table.get("constraints", {})
 
         if not constraints:
             return ""
@@ -124,7 +123,7 @@ class WithCreateSQL(object):
         return (f"CREATE{temp}TABLE {table} (\n{columns}{sep}{constraints}\n)",)
 
     def get_create_table_indexes_query(self, name, table, schema=None):
-        indexes = table.get("schema", {}).get("indexes", {})
+        indexes = table.get("indexes", {})
         statements = []
         for index_name, index in indexes.items():
             if index["primary"] or index["unique"]:

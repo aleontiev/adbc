@@ -16,21 +16,6 @@ class Raw(str):
         return Raw(str(self))
 
 
-def get_pks(indexes, constraints, columns):
-    """Get primary key(s) given on indexes/constraints/columns lists"""
-    pks = None
-    if indexes:
-        pks = get_first(indexes, lambda item: item["primary"], "columns")
-
-    if not pks and constraints:
-        pks = get_first(constraints, lambda item: item["type"] == "p", "columns")
-
-    if not pks:
-        # full-row pks
-        pks = columns
-    return pks
-
-
 def can_order(type):
     return type not in NO_ORDER_TYPES
 

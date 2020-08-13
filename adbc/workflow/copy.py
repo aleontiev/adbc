@@ -22,6 +22,11 @@ class CopyStep(Step):
         scope = self.scope
         source = self.source
         target = self.target
+
+        if self.refresh:
+            source.reset()
+            target.reset()
+
         results = await source.copy(
             target,
             scope=scope,

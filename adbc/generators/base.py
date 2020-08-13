@@ -14,7 +14,7 @@ class Column(Generator):
     type: str
     default: str = None
     null: bool = False
-    sequential: bool = False
+    sequence: bool = False
     primary: bool = False
     unique: bool = False
 
@@ -42,17 +42,12 @@ class Index(Generator):
 
 @dataclass_json
 @dataclass
-class TableSchema(Generator):
+class Table(Generator):
+    type: str = 'table'
     columns: Dict[str, Column] = field(default_factory=dict)
     constraints: Dict[str, Constraint] = field(default_factory=dict)
     indexes: Dict[str, Index] = field(default_factory=dict)
 
-
-@dataclass_json
-@dataclass
-class Table(Generator):
-    schema: Dict[str, TableSchema] = field(default_factory=dict)
-    type: str = 'table'
 
 registry = {
     'table': Table,

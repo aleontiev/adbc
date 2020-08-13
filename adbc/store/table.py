@@ -1,13 +1,54 @@
 import asyncio
+import re
+
+from typing import Union
 from copy import copy
 from collections import defaultdict
+from adbc.exceptions import NotIncluded
+from adbc.sql import can_order
 from adbc.logging import Loggable
-from adbc.sql import get_pks, can_order, get_sequence_name
+from adbc.scope import WithScope
+from adbc.constants import SEQUENCE, TABLE, PRIMARY, UNIQUE
 from cached_property import cached_property
-from adbc.utils import split_field
+from adbc.utils import get_first
 
 
-class Table(Loggable):
+FUNCTION_ARG_REGEX = re.compile(r"^[a-zA-Z.]+\((.*)\)$")
+
+
+def get_sequence_name(expression):
+    """Get name from a nextval(...) expression"""
+    match = FUNCTION_ARG_REGEX.match(expression)
+    if match:
+        match = match.group(1)
+        if "::" in match:
+            # remove cast
+            match = match.split("::")[0]
+        return match
+    return None
+
+
+def get_pks(constraints):
+    """Get primary key(s) given constraint list"""
+    pks = []
+
+    if constraints:
+        pks = get_first(constraints, lambda item: item["type"] == PRIMARY, "columns")
+
+    return pks
+
+
+def get_uniques(constraints):
+    """Get unique key(s) given constraint list"""
+    uniques = set()
+    if constraints:
+        for c in constraints.values():
+            if c["type"] == UNIQUE and len(c.get("columns", [])) == 1:
+                uniques.add(c["columns"][0])
+    return uniques
+
+
+class Table(WithScope, Loggable):
     type = "table"
 
     def __init__(
@@ -30,7 +71,7 @@ class Table(Loggable):
         else:
             self.scope = scope
 
-        self.type = type or 'table'
+        self.type = type or TABLE
         self.name = name
         self.verbose = verbose
         self.parent = self.namespace = namespace
@@ -44,74 +85,94 @@ class Table(Loggable):
         self.immutable = self.scope.get(
             "immutable", not (bool(self.on_update) or bool(self.on_delete))
         )
-        self.columns = {
-            k: v
-            for k, v in split_field(
-                sorted(columns or [], key=lambda c: c["name"]), "name"
-            )
-        }
 
+        self.columns = self.get_children("columns", columns)
         self.column_names = list(self.columns.keys())
 
-        if self.type == 'sequence':
+        if self.type == SEQUENCE:
             # sequences do not have constraints/indexes
             return
 
-        self.constraints = {
-            k: v
-            for k, v in split_field(
-                sorted(constraints or [], key=lambda c: c["name"]), "name"
-            )
-        }
-        self.indexes = {
-            k: v
-            for k, v in split_field(
-                sorted(indexes or [], key=lambda c: c["name"]), "name"
-            )
-        }
+        self.constraints = self.get_children("constraints", constraints)
+        self.indexes = self.get_children("indexes", indexes)
 
-        self.pks = []
-        self.pks = get_pks(self.indexes, self.constraints, self.column_names)
+        self.pks = get_pks(self.constraints) or self.column_names
+        self.uniques = get_uniques(self.constraints)
 
         # set computed field values:
         # - sequence: based on auto-increment or nextval
         # - primary: based on primary constraint or index
         # - unique: based on unique constraints
-        unique_columns = set()
-        for name, constraint in self.constraints.items():
-            if constraint['type'] == 'unique' and len(constraint.get('columns', [])) == 1:
-                unique_columns.add(constraint['columns'][0])
-
         for name, column in self.columns.items():
             if "default" in column:
                 default = column["default"]
                 if isinstance(default, str) and default.startswith("nextval("):
-                    column['sequence'] = column.get('sequence', get_sequence_name(default))
+                    # TODO: move nextval into backend, non-standard SQL
+                    column["sequence"] = column.get(
+                        "sequence", get_sequence_name(default)
+                    )
                 else:
-                    column['sequence'] = column.get('sequence', False)
+                    column["sequence"] = column.get("sequence", False)
 
-            column['primary'] = (name in self.pks)
-            column['unique'] = (name in unique_columns)
-
-        # if disabled, remove constraints/indexes
-        # but only after they are used to determine possible primary key
-        constraints = self.scope.get("constraints", True)
-        if not constraints:
-            self.constraints = None
-        elif isinstance(constraints, str):
-            self.constraints = {
-                k: v for k, v in self.constraints.items() if v["type"] in constraints
-            }
-
-        if not self.scope.get("indexes", True):
-            self.indexes = None
+            if column.get("primary"):
+                if name not in self.pks:
+                    primary = column.get("primary")
+                    constraint_name = (
+                        primary
+                        if isinstance(primary, str)
+                        else f"{self.name}_{name}_pk"
+                    )
+                    self.pks.append(name)
+                    self.constraints[constraint_name] = {
+                        "type": PRIMARY,
+                        "columns": [name],
+                    }
+            else:
+                column["primary"] = name in self.pks
+            if column.get("unique"):
+                if name not in self.uniques:
+                    unique = column.get("unique")
+                    constraint_name = (
+                        primary if isinstance(unique, str) else f"{self.name}_{name}_uk"
+                    )
+                    self.uniques.add(name)
+                    self.constraints[constraint_name] = {
+                        "type": UNIQUE,
+                        "columns": [name],
+                    }
+            else:
+                column["unique"] = name in self.uniques
 
     def __str__(self):
         return f"{self.namespace}.{self.name}"
 
+    def get_children(self, child_key: str, children: list):
+        result = {}
+        translation = self.get_scope_translation(
+            self.scope, from_=self.tag, child_key=child_key
+        )
+        translate = lambda x: translation.get(x, x)
+        scope = self.scope
+        for child in sorted(children, key=lambda c: translate(c["name"])):
+            # real schema name
+            name = child.pop("name")
+            # alias name
+            alias = translate(name)
+            if alias != name:
+                child["alias"] = alias
+            try:
+                child_scope = self.get_child_scope(
+                    name, scope=scope, child_key=child_key
+                )
+            except NotIncluded:
+                continue
+            else:
+                result[name] = child
+        return result
+
     async def get_info(self, schema=True, data=True, hashes=False, **kwargs):
         result = {}
-        exclude = kwargs.get('exclude', None)
+        exclude = kwargs.get("exclude", None)
         if data:
             data_range = self.get_data_range()
             count = self.get_count()
@@ -127,62 +188,74 @@ class Table(Loggable):
             else:
                 data_range, count = results
 
-            result["data"] = {
+            result["rows"] = {
                 "count": count,
                 "range": data_range,
             }
             if hashes:
-                result["data"]["hashes"] = data_hashes
-        if schema:
-            result["schema"] = self.get_schema(exclude=exclude)
+                result["rows"]["hashes"] = data_hashes
 
-        result['type'] = self.type
+        schema = self.get_schema(exclude=exclude)
+        result.update(schema)
+
+        result["type"] = self.type
 
         self.log(f"{self}: info")
         return result
+
+    def realias(self, result: dict):
+        new_result = {}
+        for key, value in result.items():
+            if 'alias' in value:
+                value = copy(value)
+                alias = value.pop('alias')
+            else:
+                alias = key
+            new_result[alias] = value
+        return new_result
 
     def get_schema(self, exclude=None):
         """
         exclude:
             e.g: {
-                "columns": {
-                    'names': ['id'],
-                    'fields': ['default'],
-                },
-                "constraints": {
-                    'fields': ['deferrable', 'deferred'],
-                    'types': 'foreign'
-                }
+                "columns": ['default'],
+                "constraints": ['deferrable', 'deferred']
             }
         """
         exclude = exclude or {}
         result = {
-            "columns": (
-                self.exclude(self.columns, exclude.get('columns'))
+            "columns": self.realias(
+                self.exclude(self.columns, exclude.get("columns"))
             )
         }
         if self.constraints is not None:
-            result["constraints"] = (
-                self.exclude(self.constraints, exclude.get('constraints'))
+            result["constraints"] = self.realias(
+                self.exclude(
+                    self.constraints, exclude.get("constraints")
+                )
             )
 
         if self.indexes is not None:
-            result["indexes"] = (
-                self.exclude(self.indexes, exclude.get('indexes'))
-            )
+            result["indexes"] = self.realias(self.exclude(self.indexes, exclude.get("indexes")))
         return result
 
-    def exclude(self, source: dict, exclude: dict) -> dict:
+    def exclude(self, source: dict, exclude: Union[list, dict]) -> dict:
         if not exclude:
             return source
-        names = exclude.get('names', None)
-        fields = exclude.get('fields', None)
-        types = exclude.get('types', None)
+        if isinstance(exclude, list):
+            fields = exclude
+            names = None
+            types = None
+        else:
+            names = exclude.get("names", None)
+            fields = exclude.get("fields", None)
+            types = exclude.get("types", None)
+
         result = {}
         for key, value in source.items():
             if names and key in names:
                 continue
-            if types and value.get('type') in types:
+            if types and value.get("type") in types:
                 continue
             if fields:
                 for f in fields:
@@ -190,11 +263,6 @@ class Table(Loggable):
 
             result[key] = value
         return result
-
-    def get_decode_boolean(self, column):
-        F = self.database.F
-        column = self.F.column(column)
-        return f"decode({column}, true, 'true', false, 'false') as {column}"
 
     async def get_data_hashes(self, shard_size=None):
         if shard_size is None:
@@ -235,7 +303,7 @@ class Table(Loggable):
         split = False
         if (min_pk or max_pk) and (md5 or count):
             # may need to split up this query
-            # if the pk is a UUID then min_pk and max_pk have to run separate
+            # if the pk is a UUID then min_pk and max_pk have to run separately
             if self.pks:
                 pk = self.pks[0]
                 split = self.columns[pk]["type"] == "uuid"
@@ -297,6 +365,12 @@ class Table(Loggable):
             result = await self.database.query_one_row(*query)
             return result
 
+    def order_by_alias(self, columns):
+        return sorted(
+            columns,
+            key=lambda c: self.columns[c].get('alias', c)
+        )
+
     async def get_statistics_query(
         self,
         count=False,
@@ -306,54 +380,30 @@ class Table(Loggable):
         limit=None,
         cursor=None,
     ):
-        # TODO: refactor to JSQL
+        # TODO: refactor to PreQL
         if not count and not max_pk and not md5 and not min_pk:
             raise Exception("must pass count or max_pk or md5 or min_pk")
 
         F = self.database.F
-        redshift = await self.database.is_redshift
-        decode = False
-        aggregator = "array_to_string(array_agg"
-        end = "), ';')"
-        cast = False
-        if redshift:
-            # TODO: fix, technically this applies to Redshift, not Postgres <9
-            # in practice, nobody else is running Postgres 8 anymore...
-            aggregator = "listagg"
-            end = ", ';')"
-            decode = True
-            cast = True
-
         columns = list(sorted(self.columns.keys()))
-        pks = self.pks
+        pks = self.order_by_alias(self.pks)
+
         order = ", ".join([F.column(c) for c in pks if self.can_order(c)])
-        cast = "::varchar" if cast else ""
 
         if not md5:
             columns = pks
-        columns_ = [F.column(c) for c in columns]
 
-        # concatenate all column names and values in pseudo-json
-        aggregate = ",".join(
-            [f"T.{c}{cast}" for c in columns_]
-        )
-        aggregate = f"concat_ws(',', {aggregate})"
+        # TODO: use alias ordering to ensure consistent
+        # hashes across datastores with different schematic names
+        columns_ = [F.column(c) for c in self.order_by_alias(columns)]
+        # concatenate values together 
+        aggregate = ",".join([f"T.{c}" for c in columns_])
+        aggregate = f"json_build_array({aggregate})"
 
-        inner = ", ".join(
-            [
-                self.get_decode_boolean(c)
-                if decode and self.is_boolean(c)
-                else (
-                    columns_[i]
-                    if not self.is_array(c)
-                    else f"concat('[', array_to_string({columns_[i]}, ','), ']') {columns_[i]}"
-                )
-                for i, c in enumerate(columns)
-            ]
-        )
+        inner = ", ".join(columns_)
         output = []
         pk = pks[0]
-        md5 = f"md5({aggregator}({aggregate}{end}) as md5" if md5 else None
+        md5 = f"md5(array_to_string(array_agg({aggregate}), ',')) as md5" if md5 else None
         count = "count(*)" if count else ""
         pk_ = F.column(pk)
         max_pk = f"max({pk_})" if max_pk else ""
@@ -474,22 +524,20 @@ class Table(Loggable):
         return column["type"] != "uuid"
 
     def get_count_query(self):
-        # TODO: move into Q
-        return (f'SELECT count(*) FROM {self.sql_name}', )
+        return (f"SELECT count(*) FROM {self.sql_name}",)
 
     def get_data_range_query(self, keys):
         new_keys = []
         F = self.database.F
         for key in keys:
             column = F.column(key)
-            min_key = F.column(f'min_{key}')
-            max_key = F.column(f'max_{key}')
+            min_key = F.column(f"min_{key}")
+            max_key = F.column(f"max_{key}")
             new_keys.append(
-                f'min({column}) AS {min_key}, '
-                f'max({column}) AS {max_key}'
+                f"min({column}) AS {min_key}, " f"max({column}) AS {max_key}"
             )
         keys = ",\n  ".join(new_keys)
-        return (f"SELECT {keys}\n" f'FROM {self.sql_name}', )
+        return (f"SELECT {keys}\n" f"FROM {self.sql_name}",)
 
     async def get_data_range(self, keys=None):
         if keys is None:
