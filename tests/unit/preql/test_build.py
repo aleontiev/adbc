@@ -77,19 +77,20 @@ def test_build_create():
             [
                 (
                     'CREATE TABLE "one"."test" (\n'
-                    '    "id" int NOT NULL,\n',
+                    '    "id" int NOT NULL,\n'
                     '    "location_id" int,\n'
                     '    "name" text,\n'
-                    '    CONSTRAINT "test_location_id_fk" FOREIGN KEY ("location_id") REFERENCES "locations" ("id") NOT DEFERRABLE INITIALLY IMMEDIATE,\n'  # noqa
+                    '    CONSTRAINT "ck" CHECK ("name" != "id") DEFERRABLE INITIALLY DEFERRED,\n'
                     '    CONSTRAINT "pk" PRIMARY KEY ("id") NOT DEFERRABLE INITIALLY IMMEDIATE,\n'
-                    '    CONSTRAINT "ck" CHECK ("name" != "id") DEFERRABLE INITIALLY DEFERRED\n'
+                    '    CONSTRAINT "test__location_id__fk" FOREIGN KEY ("location_id") REFERENCES "locations" ("id") NOT DEFERRABLE INITIALLY IMMEDIATE,\n'  # noqa
+                    '    CONSTRAINT "test__name__uk" UNIQUE ("name") NOT DEFERRABLE INITIALLY IMMEDIATE\n'
                     ')', []
                 ),
                 (
-                    'CREATE SEQUENCE IF NOT EXISTS "one"."test_id_seq" OWNED BY "one"."test"."id"', []
+                    'CREATE SEQUENCE IF NOT EXISTS "one"."test__id__seq" OWNED BY "one"."test"."id"', []
                 ),
                 (
-                    'ALTER TABLE "one"."test" ALTER COLUMN "id" SET DEFAULT nextval(\'one.test_id_seq\')'
+                    'ALTER TABLE "one"."test" ALTER COLUMN "id" SET DEFAULT nextval(\'one.test__id__seq\')', []
                 ),
                 ('CREATE INDEX "composite" ON "one"."test" USING hash ("id", "name")', [])
             ],
@@ -247,7 +248,7 @@ def test_build_alter():
                     "table": {
                         "name": "test",
                         "rename": "test2",
-                        "add": [{
+                        "add": {
                             "column": [{
                                 "name": "created",
                                 "type": "timestamp",
@@ -256,14 +257,13 @@ def test_build_alter():
                                 "name": "updated",
                                 "type": "timestamp",
                                 "null": False,
-                            }]
-                        }, {
+                            }],
                             "constraint": {
                                 "name": "updated_gte_created",
                                 "type": "check",
                                 "check": {">=": ["updated", "created"]}
                             }
-                        }],
+                        },
                         "alter": {
                             "column": {
                                 "name": "name",
@@ -285,15 +285,13 @@ def test_build_alter():
             },
             [(
                 'ALTER TABLE "test"\n'
-                '    ADD COLUMN "created" timestamp NOT NULL\n'
-                '    ADD COLUMN "updated" timestamp NOT NULL\n',
-                '    ADD CONSTRAINT "updated_gte_created" CHECK ("updated" >= "created") NOT DEFERRABLE INITIALLY IMMEDIATE\n'
-                '    ALTER COLUMN "name" TYPE varchar(1024)\n',
-                '    ALTER COLUMN "name" DROP DEFAULT\n'
-                '    ALTER COLUMN "name" SET NOT NULL\n'
-                '    ALTER CONSTRAINT "name_unique" DEFERRABLE\n'
-                '    DROP COLUMN "first_name"\n'
-                '    DROP COLUMN "last_name"',
+                '    ADD COLUMN "created" timestamp NOT NULL,\n'
+                '    ADD COLUMN "updated" timestamp NOT NULL,\n'
+                '    ADD CONSTRAINT "updated_gte_created" CHECK ("updated" >= "created") NOT DEFERRABLE INITIALLY IMMEDIATE,\n'
+                '    DROP COLUMN "first_name",\n'
+                '    DROP COLUMN "last_name",\n'
+                '    ALTER COLUMN "name" TYPE varchar(1024), ALTER COLUMN "name" DROP DEFAULT, ALTER COLUMN "name" DROP NOT NULL,\n'
+                '    ALTER CONSTRAINT "name_unique" DEFERRABLE',
                 []
             ), (
                 'ALTER TABLE "test" RENAME COLUMN "name" TO "full_name"',
@@ -321,7 +319,7 @@ def test_build_alter():
                 }]
             }, [(
                 'ALTER TABLE "test"\n'
-                '    ALTER COLUMN "name" SET DEFAULT %s\n'
+                '    ALTER COLUMN "name" SET DEFAULT %s,\n'
                 '    ALTER CONSTRAINT "name_unique" DEFERRABLE',
                 ['test']
             ), (

@@ -1,8 +1,10 @@
 from adbc.preql.dialect import ParameterStyle, get_default_style
 import re
+import copy
 from collections import defaultdict
 from typing import List, Union, Optional
 from .core import Builder
+from adbc.generators import G
 
 # from .statements import Select, ...
 
@@ -21,6 +23,13 @@ CONSTRAINT_TYPES = {
     "unique": "unique",
     "check": "check",
 }
+CONSTRAINT_ABBREVIATIONS = {
+    "primary": "pk",
+    "foreign": "fk",
+    "unique": "uk",
+    "check": "ck",
+    "exclude": "xk",
+}
 INDEX_TYPES = {"btree": "btree", "hash": "hash", "gist": "gist", "gin": "gin"}
 
 JOIN_TYPES = {
@@ -33,6 +42,15 @@ JOIN_TYPES = {
     "cross": "cross",
 }
 
+SCHEMA_ORDER = {
+    'database': 1,
+    'schema': 2,
+    'table': 3,
+    'sequence': 4,
+    'index': 5,
+    'column': 6,
+    'constraint': 7
+}
 
 class SQLBuilder(Builder):
     def get_default_style(self):
@@ -77,9 +95,33 @@ class SQLBuilder(Builder):
     def get_empty_parameters(self, style):
         return {} if style in {ParameterStyle.NAMED} else []
 
+    def normalize(self, query: Union[list, dict]):
+        if isinstance(query, list):
+            return [self.normalize(q) for q in query]
+
+        if 'alter' in query:
+            query = self.normalize_alter(query)
+
+        return query
+
     def build(
-        self, query: dict, style: ParameterStyle = None, depth: int = 0, params=None
+        self,
+        query: Union[list,dict],
+        style: ParameterStyle = None,
+        depth: int = 0,
+        params=None,
+        normalize=True
     ) -> List[tuple]:
+        if normalize:
+            query = self.normalize(query)
+
+        if isinstance(query, list):
+            results = []
+            for q in query:
+                for result in self.build(q, style, depth, params, normalize=False):
+                    results.extend(result)
+            return results
+
         if style is None:
             style = self.get_default_style()
 
@@ -192,8 +234,278 @@ class SQLBuilder(Builder):
         else:
             raise NotImplementedError(f"create expecting to contain one of: {children}")
 
+    def normalize_alter(self, clause: dict):
+        """Normalizes an alter clause:
+
+        - table alters on the same table are merged
+        - column/constraints alters in the same table are grouped with table alters
+        - any renames are separated and performed last in reverse schema order
+
+        Example:
+
+        Before normalization:
+
+            {
+                "alter": [{
+                    "table": {
+                        "name": "A",
+                        "add": {
+                            "column": {
+                                "name": "id",
+                                "type": "integer"
+                            }
+                        },
+                        "alter": {
+                            "column": {
+                                "name": "name",
+                                "null": True
+                            }
+                        }
+                    }
+                },{
+                    "table": [{
+                        "name": "A",
+                        "rename": `"B"
+                    }, {
+                        "name": "A",
+                        "drop": {
+                            "constraint": "foo_uk",
+                        }
+                    }]
+                }, {
+                    "column": {
+                        "name": "name",
+                        "on": "A",
+                        "default": "'foo'",
+                        "rename": "new_name"
+                    }
+                }]
+            }
+
+        After normalization:
+
+            {
+                "alter": [{
+                    "table": {
+                        "name": "A",
+                        "add": {
+                            "column": {
+                                "name": "id",
+                                "type": "integer"
+                            }
+                        },
+                        "alter": {
+                            "column": {
+                                "name": "name",
+                                "null": True,
+                                "default": "'foo'"
+                            }
+                        },
+                        "drop": {
+                            "constraint": "foo_uk"
+                        }
+                    }
+                }, {
+                    "column": {
+                        "name": "name",
+                        "on": "A",
+                        "rename": "name2"
+                    }
+                }, {
+                    "table": {
+                        "name": "A",
+                        "rename": "B"
+                    }
+                }]
+            }
+        """
+
+        #- table alters on the same table are merged
+        #- column/constraints alters in the same table are grouped with table alters
+        #- any renames are separated and performed last in the order of:
+        #    - constraint
+        #    - column
+        #    - table
+        #    - schema
+        alter = next(iter(clause.values()))
+        if isinstance(alter, dict):
+            alters = [alter]
+        else:
+            alters = alter
+
+        by_table = {}   # keyed by table name
+        renames = defaultdict(list)  # keyed by schema type (e.g. database, table)
+        by_other = defaultdict(list)  # keyed by schema type
+        for alter in alters:
+            type, clause = next(iter(alter.items()))
+            if isinstance(clause, list):
+                clauses = clause
+            else:
+                clauses = [clause]
+            for clause in clauses:
+                name = clause.get('name')
+                if 'rename' in clause:
+                    clause.pop('name')  # to check for empty
+                    on = clause.pop('on', None)
+                    rename = clause.pop('rename')
+                    if clause:
+                        # a rename bundled with another changes
+                        # these have to be separated in postgres
+                        rename = {
+                            'name': name,
+                            'rename': rename
+                        }
+                        if on:
+                            rename['on'] = on
+                            clause['on'] = on
+                        clause['name'] = name
+                        # continue processing "clause" without rename
+                        renames[type].append(rename)
+                    else:
+                        # strictly a rename clause
+                        clause['name'] = name
+                        clause['rename'] = rename
+                        if on:
+                            clause['on'] = on
+                        renames[type].append(clause)
+                        continue
+
+                if type == 'column' or type == 'constraint':
+                    # re-express {"alter": {"column": {"on": "A", ...}}
+                    # as {"alter": {"table": {"name": "A", "alter": {"column": {...}}}
+                    name = clause.pop('on')
+                    clause = {'name': name, 'alter': {type: clause}}
+                    type = 'table'
+
+                if type == 'table':
+                    if 'alter' in clause:
+                        # separate renames
+                        for type2, clause2 in clause['alter'].items():
+                            name2 = clause2.get('name')
+                            if isinstance(clause2, list):
+                                clauses2 = clause2
+                            else:
+                                clauses2 = [clause2]
+                            for clause2 in clauses2:
+                                if 'rename' in clause2:
+                                    clause2.pop('name')
+                                    rename = clause2.pop('rename')
+                                    if clause2:
+                                        rename = {
+                                            'name': name2,
+                                            'rename': rename,
+                                            'on': name
+                                        }
+                                        clause2['name'] = name2
+                                        renames[type2].append(rename)
+                                    else:
+                                        clause2['name'] = name2
+                                        clause2['rename'] = rename
+                                        clause2['on'] = name
+
+                                        renames[type2].append(clause2)
+                                        continue
+
+                    if name in by_table:
+                        # merge alter tables
+                        old = by_table[name]
+                        for key in ('add', 'drop', 'alter'):
+                            if key in clause:
+                                new_value = clause[key]
+                                if key in old:
+                                    old_value = old[key]
+                                    # merge
+                                    if key == 'alter':
+                                        # alter: merge by type and name 
+                                        # e.g:
+                                        # {"alter": {"column": {"name": "A", "null": True}} and
+                                        # {"alter": {"column": {"name": "A", "default": 1}} ->
+                                        # {"alter": {"column": {"name": "A", "default": 1, "null": True}}
+                                        for type2, action in new_value.items():
+                                            merged = {}
+                                            if not isinstance(action, list):
+                                                action = [action]
+
+                                            old_names = {}
+                                            new_names = {}
+
+                                            for o in old_value.get(type2, []):
+                                                name2 = o['name']
+                                                if name2 in old_names:
+                                                    old_names[name2].update(o)
+                                                else:
+                                                    old_names[name2] = o
+
+                                            for o in action:
+                                                name2 = o['name']
+                                                if name2 in new_names:
+                                                    new_names[name2].update(o)
+                                                else:
+                                                    new_names[name2] = o
+
+                                            for new_name, new_value in new_names.items():
+                                                if new_name in old_names:
+                                                    # merge values with dict update
+                                                    merged_value = old_names.pop(new_name)
+                                                    merged_value.update(new_value)
+                                                    merged[new_name] = merged_value
+                                                else:
+                                                    # use new value
+                                                    merged[new_name] = new_value
+                                            merged.update(old_names)
+
+                                            if len(merged) == 1:
+                                                merged = next(iter(merged.values()))
+                                            else:
+                                                merged = list(merged.values())
+                                            old_value[type2] = merged
+                                    else:
+                                        # add, drop: merge by type
+                                        # e.g:
+                                        # {"add": {"column": {...A...}} +
+                                        # {"add": {"column": {...B...}} ->
+                                        # {"add": {"column": [{...A...}, {...B...}]}
+                                        for type2, action in new_value.items():
+                                            if not isinstance(old_value[type2], list):
+                                                old_value[type2] = [old_value[type2]]
+
+                                            if isinstance(action, list):
+                                                old_value[type2].extend(action)
+                                            else:
+                                                old_value[type2].append(action)
+                                else:
+                                    old[key] = new_value
+
+                    else:
+                        by_table[name] = clause
+
+                elif type in {'index', 'sequence', 'schema', 'database'}:
+                    by_other[type].append(clause)
+
+
+        normalized = []
+        by_other['table'] = None
+        for type, clauses in sorted(by_other.items(), key=lambda x: SCHEMA_ORDER[x[0]]):
+            # in order: database, schema, table, ..., column, constraint
+            if type == 'table':
+                clauses = list(by_table.values())
+                if len(clauses) == 1:
+                    clauses = clauses[0]
+            normalized.append({type: clauses})
+
+        for type, clauses in sorted(renames.items(), key=lambda x: -1 * SCHEMA_ORDER[x[0]]):
+            # in order: constraint, column,..., table, schema, database
+            normalized.append({type: clauses})
+        if len(normalized) == 1:
+            normalized = normalized[0]
+        return {'alter': normalized}
+
     def build_alter(
-        self, clause: dict, style: ParameterStyle, params=None, depth: int = 0, by_table=False
+        self,
+        clause: dict,
+        style: ParameterStyle,
+        params=None,
+        depth: int = 0,
     ) -> List[tuple]:
         """Builds $.alter: modifies schematic elements
 
@@ -207,39 +519,21 @@ class SQLBuilder(Builder):
         """
         indent = " " * self.INDENT * depth
         if isinstance(clause, list):
-            all_results = []
-            table_results = {}
+            results = []
             for c in clause:
-                # try to get results by table
-                subresults = self.build_alter(
-                    c, style, depth=depth, params=params, by_table=True
+                if params is not None:
+                    p = copy.copy(params)
+                else:
+                    p = params
+                results.extend(
+                    self.build_alter(
+                        c,
+                        style,
+                        depth=depth,
+                        params=p,
+                    )
                 )
-                if isinstance(subresults, list):
-                    all_results.extend(subresults)
-                elif isinstance(subresults, dict):
-                    # results by tables, only for "column" and "constraint"
-                    for key, value in subresults.items():
-                        value, ps = value
-                        if key not in table_results:
-                            # add table
-                            table_results[key] = (value, ps)
-                        else:
-                            # merge table
-                            table_results[key][0].extend(value)
-                            self.extend_parameters(table_results[key][1], ps)
-            if by_table:
-                return table_results
-
-            indent2 = " " * self.INDENT * (depth + 1)
-            for name, results in table_results.items():
-                name = self.format_identifier(name)
-                results, params = results
-                separator = f"\n{indent2}" if len(results) > 1 else " "
-                results = self.combine(results, separator=separator)
-                results = f"{indent}ALTER TABLE {name}{separator}{results}"
-                all_results.append((results, params))
-
-            return all_results
+            return results
 
         children = (
             "database",
@@ -253,17 +547,14 @@ class SQLBuilder(Builder):
         method = None
         for child in children:
             if child in clause:
-                method = f"build_create_{child}"
+                method = f"build_alter_{child}"
                 break
 
         if method:
             method = getattr(self, method)
-            kwargs = {"depth": depth, "params": params}
-            if by_table and child == "column" or child == "constraint":
-                kwargs["by_table"] = True
-            return method(clause[child], style, **kwargs)
+            return method(clause[child], style, depth=depth, params=params)
         else:
-            raise NotImplementedError(f"create expecting to contain one of: {children}")
+            raise NotImplementedError(f"alter expecting to contain one of: {children}")
 
     def build_show(self, clause: dict, style: ParameterStyle) -> List[tuple]:
         raise NotImplementedError()
@@ -374,7 +665,7 @@ class SQLBuilder(Builder):
 
         if isinstance(data, str):
             result = self.get_expression(
-                data, style, params, indent=False, depth=depth+1, allow_subquery=False
+                data, style, params, indent=False, allow_subquery=False
             )
             if prefix:
                 return f"{indent}SELECT {result}"
@@ -386,12 +677,16 @@ class SQLBuilder(Builder):
             for name, value in data.items():
                 name = self.format_identifier(name)
                 expression = self.get_expression(
-                    value, style, params, depth=depth + 1, allow_subquery=True
+                    value,
+                    style,
+                    params,
+                    indent=False,
+                    allow_subquery=True
                 )
                 results.append(f"{expression} AS {name}")
-            result = self.combine(results, separator=",\n")
+            result = self.combine(results, separator=f",\n{indent2}")
             if prefix:
-                return f'{indent}SELECT\n{result}'
+                return f"{indent}SELECT\n{result}"
             else:
                 return result
 
@@ -426,7 +721,7 @@ class SQLBuilder(Builder):
                 elif isinstance(target, dict):
                     # TODO: support for LATERAL
                     target = self.get_subquery(target, style, params, depth=depth)
-                    target = f'(\n{target}\n{indent})'
+                    target = f"(\n{target}\n{indent})"
 
                 results.append(f"{target} AS {name}")
                 result = self.combine(results, separator=", ")
@@ -507,7 +802,7 @@ class SQLBuilder(Builder):
         if prefix:
             prefix = f"{indent}GROUP BY "
         else:
-            prefix = ''
+            prefix = ""
 
         if isinstance(group, list):
             group = self.combine(
@@ -643,7 +938,13 @@ class SQLBuilder(Builder):
                 identifier = identifier.split(split_on)
             else:
                 identifier = [identifier]
-        return identifier
+            return identifier
+        else:
+            # also split each item up
+            result = []
+            for ident in identifier:
+                result.extend(ident.split(split_on))
+            return result
 
     def format_identifier(self, identifier: Union[list, str, dict]):
         identifier = self.unpack_identifier(identifier)
@@ -722,6 +1023,28 @@ class SQLBuilder(Builder):
         )
         return [(query, params)]
 
+    def build_alter_column(
+        self,
+        clause: Union[list, dict],
+        style: ParameterStyle,
+        depth: int = 0,
+        params=None,
+    ):
+        return self.build_alter_table_item(
+            "column", clause, style, depth=depth, params=params
+        )
+
+    def build_alter_constraint(
+        self,
+        clause: Union[list, dict],
+        style: ParameterStyle,
+        depth: int = 0,
+        params=None,
+    ):
+        return self.build_alter_table_item(
+            "constraint", clause, style, depth=depth, params=params
+        )
+
     def build_create_column(
         self,
         clause: Union[list, dict],
@@ -734,6 +1057,37 @@ class SQLBuilder(Builder):
             "column", clause, style, depth=depth, params=params, by_table=by_table,
         )
 
+    def build_alter_table_item(
+        self,
+        type,
+        clause: Union[list, dict],
+        style: ParameterStyle,
+        depth: int = 0,
+        params=None,
+    ):
+        if isinstance(clause, list):
+            clauses = clause
+            results = []
+            for clause in clauses:
+                results.extend(
+                    self.build_alter_table_item(type, clause, style, depth, params)
+                )
+            return results
+
+        if type == "column":
+            prefix = "COLUMN "
+        else:
+            prefix = "CONSTRAINT "
+
+        indent = " " * self.INDENT * depth
+        alter_getter = getattr(self, f"get_alter_{type}")
+        if 'on' not in clause:
+            raise ValueError(f'alter {type}: must identify table with "on" {clause}')
+
+        table = self.format_identifier(clause['on'])
+        alter = alter_getter(clause, style, params)
+        return [(f"{indent}ALTER TABLE {table} {alter}", params)]
+
     def build_create_table_item(
         self,
         type,
@@ -745,10 +1099,9 @@ class SQLBuilder(Builder):
     ):
         """Builds $.create.{column, constraint}"""
         if type == "column":
-            # optional prefix for column definitions
             prefix = f"COLUMN "
         else:
-            prefix = ""
+            prefix = f"CONSTRAINT "
 
         indent = " " * self.INDENT * depth
         indent2 = " " * self.INDENT * (depth + 1)
@@ -812,43 +1165,219 @@ class SQLBuilder(Builder):
                     self.build_create_index(c, style, depth=depth, params=params)
                 )
                 return results
-        if isinstance(clause, dict):
-            name = clause["name"]
-            on = clause["on"]
-            type = clause.get("type")
-            if type:
-                if type not in INDEX_TYPES:
-                    raise ValueError(f'create index: invalid type "{type}"')
-                type = INDEX_TYPES[type]
-                type = f" USING {type}"
-            else:
-                # default (btree)
-                type = ""
-            on = self.format_identifier(on)
-            name = self.format_identifier(name)
-            concurrently = clause.get("concurrently", False)
-            if concurrently:
-                concurrently = " CONCURRENTLY "
-            else:
-                concurrently = " "
-            columns = clause.get("columns")
-            expression = clause.get("expression")
-            if columns:
-                expression = self.combine(
-                    [self.format_identifier(c) for c in columns], separator=", "
-                )
-            elif expression:
-                expression = self.get_expression(
-                    expression, style, params, depth=depth, allow_subquery=False
-                )
-            return [
-                (
-                    f"{indent}CREATE INDEX{concurrently}{name} ON {on}{type} ({expression})",
-                    [],
-                )
-            ]
 
-        raise NotImplementedError()
+        if not isinstance(clause, dict):
+            raise NotImplementedError()
+
+        name = clause["name"]
+        on = clause["on"]
+        type = clause.get("type")
+        if type:
+            if type not in INDEX_TYPES:
+                raise ValueError(f'create index: invalid type "{type}"')
+            type = INDEX_TYPES[type]
+            type = f" USING {type}"
+        else:
+            # default (btree)
+            type = ""
+        on = self.format_identifier(on)
+        name = self.format_identifier(name)
+        concurrently = clause.get("concurrently", False)
+        if concurrently:
+            concurrently = " CONCURRENTLY "
+        else:
+            concurrently = " "
+        columns = clause.get("columns")
+        expression = clause.get("expression")
+        if columns:
+            expression = self.combine(
+                [self.format_identifier(c) for c in columns], separator=", "
+            )
+        elif expression:
+            expression = self.get_expression(
+                expression, style, params, depth=depth, allow_subquery=False
+            )
+        return [
+            (
+                f"{indent}CREATE INDEX{concurrently}{name} ON {on}{type} ({expression})",
+                params,
+            )
+        ]
+
+    def add_auto_constraints(
+        self,
+        table: str,
+        columns: Optional[List[dict]],
+        constraints: Optional[List[dict]],
+    ):
+        if columns is None:
+            return constraints
+
+        constraints = constraints or []
+        constraint_names = {constraint["name"] for constraint in constraints}
+        table = table.split(".")[-1]  # strip schema
+        # return original input if no changes were made
+        for column in columns:
+            column_name = column["name"]
+            primary = column.get("primary", False)
+            unique = column.get("unique", False)
+            related = column.get("related", None)
+            if primary:
+                changes = True
+                if not isinstance(primary, str):
+                    primary = self.get_auto_constraint_name(
+                        table, column_name, "primary"
+                    )
+                if primary not in constraint_names:
+                    constraint = G("constraint", type="primary", columns=[column_name])
+                    constraint["name"] = primary
+                    constraints.append(constraint)
+                    constraint_names.add(primary)
+            if unique:
+                changes = True
+                if not isinstance(unique, str):
+                    unique = self.get_auto_constraint_name(table, column_name, "unique")
+                if unique not in constraint_names:
+                    constraint = G("constraint", type="unique", columns=[column_name])
+                    constraint["name"] = unique
+                    constraints.append(constraint)
+                    constraint_names.add(unique)
+            if related:
+                if "to" not in related or "by" not in related:
+                    raise ValueError('column.related: must have "to" and "by"')
+
+                changes = True
+                to = related["to"]
+                by = related["by"]
+                if "name" in related:
+                    name = related["name"]
+                else:
+                    name = self.get_auto_constraint_name(table, column_name, "foreign")
+
+                constraint = G(
+                    "constraint",
+                    type="foreign",
+                    columns=[column_name],
+                    related_name=[to],
+                    related_columns=[by],
+                )
+                constraint["name"] = name
+                constraints.append(constraint)
+                constraint_names.add(name)
+
+        return constraints
+
+    def get_auto_constraint_name(self, table, name, type):
+        suffix = CONSTRAINT_ABBREVIATIONS[type]
+        return f"{table}__{name}__{suffix}"
+
+    def build_alter_table(
+        self,
+        clause: Union[list, dict],
+        style: ParameterStyle,
+        depth: int = 0,
+        params=None,
+    ):
+        """Builds $.alter.table"""
+        if isinstance(clause, list):
+            clauses = clause
+            results = []
+            for clause in clauses:
+                results.extend(
+                    self.build_alter_table(clause, style, depth=depth, params=params)
+                )
+            return results
+
+        indent = " " * self.INDENT * depth
+        indent2 = " " * self.INDENT * (depth + 1)
+        rename = clause.get("rename", None)
+        add = clause.get("add", None)
+        alter = clause.get("alter", None)
+        drop = clause.get("drop", None)
+        name = clause.get("name", None)
+        if not name:
+            raise ValueError("alter.table: name is required")
+
+        table = self.format_identifier(name)
+        actions = []
+
+        for action, value in (
+            ("add", add),
+            ("drop", drop),
+            ("alter", alter),
+            ("rename", rename),
+        ):
+            result = getattr(self, f"get_alter_table_{action}")(value, style, params)
+            actions.extend(result)
+
+        if not actions:
+            raise ValueError("alter.table: must have rename/add/alter/drop actions")
+
+        separator = " " if len(actions) == 1 else f",\n{indent2}"
+        sep0 = " " if len(actions) == 1 else f"\n{indent2}"
+        actions = self.combine(actions, separator=separator)
+        return [(f"{indent}ALTER TABLE {table}{sep0}{actions}", params)]
+
+    def get_alter_table_add(self, clause: dict, style, params):
+        results = []
+        if not clause:
+            return results
+        for type, action in clause.items():
+            # e.g. type, action = "column", {"name": "foo", ...}
+            if not isinstance(action, list):
+                actions = [action]
+            else:
+                actions = action
+
+            upper_type = type.upper()
+            for action in actions:
+                method = getattr(self, f'get_create_{type}')
+                result = method(action, style, params)
+                results.append(f'ADD {upper_type} {result}')
+        return results
+
+    def get_alter_table_drop(self, clause: dict, style, params):
+        results = []
+        if not clause:
+            return results
+        for type, action in clause.items():
+            # e.g. type, action = "column", ["name", "first"]
+            if not isinstance(action, list):
+                actions = [action]
+            else:
+                actions = action
+
+            upper_type = type.upper()
+            for action in actions:
+                if isinstance(action, str):
+                    name = action
+                else:
+                    name = action['name']
+                name = self.format_identifier(name)
+                results.append(f'DROP {upper_type} {name}')
+        return results
+
+    def get_alter_table_alter(self, clause: dict, style, params):
+        results = []
+        if not clause:
+            return results
+        for type, action in clause.items():
+            # e.g. type, action = "column", {"name": "foo", "null": True}
+            if not isinstance(action, list):
+                actions = [action]
+            else:
+                actions = action
+            for action in actions:
+                method = getattr(self, f'get_alter_{type}')
+                result = method(action, style, params)
+                results.append(result)
+        return results
+
+    def get_alter_table_rename(self, rename: str, style, params):
+        if rename is None:
+            return []
+        rename = self.format_identifier(rename)
+        return [f'RENAME TO {rename}']
 
     def build_create_table(
         self,
@@ -901,11 +1430,16 @@ class SQLBuilder(Builder):
                 if i.get("primary", False) or i.get("unique", False):
                     continue
                 i["on"] = name
-            new_indexex = indexes
+                new_indexes.append(i)
+            indexes = new_indexes
+
+        # add automatic constraints
+        constraints = self.add_auto_constraints(name, columns, constraints)
 
         params = self.get_parameters(style, params)
         temporary = " TEMPORARY " if temporary else " "
         maybe = " IF NOT EXISTS " if maybe else " "
+        raw_name = name
         name = self.format_identifier(name)
         index_queries = []
         if indexes:
@@ -934,8 +1468,62 @@ class SQLBuilder(Builder):
             result = [
                 (f"{indent}CREATE{temporary}TABLE{maybe}{name} (\n{items}\n)", params)
             ]
+            # add sequence queries for column "sequence" values
+            sequence_queries = self.get_auto_sequence_queries(
+                raw_name, columns, style
+            )
+            result.extend(sequence_queries)
             result.extend(index_queries)
             return result
+
+    def get_auto_sequence_name(
+        self, table_name, column_name
+    ):
+        suffix = 'seq'
+        return f'{table_name}__{column_name}__{suffix}'
+
+    def get_auto_sequence_queries(
+        self, table_name: str, columns: List[dict], style
+    ):
+        queries = []
+        for column in columns:
+            name = column.get("name")
+            sequence = column.get("sequence")
+            if sequence:
+                if not isinstance(sequence, str):
+                    sequence = self.get_auto_sequence_name(table_name, name)
+
+                sequence_name = sequence
+                sequence = {
+                    "name": sequence_name,
+                    "maybe": True,
+                    "owned_by": [table_name, name],
+                }
+                # CREATE SEQUENCE IF NOT EXISTS ...
+                queries.extend(
+                    self.build({
+                        "create": {
+                            "sequence": {
+                                "name": sequence_name,
+                                "maybe": True,
+                                "owned_by": [table_name, name]
+                            }
+                        },
+                    }, style)
+                )
+                # ALTER TABLE ... ALTER COLUMN ... DEFAULT nextval(...)
+                queries.extend(
+                    self.build({
+                        "alter": {
+                            "column": {
+                                "name": name,
+                                "on": table_name,
+                                "default": {"nextval": f"`{sequence_name}`"},
+                            }
+                        }
+                    }, style)
+                )
+        return queries
 
     def get_subquery(self, data, style, params, depth=0) -> str:
         result = self.build(data, style, depth=depth + 1, params=params)
@@ -957,45 +1545,51 @@ class SQLBuilder(Builder):
             return True
         return False
 
+    def validate_type(self, name):
+        if re.match(r"^[a-zA-Z][A-Za-z0-9\[\] ]*", name):
+            return True
+        return False
+
     def validate_keyword(self, name):
         if re.match(r"^[A-Za-z][A-Za-z_]*$", name):
             return True
         return False
 
     def get_case_expression(
-        self,
-        cases,
-        style,
-        params,
-        allow_subquery=True,
-        depth = 0,
-        indent=False
+        self, cases, style, params, allow_subquery=True, depth=0, indent=False
     ):
         num = len(cases)
         whens = []
         else_ = None
         if num < 2:
-            raise ValueError('case: must have at least two cases')
+            raise ValueError("case: must have at least two cases")
         for i, case in enumerate(cases):
             if i == num - 1:
                 # last case
-                if case.get('else'):
+                if case.get("else"):
                     # it may be either "else" or another "when"/"then" case
-                    else_ = case['else']
-                    else_ = self.get_expression(else_, style, params, allow_subquery=allow_subquery, depth=depth, indent=indent)
-                    else_ = f' ELSE {else_}'
+                    else_ = case["else"]
+                    else_ = self.get_expression(
+                        else_,
+                        style,
+                        params,
+                        allow_subquery=allow_subquery,
+                        depth=depth,
+                        indent=indent,
+                    )
+                    else_ = f" ELSE {else_}"
             if not else_:
-                when = case.get('when')
-                then = case.get('then')
+                when = case.get("when")
+                then = case.get("then")
                 if not when or not then:
-                    raise ValueError('case: must have when and then')
+                    raise ValueError("case: must have when and then")
                 when = self.get_expression(
                     when,
                     style,
                     params,
                     allow_subquery=allow_subquery,
                     depth=depth,
-                    indent=indent
+                    indent=indent,
                 )
                 then = self.get_expression(
                     then,
@@ -1003,13 +1597,13 @@ class SQLBuilder(Builder):
                     params,
                     allow_subquery=allow_subquery,
                     depth=depth,
-                    indent=indent
+                    indent=indent,
                 )
-                whens.append(f'WHEN {when} THEN {then}')
-        whens = self.combine(whens, separator=' ')
+                whens.append(f"WHEN {when} THEN {then}")
+        whens = self.combine(whens, separator=" ")
         if not else_:
-            else_ = ''
-        return f'CASE {whens}{else_} END'
+            else_ = ""
+        return f"CASE {whens}{else_} END"
 
     def get_expression(
         self,
@@ -1051,7 +1645,7 @@ class SQLBuilder(Builder):
                 char = expression[0]
                 result = expression[1:-1]
                 if expression[0] == self.RAW_QUOTE_CHARACTER:
-                    # add inline 
+                    # add inline
                     result = self.escape_literal(result)
                 else:
                     # add as parameter
@@ -1082,12 +1676,7 @@ class SQLBuilder(Builder):
                         raise ValueError(
                             f'cannot build "{key}", subqueries not allowed in this expression'
                         )
-                    subquery = self.get_subquery(
-                        expression,
-                        style,
-                        params,
-                        depth=depth
-                    )
+                    subquery = self.get_subquery(expression, style, params, depth=depth)
                     return f"{indent}{subquery}"
 
                 operator = self.get_operator(key)
@@ -1148,7 +1737,7 @@ class SQLBuilder(Builder):
                         params,
                         allow_subquery=allow_subquery,
                         depth=depth,
-                        indent=False
+                        indent=False,
                     )
                     return f"{indent}{result}"
                 if key == "between":
@@ -1187,7 +1776,7 @@ class SQLBuilder(Builder):
                 if not self.validate_function(key):
                     raise ValueError(f'"{key}" is not a valid function')
 
-                newline = newline_indent = ''
+                newline = newline_indent = ""
                 if not value:
                     arguments = ""
                 else:
@@ -1207,10 +1796,12 @@ class SQLBuilder(Builder):
                             separator=", ",
                         )
                     else:
-                        if isinstance(value, dict) and self.is_command(list(value.keys())[0]):
-                            newline = '\n'
+                        if isinstance(value, dict) and self.is_command(
+                            list(value.keys())[0]
+                        ):
+                            newline = "\n"
                             newline_indent = " " * self.INDENT * depth
-                            newline_indent = f'\n{newline_indent}'
+                            newline_indent = f"\n{newline_indent}"
 
                         arguments = self.get_expression(
                             value,
@@ -1283,8 +1874,113 @@ class SQLBuilder(Builder):
         deferrable = "DEFERRABLE" if deferrable else "NOT DEFERRABLE"
         deferred = "INITIALLY DEFERRED" if deferred else "INITIALLY IMMEDIATE"
         name = self.format_identifier(name)
-        type = type.upper()  # costmetic
-        return f"{indent}CONSTRAINT {name} {type}{check}{columns}{related} {deferrable} {deferred}"
+        type = type.upper()  # cosmetic
+        return f"{indent}{name} {type}{check}{columns}{related} {deferrable} {deferred}"
+
+    def get_alter_constraint(
+        self,
+        constraint: dict,
+        style: ParameterStyle,
+        params: Union[dict, list],
+        depth: int = 0,
+    ) -> str:
+        indent = " " * self.INDENT * depth
+        name = constraint.get("name")
+        if not name:
+            raise ValueError(f'alter constraint: "name" is required')
+
+        changes = {}
+        if "deferrable" in constraint:
+            changes["deferrable"] = constraint["deferrable"]
+        if "deferred" in constraint:
+            changes["deferred"] = constraint["deferred"]
+        if "rename" in constraint:
+            if changes:
+                first = next(iter(changes.keys()))
+                raise ValueError(
+                    f'alter constraint: cannot pass "rename" when also changing: "{first}"'
+                )
+            changes["name"] = constraint["rename"]
+
+        if not changes:
+            return None
+
+        result = []
+        name = self.format_identifier(name)
+        if "deferrable" in changes:
+            deferrable = bool(changes["deferrable"])
+            deferrable = 'DEFERRABLE' if deferrable else 'NOT DEFERRABLE'
+            result.append(f'ALTER CONSTRAINT {name} {deferrable}')
+        if "deferred" in changes:
+            deferred = bool(changes["deferred"])
+            deferred = 'INITIALLY DEFERRED' if deferred else 'INITIALLY IMMEDIATE'
+            result.append(f'ALTER CONSTRAINT {name} {deferred}')
+        if "rename" in changes:
+            new_name = self.format_identifier(changes["rename"])
+            result.append(f"RENAME CONSTRAINT {name} TO {new_name}")
+        result = self.combine(result, separator=", ")
+        return f"{indent}{result}"
+
+    def get_alter_column(
+        self,
+        column: dict,
+        style: ParameterStyle,
+        params: Union[dict, list],
+        depth: int = 0,
+    ) -> str:
+        indent = " " * self.INDENT * depth
+        name = column.get("name")
+        if not name:
+            raise ValueError(f'alter column: "name" is required')
+        changes = {}
+        if "type" in column:
+            changes["type"] = column["type"]
+        if "default" in column:
+            changes["default"] = column["default"]
+        if "null" in column:
+            changes["null"] = column["null"]
+        if "rename" in column:
+            if changes:
+                first = list(changes.keys())[0]
+                raise ValueError(
+                    f'alter column: cannot pass "rename" when also changing: "{first}"'
+                )
+            changes["name"] = column["rename"]
+
+        if not changes:
+            return None
+
+        result = []
+        name = self.format_identifier(name)
+        if "type" in changes:
+            type = changes["type"]
+            if not self.validate_type(type):
+                raise ValueError(f'alter column: invalid type "{type}"')
+            result.append(f'ALTER COLUMN {name} TYPE {changes["type"]}')
+        if "default" in changes:
+            default = changes["default"]
+            if default is not None:
+                action = "SET"
+                default = self.get_expression(
+                    default, style, params, indent=False, allow_subquery=False
+                )
+                default = f" {default}"
+            else:
+                action = "DROP"
+                default = ""
+            result.append(f"ALTER COLUMN {name} {action} DEFAULT{default}")
+        if "null" in changes:
+            null = changes["null"]
+            if null:
+                action = "DROP"
+            else:
+                action = "SET"
+            result.append(f"ALTER COLUMN {name} {action} NOT NULL")
+        if "name" in changes:
+            new_name = self.format_identifier(changes["name"])
+            result.append(f"RENAME COLUMN {name} TO {new_name}")
+        result = self.combine(result, separator=", ")
+        return f"{indent}{result}"
 
     def get_create_column(
         self,
@@ -1330,9 +2026,13 @@ class SQLBuilder(Builder):
         This consists of column and constraint "items".
         """
         items = []
+        indent = " " * self.INDENT * depth
         for c in columns:
-            items.append(self.get_create_column(c, style, params, depth=depth))
+            c = self.get_create_column(c, style, params, depth=0)
+            items.append(f"{indent}{c}")
         if constraints:
             for c in constraints:
-                items.append(self.get_create_constraint(c, style, params, depth=depth))
+                c = self.get_create_constraint(c, style, params, depth=0)
+                items.append(f"{indent}CONSTRAINT {c}")
+
         return self.combine(items, separator=",\n")
