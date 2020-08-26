@@ -938,13 +938,7 @@ class SQLBuilder(Builder):
                 identifier = identifier.split(split_on)
             else:
                 identifier = [identifier]
-            return identifier
-        else:
-            # also split each item up
-            result = []
-            for ident in identifier:
-                result.extend(ident.split(split_on))
-            return result
+        return identifier
 
     def format_identifier(self, identifier: Union[list, str, dict]):
         identifier = self.unpack_identifier(identifier)
@@ -1497,7 +1491,7 @@ class SQLBuilder(Builder):
                 sequence = {
                     "name": sequence_name,
                     "maybe": True,
-                    "owned_by": [table_name, name],
+                    "owned_by": f"{table_name}.{name}"
                 }
                 # CREATE SEQUENCE IF NOT EXISTS ...
                 queries.extend(
@@ -1506,7 +1500,7 @@ class SQLBuilder(Builder):
                             "sequence": {
                                 "name": sequence_name,
                                 "maybe": True,
-                                "owned_by": [table_name, name]
+                                "owned_by": f"{table_name}.{name}"
                             }
                         },
                     }, style)

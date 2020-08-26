@@ -95,7 +95,7 @@ def test_build_create():
                 ('CREATE INDEX "composite" ON "one"."test" USING hash ("id", "name")', [])
             ],
         ),
-        (
+        (  # 4. create table as (select ...)
             {
                 'create': {
                     'table': {
@@ -183,7 +183,7 @@ def test_build_create():
                 )
             ]
         ),
-        (
+        ( # 5. create column + constraint + sequence
             {
                 "create": [{
                     "column": [{

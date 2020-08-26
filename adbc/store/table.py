@@ -8,7 +8,7 @@ from adbc.exceptions import NotIncluded
 from adbc.sql import can_order
 from adbc.logging import Loggable
 from adbc.scope import WithScope
-from adbc.constants import SEQUENCE, TABLE, PRIMARY, UNIQUE
+from adbc.constants import SEQUENCE, TABLE, PRIMARY, UNIQUE, FOREIGN
 from cached_property import cached_property
 from adbc.utils import get_first
 
@@ -26,6 +26,14 @@ def get_sequence_name(expression):
             match = match.split("::")[0]
         return match
     return None
+
+
+def get_fks(constraints):
+    """Get foreign key fields given constraint list"""
+    fks = []
+    if constraints:
+        fks = get_first(constraints, lambda item: item['type'] == FOREIGN, 'columns')
+    return fks
 
 
 def get_pks(constraints):
@@ -88,21 +96,27 @@ class Table(WithScope, Loggable):
 
         self.columns = self.get_children("columns", columns)
         self.column_names = list(self.columns.keys())
-
-        if self.type == SEQUENCE:
-            # sequences do not have constraints/indexes
-            return
-
         self.constraints = self.get_children("constraints", constraints)
         self.indexes = self.get_children("indexes", indexes)
 
-        self.pks = get_pks(self.constraints) or self.column_names
-        self.uniques = get_uniques(self.constraints)
+        if self.type == SEQUENCE:
+            # sequences do not have constraints/indexes
+            self.init_sequence()
+        else:
+            self.init_table()
 
-        # set computed field values:
-        # - sequence: based on auto-increment or nextval
+    def init_table(self):
+        """Normal table initializer"""
+        # in one loop, create a two-way values binding for these properties:
+        # - sequence: based on auto-increment (MySQL) or nextval (Postgres)
         # - primary: based on primary constraint or index
         # - unique: based on unique constraints
+        # - related: based on foreign key constraints
+        constraints = self.constraints
+        pks = self.pks = get_pks(constraints) or self.column_names
+        uniques = self.uniques = get_uniques(constraints)
+        fks = self.fks = get_fks(constraints)
+
         for name, column in self.columns.items():
             if "default" in column:
                 default = column["default"]
@@ -115,33 +129,50 @@ class Table(WithScope, Loggable):
                     column["sequence"] = column.get("sequence", False)
 
             if column.get("primary"):
-                if name not in self.pks:
+                if name not in pks:
                     primary = column.get("primary")
                     constraint_name = (
                         primary
                         if isinstance(primary, str)
-                        else f"{self.name}_{name}_pk"
+                        else f"{self.name}__{name}__pk"
                     )
-                    self.pks.append(name)
-                    self.constraints[constraint_name] = {
+                    pks.append(name)
+                    constraints[constraint_name] = {
                         "type": PRIMARY,
                         "columns": [name],
                     }
             else:
-                column["primary"] = name in self.pks
+                column["primary"] = name in pks
             if column.get("unique"):
-                if name not in self.uniques:
+                if name not in uniques:
                     unique = column.get("unique")
                     constraint_name = (
-                        primary if isinstance(unique, str) else f"{self.name}_{name}_uk"
+                        unique if isinstance(unique, str) else f"{self.name}__{name}__uk"
                     )
-                    self.uniques.add(name)
-                    self.constraints[constraint_name] = {
+                    uniques.add(name)
+                    constraints[constraint_name] = {
                         "type": UNIQUE,
                         "columns": [name],
                     }
             else:
-                column["unique"] = name in self.uniques
+                column["unique"] = name in uniques
+
+            related = column.get('related')
+            if related:
+                if name not in fks:
+                    constraint_name = (
+                        related if isinstance(related, str) else f"{self.name}__{name}__fk"
+                    )
+                    fks.add(name)
+                    by = related['by']
+                    if not isinstance(by, list):
+                        by = [by]
+                    constraints[constraint_name] = {
+                        "type": FOREIGN,
+                        "columns": [name],
+                        "related_name": related['to'],
+                        "related_columns": by
+                    }
 
     def __str__(self):
         return f"{self.namespace}.{self.name}"
@@ -170,30 +201,43 @@ class Table(WithScope, Loggable):
                 result[name] = child
         return result
 
+    async def get_sequence_last_value(self):
+        query = {
+            'select': {
+                'data': 'last_value',
+                'from': self.full_name,
+            }
+        }
+        return await self.database.query_one_value(query)
+
     async def get_info(self, schema=True, data=True, hashes=False, **kwargs):
         result = {}
         exclude = kwargs.get("exclude", None)
         if data:
-            data_range = self.get_data_range()
-            count = self.get_count()
-            jobs = [data_range, count]
-            data_hashes = None
-            if hashes:
-                data_hashes = self.get_data_hashes()
-                jobs.append(data_hashes)
+            if self.type == 'table':
+                data_range = self.get_data_range()
+                count = self.get_count()
+                jobs = [data_range, count]
+                data_hashes = None
+                if hashes:
+                    data_hashes = self.get_data_hashes()
+                    jobs.append(data_hashes)
 
-            results = await asyncio.gather(*jobs)
-            if hashes:
-                data_range, count, data_hashes = results
-            else:
-                data_range, count = results
+                results = await asyncio.gather(*jobs)
+                if hashes:
+                    data_range, count, data_hashes = results
+                else:
+                    data_range, count = results
 
-            result["rows"] = {
-                "count": count,
-                "range": data_range,
-            }
-            if hashes:
-                result["rows"]["hashes"] = data_hashes
+                result["rows"] = {
+                    "count": count,
+                    "range": data_range,
+                }
+                if hashes:
+                    result["rows"]["hashes"] = data_hashes
+            else: # sequence
+                value = await self.get_sequence_last_value()
+                result['value'] = value
 
         schema = self.get_schema(exclude=exclude)
         result.update(schema)
@@ -222,22 +266,26 @@ class Table(WithScope, Loggable):
                 "constraints": ['deferrable', 'deferred']
             }
         """
-        exclude = exclude or {}
-        result = {
-            "columns": self.realias(
-                self.exclude(self.columns, exclude.get("columns"))
-            )
-        }
-        if self.constraints is not None:
-            result["constraints"] = self.realias(
-                self.exclude(
-                    self.constraints, exclude.get("constraints")
+        if self.type == 'table':
+            exclude = exclude or {}
+            result = {
+                "columns": self.realias(
+                    self.exclude(self.columns, exclude.get("columns"))
                 )
-            )
+            }
+            if self.constraints is not None:
+                result["constraints"] = self.realias(
+                    self.exclude(
+                        self.constraints, exclude.get("constraints")
+                    )
+                )
 
-        if self.indexes is not None:
-            result["indexes"] = self.realias(self.exclude(self.indexes, exclude.get("indexes")))
-        return result
+            if self.indexes is not None:
+                result["indexes"] = self.realias(self.exclude(self.indexes, exclude.get("indexes")))
+            return result
+        else:
+            # TODO: schema for sequences: min, max, start, increment_by
+            return {}
 
     def exclude(self, source: dict, exclude: Union[list, dict]) -> dict:
         if not exclude:
