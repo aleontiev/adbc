@@ -14,7 +14,7 @@ async def test_info():
     )
     table_definition = {
         "columns": {
-            "id": G('column', type='integer', primary=True),
+            "id": G('column', type='integer', primary='id_primary', sequence=True),
             "name": G('column', type='text', null=True)
         },
         "constraints": {
@@ -37,13 +37,17 @@ async def test_info():
         table = model.table
 
         assert table is not None
-        assert table.pks == ["id"]
+        assert table.pks == {"id": "id_primary"}
+        table_definition['columns']['id']['sequence'] = 'testing.test__id__seq'
+        table_definition['columns']['id']['default'] = {
+            'nextval': "'testing.test__id__seq'"
+        }
         assert table.columns == table_definition["columns"]
 
         # add (INSERT)
-        jay = await model.values({"id": 1, "name": "Jay"}).take("*").add()
-        await model.values({"id": 2, "name": "Quinn"}).add()
-        await model.values({"id": 3}).add()
+        jay = await model.values({"name": "Jay"}).take("*").add()
+        await model.values({"name": "Quinn"}).add()
+        await model.add()
 
         # count/get (SELECT)
         query = model.where({".or": [{"name": {"contains": "ay"}}, {"id": 3}]})
@@ -67,6 +71,8 @@ async def test_info():
         info = await source.get_info(scope=scope)
         expect_schema = table_definition
         actual_schema = info["testing"]["test"]
+        seq = info['testing']['test__id__seq']
+        assert seq == {'value': 3, 'type': 'sequence'}
         actual_data = actual_schema['rows']
         assert expect_schema["columns"] == actual_schema["columns"]
         assert expect_schema["constraints"] == actual_schema["constraints"]
@@ -93,7 +99,7 @@ async def test_info():
         actual_schema = info["main"]["test"]
         actual_data = actual_schema["rows"]
         # expect unique to be set 
-        expect_schema['columns']['name']['unique'] = True
+        expect_schema['columns']['name']['unique'] = 'unique_name'
         assert expect_schema["columns"] == actual_schema["columns"]
         assert expect_schema["constraints"] == actual_schema["constraints"]
         assert actual_data["count"] == 4
@@ -102,12 +108,11 @@ async def test_info():
 
         # 9. test exclusion: ignore certain fields
         info = await source.get_info(scope=alias_scope, hashes=True, exclude={
-            'columns': {
-                'fields': ['unique', 'primary']
-            }
+            'columns': ['unique', 'primary', 'related']
         })
         actual_schema = info['main']['test']
         for name, column in expect_schema['columns'].items():
             column.pop('primary')
             column.pop('unique')
+            column.pop('related')
         assert expect_schema['columns'] == actual_schema['columns']

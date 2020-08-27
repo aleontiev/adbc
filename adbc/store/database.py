@@ -1,6 +1,6 @@
 import os
 from cached_property import cached_property
-
+from pprint import pformat
 from adbc.exceptions import NotIncluded
 from adbc.scope import WithScope
 from adbc.utils import get_version_number, confirm, aecho
@@ -164,7 +164,7 @@ class Database(Loggable, WithCopy, WithScope):
 
     async def execute(self, query, params=None, connection=None, transaction=False):
         if isinstance(query, (dict, list)):
-            # build PreQL
+            # build PreQL query
             query, params = build(query, dialect=self.backend.dialect, combine=True)
 
         pool = await self.pool

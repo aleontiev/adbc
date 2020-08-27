@@ -3,6 +3,7 @@ from cached_property import cached_property
 from asyncpg import create_pool, connect
 from urllib.parse import urlparse, parse_qs, urlencode
 from adbc.preql.dialect import Dialect, Backend, ParameterStyle
+from adbc.preql import parse
 import json
 import ssl
 
@@ -63,6 +64,10 @@ class PostgresBackend(DatabaseBackend):
         backend=Backend.POSTGRES,
         style=ParameterStyle.DOLLAR_NUMERIC
     )
+
+    def parse_expression(self, expression: str):
+        """Return parsed PreQL expression"""
+        return parse(expression, Backend.POSTGRES)
 
     async def copy_to_table(self, connection, table_name, **kwargs):
         return await connection.copy_to_table(table_name, **kwargs)

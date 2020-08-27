@@ -9,6 +9,11 @@ from adbc.generators import G
 # from .statements import Select, ...
 
 
+def add_key(d, k, v):
+    d = copy.copy(d)
+    d[k] = v
+    return d
+
 CONSTRAINT_TYPES = {
     "x": "exclude",
     "p": "primary key",
@@ -175,6 +180,8 @@ class SQLBuilder(Builder):
         - index (CREATE INDEX)
         """
         indent = " " * self.INDENT * depth
+        indent2 = " " * self.INDENT * (depth + 1)
+
         if isinstance(clause, list):
             all_results = []
             table_results = {}
@@ -198,14 +205,13 @@ class SQLBuilder(Builder):
                             self.extend_parameters(table_results[key][1], ps)
             if by_table:
                 return table_results
-
-            indent2 = " " * self.INDENT * (depth + 1)
             for name, results in table_results.items():
                 name = self.format_identifier(name)
                 results, params = results
-                separator = f"\n{indent2}" if len(results) > 1 else " "
+                separator = f",\n{indent2}"
+                sep0 = f"\n{indent2}" if len(results) > 1 else " "
                 results = self.combine(results, separator=separator)
-                results = f"{indent}ALTER TABLE {name}{separator}{results}"
+                results = f"{indent}ALTER TABLE {name}{sep0}{results}"
                 all_results.append((results, params))
 
             return all_results
@@ -228,7 +234,8 @@ class SQLBuilder(Builder):
         if method:
             method = getattr(self, method)
             kwargs = {"depth": depth, "params": params}
-            if by_table and child == "column" or child == "constraint":
+            by_table = by_table and (child == 'column' or child == 'constraint')
+            if by_table:
                 kwargs["by_table"] = True
             return method(clause[child], style, **kwargs)
         else:
@@ -1039,18 +1046,6 @@ class SQLBuilder(Builder):
             "constraint", clause, style, depth=depth, params=params
         )
 
-    def build_create_column(
-        self,
-        clause: Union[list, dict],
-        style: ParameterStyle,
-        depth: int = 0,
-        params=None,
-        by_table=False,
-    ):
-        return self.build_create_table_item(
-            "column", clause, style, depth=depth, params=params, by_table=by_table,
-        )
-
     def build_alter_table_item(
         self,
         type,
@@ -1114,7 +1109,7 @@ class SQLBuilder(Builder):
             on = item["on"]
             items, params = tables[on]
             item = create_method(item, style, params)
-            item = f"{indent2}ADD {prefix}{item}"
+            item = f"ADD {prefix}{item}"
             items.append(item)
 
         if by_table:
@@ -1123,11 +1118,25 @@ class SQLBuilder(Builder):
         results = []
         for table, items in tables.items():
             adds, params = items
-            separator = "\n" if len(adds) > 1 else " "
+            separator = ",\n{indent2}"
+            sep0 = "\n{indent2}" if len(adds) > 1 else " "
             adds = self.combine(adds, separator=separator)
             on = self.format_identifier(table)
-            results.append((f"{indent}ALTER TABLE {on}{separator}{adds}", params))
+            results.append((f"{indent}ALTER TABLE {on}{sep0}{adds}", params))
+
         return results
+
+    def build_create_column(
+        self,
+        clause: Union[list, dict],
+        style: ParameterStyle,
+        depth: int = 0,
+        params=None,
+        by_table=False,
+    ):
+        return self.build_create_table_item(
+            "column", clause, style, depth=depth, params=params, by_table=by_table,
+        )
 
     def build_create_constraint(
         self,
@@ -1139,7 +1148,7 @@ class SQLBuilder(Builder):
     ):
         """Builds $.create.constraint"""
         return self.build_create_table_item(
-            "constraint", clause, style, depth, params, by_table
+            "constraint", clause, style, depth=depth, params=params, by_table=by_table
         )
 
     def build_create_index(
@@ -1176,13 +1185,14 @@ class SQLBuilder(Builder):
             type = ""
         on = self.format_identifier(on)
         name = self.format_identifier(name)
-        concurrently = clause.get("concurrently", False)
-        if concurrently:
-            concurrently = " CONCURRENTLY "
-        else:
-            concurrently = " "
+        concurrently = ' CONCURRENTLY ' if clause.get("concurrently") else ''
         columns = clause.get("columns")
         expression = clause.get("expression")
+        maybe = ' IF NOT EXISTS ' if clause.get('maybe') else ''
+        if not concurrently and not maybe:
+            # add space before name
+            name = f' {name}'
+        unique = ' UNIQUE ' if clause.get('unique') else ' '
         if columns:
             expression = self.combine(
                 [self.format_identifier(c) for c in columns], separator=", "
@@ -1193,7 +1203,7 @@ class SQLBuilder(Builder):
             )
         return [
             (
-                f"{indent}CREATE INDEX{concurrently}{name} ON {on}{type} ({expression})",
+                f"{indent}CREATE{unique}INDEX{concurrently}{maybe}{name} ON {on}{type} ({expression})",
                 params,
             )
         ]
@@ -1307,7 +1317,7 @@ class SQLBuilder(Builder):
         if not actions:
             raise ValueError("alter.table: must have rename/add/alter/drop actions")
 
-        separator = " " if len(actions) == 1 else f",\n{indent2}"
+        separator = f",\n{indent2}"
         sep0 = " " if len(actions) == 1 else f"\n{indent2}"
         actions = self.combine(actions, separator=separator)
         return [(f"{indent}ALTER TABLE {table}{sep0}{actions}", params)]
@@ -1409,6 +1419,13 @@ class SQLBuilder(Builder):
             as_ = clause.get("as", None)
             temporary = clause.get("temporary", False)
             maybe = clause.get("maybe", False)
+
+        if isinstance(columns, dict):
+            columns = [add_key(c, 'name', name) for name, c in columns.items()]
+        if isinstance(indexes, dict):
+            indexes = [add_key(c, 'name', name) for name, c in indexes.items()]
+        if isinstance(constraints, dict):
+            constraints = [add_key(c, 'name', name) for name, c in constraints.items()]
 
         if indexes:
             # only create non-unique and non-primary indexes directly

@@ -20,10 +20,14 @@ class PostgresExecutor(object):
 
     def get_insert(self, table, query):
         values = query.data('values')
-        columns = list_columns(
-            sorted(values.keys() if isinstance(values, dict) else values[0].keys())
-        )
-        return f'INSERT INTO {table.sql_name} ({columns})'
+        if not values:
+            columns = ' DEFAULT VALUES'
+        else:
+            columns = list_columns(
+                sorted(values.keys() if isinstance(values, dict) else values[0].keys())
+            )
+            columns = f' ({columns})'
+        return f'INSERT INTO {table.sql_name}{columns}'
 
     def all_columns(self, table, level=None):
         return list(table.columns.keys())
@@ -72,7 +76,7 @@ class PostgresExecutor(object):
 
     def get_where(self, table, query):
         args = []
-        pks = table.pks
+        pks = list(table.pks.keys())
 
         key = query.data('key')
         where = {}
@@ -239,6 +243,8 @@ class PostgresExecutor(object):
         return int(match.group(1))
 
     def get_values(self, values, args):
+        if not values:
+            return None
         output = []
         expected_columns = list(sorted(values[0].keys()))
         for data in values:
@@ -282,7 +288,7 @@ class PostgresExecutor(object):
         # upsert = kwargs.get('upsert', True)
 
         # values is either a list of dicts or a dict
-        assert(values)
+        # or None
         multiple = True
         if isinstance(values, dict):
             multiple = False

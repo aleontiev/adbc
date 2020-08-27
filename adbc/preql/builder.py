@@ -19,7 +19,7 @@ def build(
     params = builder.get_empty_parameters(style)
     for r in result:
         results.append(r[0])
-        build.extend_parameters(params, r[1])
+        builder.extend_parameters(params, r[1])
     return (
         builder.combine(results, separator=';\n'),
         params

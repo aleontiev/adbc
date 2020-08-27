@@ -141,7 +141,7 @@ async def test_diff():
                             delete: {"created": timestamp_column},
                             "name": {
                                 "null": [True, False],
-                                "unique": [True, False]
+                                "unique": ['name_unique', False]
                             },
                         },
                         "constraints": {delete: {"name_unique": unique_constraint}},

@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Union
 from dataclasses import dataclass, field
 from dataclasses_json import dataclass_json
 
@@ -14,9 +14,10 @@ class Column(Generator):
     type: str
     default: str = None
     null: bool = False
-    sequence: bool = False
-    primary: bool = False
-    unique: bool = False
+    sequence: Union[bool, str] = False
+    primary: Union[bool, str] = False
+    unique: Union[bool, str] = False
+    related: dict = None
 
 
 @dataclass_json

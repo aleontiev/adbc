@@ -225,8 +225,8 @@ def test_build_create():
                 ('CREATE TEMPORARY SEQUENCE IF NOT EXISTS "public"."test_id_seq" START WITH 100 OWNED BY "test"."id"', []),
                 (
                     'ALTER TABLE "test"\n'
-                    '    ADD COLUMN "name" text DEFAULT %s\n'
-                    '    ADD COLUMN "created" timestamp NOT NULL DEFAULT now()\n'
+                    '    ADD COLUMN "name" text DEFAULT %s,\n'
+                    '    ADD COLUMN "created" timestamp NOT NULL DEFAULT now(),\n'
                     '    ADD CONSTRAINT "check" CHECK ("name" != %s) NOT DEFERRABLE INITIALLY IMMEDIATE',
                     ['hello', 'test'],
                 ),

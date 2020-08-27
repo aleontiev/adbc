@@ -129,7 +129,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         num_shards = 1
         pk = None
         if len(pks) == 1:
-            pk = pks[0]
+            pk = next(iter(pks.keys()))
 
         if source_count > max_size and pk:
             if source_model.table.can_order(columns[pk]["type"]):

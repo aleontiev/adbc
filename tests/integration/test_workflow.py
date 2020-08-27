@@ -14,7 +14,7 @@ async def test_workflow():
     user_definition = G(
         'table',
         columns={
-            'id': G('column', type='integer', primary=True),
+            'id': G('column', type='integer', primary='user_id'),
             'name': G('column', type='text', null=True),
             'email': G('column', type='text')
         },
@@ -28,7 +28,7 @@ async def test_workflow():
     action_definition = G(
         'table',
         columns={
-            'id': G('column', type='integer', primary=True),
+            'id': G('column', type='integer', primary='action_id'),
             'data': G('column', type='text'),
             'user_email': G('column', type='text'),
             'user_name': G('column', type='text', null=True)
