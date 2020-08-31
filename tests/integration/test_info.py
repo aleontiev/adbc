@@ -50,7 +50,7 @@ async def test_info():
         await model.add()
 
         # count/get (SELECT)
-        query = model.where({".or": [{"name": {"contains": "ay"}}, {"id": 3}]})
+        query = model.where({"or": [{"like": ["name", "'%Ja%'"]}, {"=": ['id', 3]}]})
         count = await query.count()
         assert count == 2
         results = await query.sort("id").get()

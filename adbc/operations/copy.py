@@ -5,6 +5,7 @@ from jsondiff.symbols import insert, delete
 from adbc.sql import get_tagged_number, print_query
 from adbc.utils import AsyncBuffer, aecho, confirm
 from adbc.constants import SEP, SEPN
+from adbc.preql import build
 from .merge import WithMerge
 from .drop import WithDrop
 from .create import WithCreate
@@ -47,11 +48,14 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             )
             q = q.take(*columns)
             if cursor_min:
-                q = q.where(
-                    {".and": [{pk: {">": cursor_min}}, {pk: {"<=": cursor_max}}]}
-                )
+                q = q.where({
+                    "and": [
+                        {'>': [pk, cursor_min]},
+                        {'<=': [pk, cursor_max]}
+                    ]
+                })
             else:
-                q = q.where({pk: {"<=": cursor_max}})
+                q = q.where({'<=': [pk, cursor_max]})
             return q
 
         try:
@@ -68,13 +72,12 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                     target_model.table.columns.keys()
                 )
                 # copy from source to buffer
-                source_sql, source_params = await source_query.get(sql=True)
+                source_query = await source_query.get(preql=True)
                 if self.parallel_copy:
                     buffer = AsyncBuffer()
                     copy_from, copy_to = await gather(
                         self.copy_from(
-                            query=source_sql,
-                            params=source_params,
+                            query=source_query,
                             output=buffer.write,
                             close=buffer
                         ),
@@ -89,7 +92,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                     return copy_to
                 else:
                     buffer = io.BytesIO()
-                    await self.copy_from(query=source_sql, output=buffer)
+                    await self.copy_from(query=source_query, output=buffer)
                     buffer.seek(0)
                     return await target.copy_to(
                         table_name=target_table,
@@ -394,6 +397,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         close = kwargs.pop("close", False)
         query = kwargs.pop("query", None)
         params = kwargs.pop('params', None)
+
         if table_name:
             target_label = f"{schema_name}.{table_name}" if schema_name else table_name
         else:
@@ -402,7 +406,9 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             if isinstance(query, (list, dict)):
                 # compile from PreQL
                 query, params = build(query, dialect=self.backend.dialect, combine=True)
+
             target_label = print_query(query, params)
+
 
         if self.prompt:
             if not confirm(f"{self.name} ({self.tag}): {SEP}copy from {target_label}{SEPN}", True):

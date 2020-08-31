@@ -25,7 +25,7 @@ class setup_test_database(object):
         self.verbose = verbose
 
     async def __aenter__(self):
-        self.uid = str(uuid.uuid4())[0:12].replace('-', '')
+        self.uid = str(uuid.uuid4())[0:3].replace('-', '')
         name = f'{self.name}_{self.uid}'
         self.full_name = name
         self.root = Database(

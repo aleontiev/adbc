@@ -1,9 +1,10 @@
+from typing import Union
 from .base import DatabaseBackend
 from cached_property import cached_property
 from asyncpg import create_pool, connect
 from urllib.parse import urlparse, parse_qs, urlencode
 from adbc.preql.dialect import Dialect, Backend, ParameterStyle
-from adbc.preql import parse
+from adbc.preql import parse, build
 import json
 import ssl
 
@@ -64,6 +65,9 @@ class PostgresBackend(DatabaseBackend):
         backend=Backend.POSTGRES,
         style=ParameterStyle.DOLLAR_NUMERIC
     )
+
+    def build(self, query: Union[dict, list]):
+        return build(query, dialect=self.dialect)
 
     def parse_expression(self, expression: str):
         """Return parsed PreQL expression"""

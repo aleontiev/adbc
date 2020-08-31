@@ -179,8 +179,8 @@ class SQLBuilder(Builder):
         - sequence (CREATE SEQUENCE)
         - index (CREATE INDEX)
         """
-        indent = " " * self.INDENT * depth
-        indent2 = " " * self.INDENT * (depth + 1)
+        indent = self.get_indent(depth)
+        indent2 = self.get_indent(depth+1)
 
         if isinstance(clause, list):
             all_results = []
@@ -524,7 +524,7 @@ class SQLBuilder(Builder):
             constraint (ALTER TABLE ALTER CONSTRAINT)
             sequence (ALTER SEQUENCE)
         """
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         if isinstance(clause, list):
             results = []
             for c in clause:
@@ -648,8 +648,8 @@ class SQLBuilder(Builder):
         if not data:
             raise ValueError('select: must have "data"')
 
-        indent = " " * self.INDENT * depth
-        indent2 = " " * self.INDENT * (depth + 1)
+        indent = self.get_indent(depth)
+        indent2 = self.get_indent(depth+1)
 
         if isinstance(data, list):
             result = self.combine(
@@ -705,7 +705,7 @@ class SQLBuilder(Builder):
         # dict[dict]   ({"u": {"select": ...}})   # aliased subquery
         #              ({"u": {"lateral": {...}}  # modifier e.g. LATERAL
         # list         ([...])                    # list of the above
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         if prefix:
             prefix = f"{indent}FROM "
         else:
@@ -749,7 +749,7 @@ class SQLBuilder(Builder):
     def get_select_join(self, join, style, params, depth=0) -> str:
         # - join: dict ({"type": "inner", "to": "user", "on": {...}, "as": "u"}} # one join
         #         list ([...])                                                   # list of joins
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
 
         if not join:
             return None
@@ -797,7 +797,7 @@ class SQLBuilder(Builder):
         # dict ({"=": ["id", "1"]}) # expression
         if where is None:
             return None
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         where = self.get_expression(where, style, params, indent=False, depth=depth)
         return f"{indent}WHERE {where}"
 
@@ -805,7 +805,7 @@ class SQLBuilder(Builder):
         # string       ("name")                         # simple group by (no rollup)
         # dict         ({"by": "name", "rollup": True}) # group by condition
         # list[dict]   ([...])                          # list of conditions
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         if prefix:
             prefix = f"{indent}GROUP BY "
         else:
@@ -837,7 +837,7 @@ class SQLBuilder(Builder):
         # - having:  dict         ({"!=": ["num_users", 1]})            # an expression
         if having is None:
             return None
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         having = self.get_expression(having, style, params, indent=False, depth=depth)
         return f"{indent}HAVING {having}"
 
@@ -847,7 +847,7 @@ class SQLBuilder(Builder):
         if not union:
             return None
 
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         if isinstance(union, list):
             result = self.combine(
                 [self.get_select_union(u, style, params, depth=depth) for u in union],
@@ -864,7 +864,7 @@ class SQLBuilder(Builder):
         # - order:   string       ("name")                              # simple order by (ascending)
         #            dict         ({"by": "name", "asecending": True})  # order by condition
         #            list[dict]   ([...])                               # list thereof
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         if prefix:
             prefix = f"{indent}ORDER BY "
         else:
@@ -896,7 +896,7 @@ class SQLBuilder(Builder):
         # - limit:   integer      (1)                                   # an integer
         if limit is None:
             return None
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         limit = int(limit)
         return f"{indent}LIMIT {limit}"
 
@@ -904,11 +904,27 @@ class SQLBuilder(Builder):
         # - offset:  integer      (1)                                   # an integer
         if offset is None:
             return None
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         offset = int(offset)
         return f"{indent}OFFSET {offset}"
 
-    def build_delete(self, clause: dict, style: ParameterStyle) -> List[tuple]:
+    def get_indent(self, depth=0):
+        return " " * self.INDENT * depth
+
+    def build_delete(self, clause: dict, style: ParameterStyle, params, depth=0) -> List[tuple]:
+        """Builds $.delete
+
+        from: identifier
+        where: expression
+        returning: list[identifier]
+        """
+        indent = self.get_indent(depth)
+        from_ = clause.get('from')
+        if not from_:
+            raise ValueError('delete: from is required')
+
+        where = clause.get('where')
+        returning = clause.get('returning')
         raise NotImplementedError()
 
     def escape_literal(self, literal):
@@ -958,7 +974,7 @@ class SQLBuilder(Builder):
         self, clause: str, style: ParameterStyle, depth: int = 0, params=None
     ) -> List[tuple]:
         """Builds $.create.database"""
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         database = self.format_identifier(clause)
         query = f"{indent}CREATE DATABASE {database}"
         return [(query, params)]
@@ -967,7 +983,7 @@ class SQLBuilder(Builder):
         self, clause: str, style: ParameterStyle, depth: int = 0, params=None
     ) -> List[tuple]:
         """Builds $.create.schema"""
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         schema = self.format_identifier(clause)
         query = f"{indent}CREATE SCHEMA {schema}"
         return [(query, params)]
@@ -980,7 +996,7 @@ class SQLBuilder(Builder):
         params=None,
     ):
         """Builds $.create.sequence"""
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         if isinstance(clause, str):
             name = clause
             temporary = False
@@ -1068,7 +1084,7 @@ class SQLBuilder(Builder):
         else:
             prefix = "CONSTRAINT "
 
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         alter_getter = getattr(self, f"get_alter_{type}")
         if 'on' not in clause:
             raise ValueError(f'alter {type}: must identify table with "on" {clause}')
@@ -1092,8 +1108,8 @@ class SQLBuilder(Builder):
         else:
             prefix = f"CONSTRAINT "
 
-        indent = " " * self.INDENT * depth
-        indent2 = " " * self.INDENT * (depth + 1)
+        indent = self.get_indent(depth)
+        indent2 = self.get_indent(depth+1)
         if by_table:
             indent2 = ""
 
@@ -1159,7 +1175,7 @@ class SQLBuilder(Builder):
         params=None,
     ):
         """Builds $.create.index"""
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         if isinstance(clause, list):
             # multiple indexes
             results = []
@@ -1292,8 +1308,8 @@ class SQLBuilder(Builder):
                 )
             return results
 
-        indent = " " * self.INDENT * depth
-        indent2 = " " * self.INDENT * (depth + 1)
+        indent = self.get_indent(depth)
+        indent2 = self.get_indent(depth+1)
         rename = clause.get("rename", None)
         add = clause.get("add", None)
         alter = clause.get("alter", None)
@@ -1392,7 +1408,7 @@ class SQLBuilder(Builder):
     ) -> List[tuple]:
         """Builds $.create.table"""
 
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         if isinstance(clause, str):
             # name only, no columns or source
             name = clause
@@ -1626,11 +1642,7 @@ class SQLBuilder(Builder):
         parens=False,
         depth: int = 0,
     ) -> str:
-        if indent:
-            indent = " " * self.INDENT * depth
-        else:
-            indent = ""
-
+        indent = self.get_indent(depth if indent else 0)
         if isinstance(expression, (int, float, bool)):
             # literal, cast to string
             result = str(expression)
@@ -1811,7 +1823,7 @@ class SQLBuilder(Builder):
                             list(value.keys())[0]
                         ):
                             newline = "\n"
-                            newline_indent = " " * self.INDENT * depth
+                            newline_indent = self.get_indent(depth)
                             newline_indent = f"\n{newline_indent}"
 
                         arguments = self.get_expression(
@@ -1835,7 +1847,7 @@ class SQLBuilder(Builder):
     ) -> str:
         name = constraint.get("name")
         type = constraint.get("type")
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
 
         if not name:
             raise ValueError('constraint must have "name"')
@@ -1895,7 +1907,7 @@ class SQLBuilder(Builder):
         params: Union[dict, list],
         depth: int = 0,
     ) -> str:
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         name = constraint.get("name")
         if not name:
             raise ValueError(f'alter constraint: "name" is required')
@@ -1939,7 +1951,7 @@ class SQLBuilder(Builder):
         params: Union[dict, list],
         depth: int = 0,
     ) -> str:
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         name = column.get("name")
         if not name:
             raise ValueError(f'alter column: "name" is required')
@@ -2001,7 +2013,7 @@ class SQLBuilder(Builder):
         depth: int = 0,
     ) -> str:
         # name and type are required
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         name = column.get("name")
         type = column.get("type")
         if not name:
@@ -2037,7 +2049,7 @@ class SQLBuilder(Builder):
         This consists of column and constraint "items".
         """
         items = []
-        indent = " " * self.INDENT * depth
+        indent = self.get_indent(depth)
         for c in columns:
             c = self.get_create_column(c, style, params, depth=0)
             items.append(f"{indent}{c}")

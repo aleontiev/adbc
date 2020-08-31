@@ -2,7 +2,6 @@ import re
 
 from adbc.sql import (
     list_columns,
-    sort_columns,
     where_clause,
     should_escape,
     get_tagged_number
@@ -64,17 +63,33 @@ class PostgresExecutor(object):
 
         return list(sorted(result))
 
-    def get_select(self, table, query, count=None):
+    def get_data(self, table, query, count=False):
         field = query.data('field')
         if count:
-            columns = 'count(*)'
+            data = {'count': {'count': '*'}}
         elif field is not None:
-            columns = list_columns([field])
+            data = field
         else:
-            columns = list_columns(self.get_columns(table, query))
-        return f"SELECT {columns}"
+            data = self.get_columns(table, query)
+        return data
 
-    def get_where(self, table, query):
+    def get_select(self, table, query, count=False):
+        data = self.get_data(table, query, count=count)
+        from_ = self.get_from(table, query)
+        order = self.get_order(table, query)
+        limit = self.get_limit(table, query)
+        where = self.get_where(table, query)
+        return {
+            'select': {
+                'data': data,
+                'from': from_,
+                'where': where,
+                'order': order,
+                'limit': limit
+            }
+        }
+
+    def get_where_old(self, table, query):
         args = []
         pks = list(table.pks.keys())
 
@@ -105,12 +120,38 @@ class PostgresExecutor(object):
         where = where_clause(where, args)
         return [f"WHERE {where}", *args] if where else []
 
-    def get_from(self, table, query):
-        return f'FROM {table.sql_name}'
+    def get_where(self, table, query):
+        args = []
+        pks = list(table.pks.keys())
 
-    def get_joins(self, table, query):
-        # TODO: implement joins
-        return ''
+        key = query.data('key')
+        where = {}
+        # add PK filters
+        if key:
+            if len(pks) > 1:
+                assert(len(key) == len(pks))
+                ands = []
+                for i, pk in enumerate(pks):
+                    ands.append({'=': [pk, key[i]]})
+
+                where = {'and': ands}
+            else:
+                pk = pks[0]
+                where = {'=': [pk, key]}
+
+        # add user filters
+        wheres = query.data('where')
+        if wheres:
+            if where:
+                # and together with PK
+                where = {'and': [where, wheres]}
+            else:
+                where = wheres
+
+        return where or None
+
+    def get_from(self, table, query):
+        return table.full_name
 
     def get_update(self, table, query):
         return f'UPDATE {table.sql_name}'
@@ -118,17 +159,25 @@ class PostgresExecutor(object):
     def get_order(self, table, query):
         sort = query.data('sort')
         if sort:
-            columns = sort_columns(sort)
-            return f'ORDER BY {columns}'
-        return ''
+            order = []
+            for column in sort:
+                desc = False
+                if column.startswith('-'):
+                    desc = True
+                    column = column[1:]
+                order.append({
+                    'by': column,
+                    'desc': desc
+                })
+        return None
 
     def get_limit(self, table, query):
         if query.data('key'):
-            return 'LIMIT 1'
+            return 1
         limit = query.data('limit')
         if limit:
-            return f'LIMIT {int(limit)}'
-        return ''
+            return int(limit)
+        return None
 
     async def count(self, query, **kwargs):
         kwargs['count'] = True
@@ -166,32 +215,9 @@ class PostgresExecutor(object):
         source = query.data('source')
         database = self.database
         table = await database.get_table(source)
-        sql = kwargs.get('sql', None)
+        preql = kwargs.get('preql', False)
         count = kwargs.get('count', False)
         select = self.get_select(table, query, count=count)
-        where = self.get_where(table, query)
-        if where:
-            where, *args = where
-        else:
-            where = None
-            args = []
-        from_ = self.get_from(table, query)
-        joins = self.get_joins(table, query)
-        order = self.get_order(table, query)
-        limit = self.get_limit(table, query)
-
-        query = self.build_sql(
-            select,
-            from_,
-            joins,
-            where,
-            order,
-            limit,
-            args
-        )
-        if sql:
-            # just return the query
-            return query
         if count or (field and key):
             method = 'query_one_value'
         elif key:
@@ -200,8 +226,12 @@ class PostgresExecutor(object):
             method = 'query_one_column'
         else:
             method = 'query'
+
+        if preql:
+            return select
+
         return await getattr(self.database, method)(
-            *query,
+            select,
             connection=connection
         )
 
@@ -281,6 +311,7 @@ class PostgresExecutor(object):
         Returns:
             numbers of records modified
         """
+        # TODO: convert to PreQL
         values = query.data('values')
         connection = kwargs.get('connection')
         sql = kwargs.get('sql', False)
@@ -334,6 +365,7 @@ class PostgresExecutor(object):
         Returns:
             number of records updated
         """
+        # TODO: convert to PreQL
         field = query.data('field')
         values = query.data('values')
         connection = kwargs.get('connection')
@@ -347,7 +379,7 @@ class PostgresExecutor(object):
         source = query.data('source')
         table = await self.database.get_table(source)
         returning = self.get_returning(table, query)
-        where = self.get_where(table, query)
+        where = self.get_where_old(table, query)
         if where:
             where, *args = where
         else:
@@ -390,18 +422,19 @@ class PostgresExecutor(object):
         Returns:
             number of records deleted
         """
+        # TODO: convert to PreQL
         connection = kwargs.get('connection')
         source = query.data('source')
         table = await self.database.get_table(source)
         returning = self.get_returning(table, query)
-        where = self.get_where(table, query)
+        where = self.get_where_old(table, query)
         if where:
             where, *args = where
         else:
             where = None
             args = []
 
-        from_ = self.get_from(table, query)
+        from_ = f"FROM {table.sql_name}"
         query, params = self.build_sql(
             'DELETE',
             from_,
@@ -430,6 +463,7 @@ class PostgresExecutor(object):
         Returns:
             True
         """
+        # TODO: convert to PreQL
         connection = kwargs.get('connection')
         source = query.data('source')
         table = await self.database.get_table(source)
