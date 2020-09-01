@@ -8,16 +8,21 @@ from adbc.sql import (
 )
 
 
-# TODO: support other backends
+executors = {}
 def get_executor(source):
-    return PostgresExecutor(source)
+    global executors
+    key = (source.name, source.url)
+    if key not in executors:
+        executors[key] = QueryExecutor(source)
+    return executors[key]
 
 
-class PostgresExecutor(object):
+class QueryExecutor(object):
     def __init__(self, database):
         self.database = database
 
     def get_insert(self, table, query):
+        # TODO: convert to PreQL
         values = query.data('values')
         if not values:
             columns = ' DEFAULT VALUES'

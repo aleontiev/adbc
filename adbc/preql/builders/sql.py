@@ -142,15 +142,6 @@ class SQLBuilder(Builder):
             arguments, style=style, depth=depth, params=params
         )
 
-    def build_show(
-        self,
-        clause: Union[List, dict, str],
-        style: ParameterStyle,
-        depth: int = 0,
-        params=None,
-    ) -> List[tuple]:
-        raise NotImplementedError()
-
     def build_drop(
         self,
         clause: Union[List, dict, str],
@@ -563,9 +554,6 @@ class SQLBuilder(Builder):
         else:
             raise NotImplementedError(f"alter expecting to contain one of: {children}")
 
-    def build_show(self, clause: dict, style: ParameterStyle) -> List[tuple]:
-        raise NotImplementedError()
-
     def build_update(self, clause: dict, style: ParameterStyle) -> List[tuple]:
         raise NotImplementedError()
 
@@ -914,9 +902,11 @@ class SQLBuilder(Builder):
     def build_delete(self, clause: dict, style: ParameterStyle, params, depth=0) -> List[tuple]:
         """Builds $.delete
 
-        from: identifier
-        where: expression
-        returning: list[identifier]
+        Arguments:
+            clause: dict
+                from: identifier
+                where: expression
+                returning: list[identifier]
         """
         indent = self.get_indent(depth)
         from_ = clause.get('from')
@@ -925,6 +915,19 @@ class SQLBuilder(Builder):
 
         where = clause.get('where')
         returning = clause.get('returning')
+        from_ = self.format_identifier(from_)
+        where = self.get_expression(
+            where,
+            style,
+            params,
+            depth=depth,
+        )
+        where = "WHERE {where}" if where else None
+        returning = self.combine([
+            self.format_identifier(r) for r in returning
+        ], separator=', ') if returning else None
+        rest = self.combine([where, returning], separator=' ', check=True)
+        return f'{indent}DELETE FROM {from_}{rest}'
         raise NotImplementedError()
 
     def escape_literal(self, literal):
@@ -1027,17 +1030,30 @@ class SQLBuilder(Builder):
                 owned_by = self.format_identifier(owned_by)
 
         name = self.format_identifier(name)
-        temporary = " TEMPORARY " if temporary else " "
-        maybe = " IF NOT EXISTS " if maybe else " "
-        owned_by = f" OWNED BY {owned_by}"
-        min_value = f" MINVALUE {min_value}" if min_value else ""
-        max_value = f" MAXVALUE {max_value}" if max_value else ""
-        start = f" START WITH {start}" if start else ""
-        increment = f" INCREMENT BY {increment}" if increment else ""
-        query = (
-            f"{indent}CREATE{temporary}SEQUENCE{maybe}{name}"
-            f"{increment}{min_value}{max_value}{start}{owned_by}"
+        temporary = "TEMPORARY" if temporary else None
+        maybe = "IF NOT EXISTS" if maybe else None
+        owned_by = f"OWNED BY {owned_by}" if owned_by else None
+        min_value = f"MINVALUE {min_value}" if min_value else None
+        max_value = f"MAXVALUE {max_value}" if max_value else None
+        start = f"START WITH {start}" if start else None
+        increment = f"INCREMENT BY {increment}" if increment else None
+        statement = self.combine(
+            [
+                "CREATE",
+                temporary,
+                "SEQUENCE",
+                maybe,
+                name,
+                increment,
+                min_value,
+                max_value,
+                start,
+                owned_by
+            ],
+            separator=' ',
+            check=True
         )
+        query = f"{indent}{statement}"
         return [(query, params)]
 
     def build_alter_column(
@@ -1582,6 +1598,34 @@ class SQLBuilder(Builder):
             return True
         return False
 
+    def get_between_expression(
+        self,
+        value,
+        style,
+        params,
+        allow_subquery=False,
+        depth=0,
+    ):
+        val = self.get_expression(
+            value["value"],
+            style,
+            params,
+            allow_subquery,
+            depth=depth,
+            indent=False,
+        )
+        min_value = self.get_expression(
+            value["min"], style, params, allow_subquery, depth, indent=False
+        )
+        max_value = self.get_expression(
+            value["max"], style, params, allow_subquery, depth, indent=False
+        )
+        symmetric = value.get("symmetric", False)
+        symmetric = " SYMMETRIC " if symmetric else " "
+        return (
+            f"{indent}{val} BETWEEN{symmetric}{min_value} AND {max_value}"
+        )
+
     def get_case_expression(
         self, cases, style, params, allow_subquery=True, depth=0, indent=False
     ):
@@ -1702,6 +1746,28 @@ class SQLBuilder(Builder):
                     subquery = self.get_subquery(expression, style, params, depth=depth)
                     return f"{indent}{subquery}"
 
+                # operator/function remapping
+                if key == 'contains' or key == 'icontains':
+                    # (i)contains -> (i)like
+                    key = 'like' if key == 'contains' else 'ilike'
+                    assert len(value) == 2
+                    value1 = value[1]
+                    if (
+                        isinstance(value1, str) and
+                        value1 and
+                        value1[0] in self.QUOTE_CHARACTERS
+                    ):
+                        # literal
+                        quote = value1[0]
+                        new_value = value1[1:-1]
+                        new_value = f'{quote}%{new_value}%{quote}'
+                        value[1] = new_value
+                    else:
+                        # identifier
+                        value[1] = {'concat': ['%', value1, '%']}
+                    # {"contains": ["a", "'c'"]}
+                    # -> {"like": ["a", "'%c%'"]}
+
                 operator = self.get_operator(key)
 
                 if operator:
@@ -1764,25 +1830,15 @@ class SQLBuilder(Builder):
                     )
                     return f"{indent}{result}"
                 if key == "between":
-                    val = self.get_expression(
-                        value["value"],
+                    result = self.get_between_expression(
+                        value,
                         style,
                         params,
-                        allow_subquery,
+                        allow_subquery=allow_subquery,
                         depth=depth,
-                        indent=False,
+                        indent=False
                     )
-                    min_value = self.get_expression(
-                        value["min"], style, params, allow_subquery, depth, indent=False
-                    )
-                    max_value = self.get_expression(
-                        value["max"], style, params, allow_subquery, depth, indent=False
-                    )
-                    symmetric = value.get("symmetric", False)
-                    symmetric = " SYMMETRIC " if symmetric else " "
-                    return (
-                        f"{indent}{val} BETWEEN{symmetric}{min_value} AND {max_value}"
-                    )
+                    return f'{indent}{result}'
                 if key == "identifier":
                     result = self.format_identifier(value)
                     return f"{indent}{result}"
@@ -1792,6 +1848,7 @@ class SQLBuilder(Builder):
                 if key == "raw":
                     result = value
                     return f"{indent}{result}"
+
 
                 # fallback assumption: a function expression, e.g. {"md5": "a"} -> md5("a")
                 # user-defined functions can exist
