@@ -50,7 +50,12 @@ async def test_info():
         await model.add()
 
         # count/get (SELECT)
-        query = model.where({"or": [{"icontains": ["name", "'ja'"]}, {"=": ['id', 3]}]})
+        query = model.where({
+            "or": [
+                {"icontains": ["name", "'ja'"]},
+                {"in": ['id', [3, 999]]}
+            ]
+        })
         count = await query.count()
         assert count == 2
         results = await query.sort("id").get()
@@ -59,11 +64,12 @@ async def test_info():
         assert dict(results[1]) == {"id": 3, "name": None}
 
         # UPDATE
+        # TODO: use where(id=3) to test where in set
         updated = await model.key(3).values({"name": "Ash"}).set()
         assert updated == 1
 
         # DELETE
-        deleted = await model.where({"id": {"=": 2}}).take("name").delete()
+        deleted = await model.key(2).take("name").delete()
         assert len(deleted) == 1
         assert deleted[0]["name"] == "Quinn"
 
@@ -90,7 +96,10 @@ async def test_info():
         )
 
         # 7. add new data
-        await model.values([{"id": 6, "name": "Jim"}, {"id": 5, "name": "Jane"}]).add()
+        await model.values([
+            {"id": 6, "name": "Jim"},
+            {"id": 5, "name": "Jane"}
+        ]).add()
 
         # 8. get database statistics again with an aliased scope
         # alias scope supports translation during diff/copy
@@ -107,12 +116,14 @@ async def test_info():
         assert actual_data['hashes'] == {1: '566991d4b9cf37367cab89ab93b74a3d'}
 
         # 9. test exclusion: ignore certain fields
-        info = await source.get_info(scope=alias_scope, hashes=True, exclude={
-            'columns': ['unique', 'primary', 'related']
-        })
+        excludes = ['unique', 'primary', 'related']
+        info = await source.get_info(
+            scope=alias_scope,
+            hashes=True,
+            exclude={'columns': excludes}
+        )
         actual_schema = info['main']['test']
         for name, column in expect_schema['columns'].items():
-            column.pop('primary')
-            column.pop('unique')
-            column.pop('related')
+            for exclude in excludes:
+                column.pop(exclude)
         assert expect_schema['columns'] == actual_schema['columns']

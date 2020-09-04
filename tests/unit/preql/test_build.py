@@ -331,3 +331,198 @@ def test_build_alter():
     for query, expected in expectations:
         result = build(query, dialect=dialect)
         assert expected == result
+
+def test_build_delete():
+    dialect = get_dialect()
+    expectations = [
+        (
+            {
+                "delete": {
+                    "table": "testing.test",
+                    "where": {
+                        "=": ["name", '"foo"']
+                    },
+                    "returning": ["id", "name"]
+                }
+            },
+            [(
+                'DELETE FROM "testing"."test"\n'
+                'WHERE "name" = %s\n'
+                'RETURNING "id", "name"', ['foo']
+            )]
+        ), (
+            {
+                "delete": "test"
+            },
+            [('DELETE FROM "test"', [])]
+        )
+    ]
+    for query, expected in expectations:
+        result = build(query, dialect=dialect)
+        assert expected == result
+
+
+def test_build_update():
+    dialect = get_dialect()
+    expectations = [
+        (
+            {  # 1. simple update
+                "update": {
+                    "table": "testing.test",
+                    "set": {
+                        "name": '"bar"',
+                        "toggled": True
+                    },
+                }
+            },
+            [(
+                'UPDATE "testing"."test" SET\n'
+                '    "name" = %s,\n'
+                '    "toggled" = True',
+                ['bar']
+            )]
+        ), (  # 2. update w/ subquery, where, with, returning
+            {
+                "update": {
+                    "table": "testing.test",
+                    "with": {
+                        "query": {
+                            "select": {
+                                "data": "*",
+                                "from": "bar.foo"
+                            }
+                        },
+                        "as": "foo"
+                    },
+                    "set": [
+                        "id",
+                        "updated",
+                        {
+                            "select": {
+                                "data": ["id", "updated"],
+                                "from": "other",
+                                "where": {
+                                    "=": ["name", "other.name"]
+                                }
+                            }
+                        }
+                    ],
+                    "where": {
+                        "=": ["name", '"foo"']
+                    },
+                    "returning": [
+                        "id",
+                        {"name": {"concat": ["first_name", "last_name"]}}
+                    ]
+                }
+            },
+            [(
+                'WITH "foo" AS (\n'
+                '    SELECT *\n'
+                '    FROM "bar"."foo"\n'
+                ')\n'
+                'UPDATE "testing"."test" SET\n'
+                '    ("id", "updated") = (\n'
+                '        SELECT\n'
+                '            "id",\n'
+                '            "updated"\n'
+                '        FROM "other"\n'
+                '        WHERE "name" = "other"."name"\n'
+                '    )\n'
+                'WHERE "name" = %s\n'
+                'RETURNING "id", concat("first_name", "last_name") AS "name"', ['foo']
+            )]
+        )
+    ]
+    for query, expected in expectations:
+        result = build(query, dialect=dialect)
+        assert expected == result
+
+
+def test_build_truncate():
+    dialect = get_dialect()
+    expectations = [
+        (
+            {  # 1. simple truncate
+                "truncate": "test"
+            },
+            [(
+                'TRUNCATE "test"',
+                []
+            )]
+        ), (  # 2. truncate many
+            {
+                "truncate": [
+                    "test",
+                    {
+                        "name": "other",
+                        "cascade": True
+                    }
+                ]
+            },
+            [(
+                'TRUNCATE "test"', []
+            ), (
+                'TRUNCATE "other" CASCADE', []
+            )]
+        )
+    ]
+    for query, expected in expectations:
+        result = build(query, dialect=dialect)
+        assert expected == result
+
+
+def test_build_drop():
+    dialect = get_dialect()
+    expectations = [
+        (
+            {  # 1. single drop
+                "drop": {
+                    "table": {
+                        "name": "test",
+                        "cascade": True,
+                        "maybe": True
+                    }
+                }
+            },
+            [(
+                'DROP TABLE IF EXISTS "test" CASCADE',
+                []
+            )]
+        ), (  # 2. multiple drop
+            {
+                "drop": [
+                    {"table": "test"},
+                    {"column": "other.id"},
+                    {"index": "index"},
+                    {"schema": {"name": "public"}},
+                    {"constraint": ["other.pk", "this.pk"]}
+                ]
+            },
+            [(
+                'DROP TABLE "test"', []
+            ), (
+                'ALTER TABLE "other" DROP COLUMN "id"', []
+            ), (
+                'DROP INDEX "index"', []
+            ), (
+                'DROP SCHEMA "public"', []
+            ), (
+                'ALTER TABLE "other" DROP CONSTRAINT "pk"', []
+            ), (
+                'ALTER TABLE "this" DROP CONSTRAINT "pk"', []
+            )]
+        )
+    ]
+    for query, expected in expectations:
+        result = build(query, dialect=dialect)
+        assert expected == result
+
+
+def test_build_insert():
+    pass
+
+
+def test_build_select():
+    # already tested by create and update+with
+    pass
