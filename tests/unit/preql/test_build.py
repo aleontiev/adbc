@@ -439,6 +439,68 @@ def test_build_update():
         assert expected == result
 
 
+def test_build_insert():
+    dialect = get_dialect()
+    expectations = [
+        (
+            {  # 1. default insert, no values
+                "insert": "testing.test"
+            },
+            [(
+                'INSERT INTO "testing"."test" DEFAULT VALUES'
+                []
+            )]
+        ), (  # 2. insert one row with values
+            {
+                "insert": {
+                    "table": "testing.user",
+                    "values": ["'jim'", "'jim@test.com'"]
+                }
+            },
+            [(
+                'INSERT INTO "testing"."test" VALUES\n'
+                '    (%s, %s)', ['jim', 'jim@test.com']
+            )]
+        ), (  # 3. insert many rows, columns, default values
+            {
+                'insert': {
+                    'table': 'testing.user',
+                    'columns': ['name', 'email'],
+                    "values": [
+                        ["'jim'", "'jim@test.com'"],
+                        ["'jane'", {"DEFAULT": None}]
+                    ]
+                }
+            },
+            [(
+                'INSERT INTO "testing"."test" ("name", "email") VALUES\n'
+                '    (%s, %s)\n'
+                '    (%s, DEFAULT)\n', ['jim', 'jim@test.com', 'jane']
+            )]
+        ), (  # 4. insert with query
+            {
+                "insert": {
+                    "table": "testing.user",
+                    "values": {
+                        "select": {
+                            "data": "name",
+                            "from": "other.user"
+                        }
+                    }
+                }
+            },
+            [(
+                'INSERT INTO "testing"."test"\n'
+                '    SELECT "name"\n'
+                '    FROM "other"."user"', []
+            )]
+        )
+    ]
+    for query, expected in expectations:
+        result = build(query, dialect=dialect)
+        assert expected == result
+
+
 def test_build_truncate():
     dialect = get_dialect()
     expectations = [
@@ -517,10 +579,6 @@ def test_build_drop():
     for query, expected in expectations:
         result = build(query, dialect=dialect)
         assert expected == result
-
-
-def test_build_insert():
-    pass
 
 
 def test_build_select():
