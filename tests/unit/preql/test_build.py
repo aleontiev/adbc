@@ -447,7 +447,7 @@ def test_build_insert():
                 "insert": "testing.test"
             },
             [(
-                'INSERT INTO "testing"."test" DEFAULT VALUES'
+                'INSERT INTO "testing"."test" DEFAULT VALUES',
                 []
             )]
         ), (  # 2. insert one row with values
