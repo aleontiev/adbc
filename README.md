@@ -1,10 +1,10 @@
 # adbc
 
-`adbc` (short for **A**synchronous **D**ata**B**ase **C**onnector) is a library and CLI that provides high-level abstractions for comparing and copying databases.
+`adbc` (short for **A**synchronous **D**ata**B**ase **C**onnector) is a library and CLI that provides high-level abstractions for querying, comparing, and copying databases.
 
 ## Support
 
-`adbc` currently support Postgres only, Redshift, MySQL, and SQLite backends are in progress
+`adbc` currently support Postgres only; Redshift, MySQL, and SQLite backends are in progress:
 - [x] Postgres (asyncpg)
 - [ ] Redshift (WIP)
 - [ ] MySQL (WIP)
@@ -325,7 +325,7 @@ How? This is made possible by `Database.get_model`
 
 **What?** interact with an unknown database using an ORM
 
-**How?** This is made by possible by *introspection*
+**How?** This is made by possible by *introspection* in `Database.get_children`
 
 ### Cross-database denormalization
 
