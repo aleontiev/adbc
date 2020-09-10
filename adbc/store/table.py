@@ -572,24 +572,6 @@ class Table(WithScope, Loggable):
         column = self.columns[column_name]
         return can_order(column["type"])
 
-    def is_boolean(self, column_name):
-        column = self.columns[column_name]
-        type = column["type"]
-        return type == "boolean"
-
-    def is_array(self, name):
-        column = self.columns[name]
-        type = column["type"]
-        return "[]" in type or "idvector" in type or "intvector" in type
-
-    def is_short(self, name):
-        column = self.columns[name]
-        return column["type"] != "pg_node_tree"
-
-    def is_uuid(self, name):
-        column = self.columns[name]
-        return column["type"] != "uuid"
-
     def get_count_query(self):
         return (f"SELECT count(*) FROM {self.sql_name}",)
 
