@@ -75,6 +75,10 @@ class SQLBuilder(Builder):
             label = name if name else f"p{num}"
             params[param] = value
             return f":{label}"
+        elif style == ParameterStyle.DOLLAR_NAMED:
+            label = name if name else f"p{num}"
+            params[param] = value
+            return f"${label}"
         elif style == ParameterStyle.NUMERIC:
             params.append(value)
             return f":{num}"
@@ -1096,7 +1100,7 @@ class SQLBuilder(Builder):
             table = clause
         else:
             where = clause.get("where")
-            returning = clause.get("returning")
+            returning = clause.get("return")
             table = clause.get("table")
 
         if not table:
@@ -1154,7 +1158,7 @@ class SQLBuilder(Builder):
         set_ = clause.get("set")
         table = clause.get("table")
         with_ = clause.get("with")
-        returning = clause.get("returning")
+        returning = clause.get("return")
         if not set_:
             raise ValueError("update: set is required")
 

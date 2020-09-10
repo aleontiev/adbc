@@ -342,7 +342,7 @@ def test_build_delete():
                     "where": {
                         "=": ["name", '"foo"']
                     },
-                    "returning": ["id", "name"]
+                    "return": ["id", "name"]
                 }
             },
             [(
@@ -410,7 +410,7 @@ def test_build_update():
                     "where": {
                         "=": ["name", '"foo"']
                     },
-                    "returning": [
+                    "return": [
                         "id",
                         {"name": {"concat": ["first_name", "last_name"]}}
                     ]

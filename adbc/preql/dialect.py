@@ -18,6 +18,8 @@ class ParameterStyle(Enum):
                                 # DB-API2, e.g. aiomysql, psycopg2
     NAMED = 5              # SELECT * FROM user WHERE id = :id
                                 # DB-API2, e.g. aiosqlite
+    DOLLAR_NAMED = 6       # SELECT * FROM user WHERE id = $id
+                                # ???
 
 
 @dataclass
