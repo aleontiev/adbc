@@ -447,7 +447,8 @@ def test_build_insert():
                 "insert": "testing.test"
             },
             [(
-                'INSERT INTO "testing"."test" DEFAULT VALUES',
+                'INSERT INTO "testing"."test"\n'
+                'DEFAULT VALUES',
                 []
             )]
         ), (  # 2. insert one row with values
@@ -458,8 +459,8 @@ def test_build_insert():
                 }
             },
             [(
-                'INSERT INTO "testing"."test" VALUES\n'
-                '    (%s, %s)', ['jim', 'jim@test.com']
+                'INSERT INTO "testing"."user"\n'
+                'VALUES (%s, %s)', ['jim', 'jim@test.com']
             )]
         ), (  # 3. insert many rows, columns, default values
             {
@@ -473,14 +474,16 @@ def test_build_insert():
                 }
             },
             [(
-                'INSERT INTO "testing"."test" ("name", "email") VALUES\n'
-                '    (%s, %s)\n'
-                '    (%s, DEFAULT)\n', ['jim', 'jim@test.com', 'jane']
+                'INSERT INTO "testing"."user" ("name", "email")\n'
+                'VALUES\n'
+                '    (%s, %s),\n'
+                '    (%s, DEFAULT)', ['jim', 'jim@test.com', 'jane']
             )]
         ), (  # 4. insert with query
             {
                 "insert": {
                     "table": "testing.user",
+                    "columns": ["name"],
                     "values": {
                         "select": {
                             "data": "name",
@@ -490,7 +493,7 @@ def test_build_insert():
                 }
             },
             [(
-                'INSERT INTO "testing"."test"\n'
+                'INSERT INTO "testing"."user" ("name")\n'
                 '    SELECT "name"\n'
                 '    FROM "other"."user"', []
             )]
@@ -582,5 +585,4 @@ def test_build_drop():
 
 
 def test_build_select():
-    # already tested by create and update+with
     pass

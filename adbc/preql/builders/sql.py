@@ -310,12 +310,98 @@ class SQLBuilder(Builder):
 
     def build_insert(
         self,
-        clause: Union[List, dict, str],
+        clause: dict,
         style: ParameterStyle,
         depth: int = 0,
         params=None,
     ) -> List[tuple]:
-        raise NotImplementedError()
+        """Builds $.insert
+
+        Arguments:
+            clause: dict
+                with: dict
+                table: identifier
+                values: ?list
+                columns: ?list
+                return: list[identifier]
+        """
+        indent = self.get_indent(depth)
+        if isinstance(clause, str):
+            values = None
+            columns = None
+            table = clause
+            with_ = None
+            returning = None
+        else:
+            values = clause.get("values")
+            columns = clause.get('columns')
+            table = clause.get("table")
+            with_ = clause.get("with")
+            returning = clause.get("return")
+
+        if not table:
+            raise ValueError("insert: table is required")
+
+        # sub-clausal order: with, into, columns, values, returning
+        # TODO: process values
+
+        # with: common table expressions
+        with_ = (
+            (self.get_with(with_, style, params=params, depth=depth) + f"\n{indent}")
+            if with_
+            else ""
+        )
+
+        if columns:
+            columns = self.parens(
+                self.combine(
+                    [self.format_identifier(column) for column in columns],
+                    separator=', '
+                )
+            )
+
+        values = self.get_values(values, style, params=params, depth=depth)
+        # Returning: Postgres-only
+        # returns output rows based on updated rows
+        # support same syntax as select data
+        returning = self.get_returning(returning, style, params)
+
+        table = self.format_identifier(table)
+        rest = self.combine([values, returning], separator="\n", check=True)
+        columns = f' {columns}' if columns else ''
+        rest = f"\n{rest}" if rest else ""
+        return [(f"{indent}{with_}INSERT INTO {table}{columns}{rest}", params)]
+
+    def get_values(self, values, style, params, depth=0):
+        indent2 = self.get_indent(depth+1)
+        if not values:
+            return 'DEFAULT VALUES'
+
+        elif isinstance(values, list):
+            if isinstance(values[0], list):
+                # many values lists
+                values = self.combine([
+                        self.parens(self.combine([
+                            self.get_expression(v, style, params, allow_subquery=False)
+                            for v in value
+                        ], separator=', '))
+                        for value in values
+                    ], separator=f',\n{indent2}'
+                )
+                return f'VALUES\n{indent2}{values}'
+            else:
+                # one values list
+                values = self.parens(self.combine(
+                    [self.get_expression(value, style, params, allow_subquery=False) for value in values],
+                    separator=', '
+                ))
+                return f'VALUES {values}'
+        elif isinstance(values, dict):
+            # values subquery
+            # Postgres only
+            return self.get_subquery(values, style, params, depth=depth)
+        else:
+            raise ValueError(f'insert: invalid values: {values}')
 
     def build_create(
         self,
@@ -749,6 +835,9 @@ class SQLBuilder(Builder):
 
         return [(self.combine(results, check=True), params)]
 
+    def parens(self, value):
+        return f'({value})'
+
     def combine(self, segments, separator="\n", check=False):
         if check:
             return separator.join([s for s in segments if s])
@@ -1150,7 +1239,7 @@ class SQLBuilder(Builder):
                 set: dict[str, expression]
                 from: union[list, str]
                 where: expression
-                returning: list[identifier]
+                return: list[identifier]
         """
         indent = self.get_indent(depth)
         from_ = clause.get("from")
@@ -1162,7 +1251,14 @@ class SQLBuilder(Builder):
         if not set_:
             raise ValueError("update: set is required")
 
-        # sub-clausal order: set, from, where, returning
+        # sub-clausal order: with, set, from, where, returning
+
+        # with: common table expressions
+        with_ = (
+            (self.get_with(with_, style, params=params, depth=depth) + f"\n{indent}")
+            if with_
+            else ""
+        )
 
         set_ = self.get_update_set(set_, style, params, depth=depth + 1)
         if from_:
@@ -1177,13 +1273,6 @@ class SQLBuilder(Builder):
         if where:
             where = self.get_expression(where, style, params, depth=depth)
             where = f"WHERE {where}" if where else None
-
-        # with: common table expressions
-        with_ = (
-            (self.get_with(with_, style, params=params, depth=depth) + f"\n{indent}")
-            if with_
-            else ""
-        )
 
         # Returning: Postgres-only
         # returns output rows based on updated rows
@@ -2011,12 +2100,15 @@ class SQLBuilder(Builder):
             keys = list(expression.keys())
             if len(keys) != 1:
                 raise ValueError("object-type expression must have one key")
-            key = keys[0].lower()
+            key = keys[0]
             value = expression[key]
+            key = key.lower()
+
             if value is None:
                 # keyword expression, e.g. {"default": null} -> DEFAULT (in a VAULES statement)
                 if not self.validate_keyword(key):
                     raise ValueError(f'"{key}" is not a valid keyword')
+                key = key.upper()
                 return f"{indent}{key}"
             else:
                 if self.is_command(key):
