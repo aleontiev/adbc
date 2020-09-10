@@ -28,14 +28,18 @@ class NestedFeature(object):
 
 class Query(object):
     # methods
-    def __init__(self, database=None, state=None, executor=None):
+    def __init__(self, database=None, state=None, executor=None, scope=None):
         """
         Arguments:
-            state: internal query representation
+            database: Database object
+            state: internal query representation$
+            executor: pre-existing executor (optional)
+            scope: scope with which the model was called
         """
         self._state = state or {}
         self.database = database
-        self.executor = executor or get_executor(self.database)
+        self.scope = scope
+        self.executor = executor or get_executor(self.database, scope)
 
     def get_state(self, level=None):
         state = self.state
@@ -259,7 +263,12 @@ class Query(object):
                 sub[key] = value
 
         if copy:
-            return Query(database=self.database, state=state, executor=self.executor)
+            return Query(
+                database=self.database,
+                state=state,
+                executor=self.executor,
+                scope=self.scope
+            )
         else:
             return self
 

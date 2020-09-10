@@ -168,7 +168,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             # only delete rows not within the bounds of the source data
             if pk and shard == 0 and source_low:
                 # drop any target rows with id before the lowest source ID
-                await target_model.where({pk: {"<": source_low}}).delete()
+                await target_model.where({'<': [pk, source_low]}).delete()
 
             if pk and (target_high is None or cursor and cursor > target_high):
                 # skip the check and move on to delete/copy
@@ -243,7 +243,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
             if not single and pk and shard == last:
                 # drop after the last shard
-                await target_model.where({pk: {">": source_high}}).delete()
+                await target_model.where({'>': [pk, source_high]}).delete()
 
             cursor = source_max
 

@@ -376,7 +376,8 @@ def test_build_update():
                 }
             },
             [(
-                'UPDATE "testing"."test" SET\n'
+                'UPDATE "testing"."test"\n'
+                'SET\n'
                 '    "name" = %s,\n'
                 '    "toggled" = True',
                 ['bar']
@@ -421,7 +422,8 @@ def test_build_update():
                 '    SELECT *\n'
                 '    FROM "bar"."foo"\n'
                 ')\n'
-                'UPDATE "testing"."test" SET\n'
+                'UPDATE "testing"."test"\n'
+                'SET\n'
                 '    ("id", "updated") = (\n'
                 '        SELECT\n'
                 '            "id",\n'

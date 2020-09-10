@@ -1,37 +1,19 @@
 import re
 
-from adbc.sql import (
-    list_columns,
-    where_clause,
-    should_escape,
-    get_tagged_number
-)
-
 
 executors = {}
-def get_executor(source):
+def get_executor(source, scope=None):
     global executors
-    key = (source.name, source.url)
+    key = (source.name, source.url, scope)
     if key not in executors:
-        executors[key] = QueryExecutor(source)
+        executors[key] = QueryExecutor(source, scope=scope)
     return executors[key]
 
 
 class QueryExecutor(object):
-    def __init__(self, database):
+    def __init__(self, database, scope=None):
         self.database = database
-
-    def get_insert(self, table, query):
-        # TODO: convert to PreQL
-        values = query.data('values')
-        if not values:
-            columns = ' DEFAULT VALUES'
-        else:
-            columns = list_columns(
-                sorted(values.keys() if isinstance(values, dict) else values[0].keys())
-            )
-            columns = f' ({columns})'
-        return f'INSERT INTO {table.sql_name}{columns}'
+        self.scope = scope
 
     def all_columns(self, table, level=None):
         return list(table.columns.keys())
@@ -94,37 +76,6 @@ class QueryExecutor(object):
             }
         }
 
-    def get_where_old(self, table, query):
-        args = []
-        pks = list(table.pks.keys())
-
-        key = query.data('key')
-        where = {}
-        # add PK filters
-        if key:
-            if len(pks) > 1:
-                assert(len(key) == len(pks))
-                ands = []
-                for i, pk in enumerate(pks):
-                    ands.append({pk: key[i]})
-
-                where = {'.and': ands}
-            else:
-                pk = pks[0]
-                where = {pk: key}
-
-        # add user filters
-        wheres = query.data('where')
-        if wheres:
-            if where:
-                # and together with PK
-                where = {'.and': [where, wheres]}
-            else:
-                where = wheres
-
-        where = where_clause(where, args)
-        return [f"WHERE {where}", *args] if where else []
-
     def get_where(self, table, query):
         args = []
         pks = list(table.pks.keys())
@@ -157,9 +108,6 @@ class QueryExecutor(object):
 
     def get_from(self, table, query):
         return table.full_name
-
-    def get_update(self, table, query):
-        return f'UPDATE {table.sql_name}'
 
     def get_order(self, table, query):
         sort = query.data('sort')
@@ -207,7 +155,7 @@ class QueryExecutor(object):
             count: ?string
                 if set, return count of rows instead of records
             connection: ?asyncpg.connection
-            sql: if True, return the query instead
+            preql: if True, return the PreQL query instead of executing it
 
         Return:
             List of records: if no key is specified
@@ -219,7 +167,7 @@ class QueryExecutor(object):
         connection = kwargs.get('connection', None)
         source = query.data('source')
         database = self.database
-        table = await database.get_table(source)
+        table = await database.get_table(source, scope=self.scope)
         preql = kwargs.get('preql', False)
         count = kwargs.get('count', False)
         select = self.get_select(table, query, count=count)
@@ -240,65 +188,67 @@ class QueryExecutor(object):
             connection=connection
         )
 
-    def get_set(self, values, args):
-        multiple = len(values) > 1
-        params = []
-        columns = []
-        for key, value in values.items():
-            args.append(value)
-            columns.append(key)
-            params.append(f'${len(args)}')
+    def quote(self, value):
+        # add literal quoting, unless it is not a string
+        return f"'{value}'" if isinstance(value, str) else value
 
-        columns = list_columns(columns)
-        params = ', '.join(params)
-        if multiple:
-            columns = f'({columns})'
-            params = f'({params})'
-        return f'SET {columns} = {params}'
+    def get_set(self, values):
+        return {
+            key: self.quote(value) for key, value in values.items()
+        }
 
     def get_returning(self, table, query):
         columns = self.get_columns(table, query)
-        if columns:
-            # if no columns are passed explicitly,
-            # do not use returning
-            return f'RETURNING {list_columns(columns)}'
-        else:
-            return ''
+        return columns if columns else None
 
-    def build_sql(self, *args):
-        last = args[-1]
-        args = args[:-1]
-        sql = '\n'.join([a for a in args if a])
-        return (sql, last)
+    CHANGED_ROWS_REGEX = re.compile('[a-zA-Z]+ ([0-9]+)')
+    ADDED_ROWS_REGEX = re.compile('[a-zA-Z]+ [0-9]+ ([0-9]+)')
 
-    INSERTED_ROWS_REGEX = re.compile('INSERT [0-9]+ ([0-9]+)')
+    def get_added_rows(self, result, rows=None):
+        regex = self.ADDED_ROWS_REGEX
+        return self._get_changed_rows(regex, result, rows)
 
-    def get_inserted_rows(self, result):
-        match = self.INSERTED_ROWS_REGEX.match(result)
-        return int(match.group(1))
+    def get_changed_rows(self, result, rows=None):
+        regex = self.CHANGED_ROWS_REGEX
+        return self._get_changed_rows(regex, result, rows)
 
-    def get_values(self, values, args):
+    def _get_changed_rows(self, regex, result, rows):
+        match = regex.match(result)
+        return int(match.group(1)) if match else rows
+
+    def get_values(self, values) -> tuple:
         if not values:
-            return None
-        output = []
-        expected_columns = list(sorted(values[0].keys()))
-        for data in values:
-            value = []
-            columns = []
-            for k, v in sorted(data.items(), key=lambda x: x[0]):
-                columns.append(k)
-                if should_escape(v):
-                    args.append(v)
-                    value.append(f'${len(args)}')
-                else:
-                    value.append(v)
-            if columns != expected_columns:
-                raise ValueError(
-                    f'expecting {expected_columns} but got {columns}'
-                )
-            output.append(f"({', '.join(value)})")
-        output = ', \n'.join(output)
-        return f"VALUES {output}"
+            return (None, None)
+
+        result = []
+        columns = []
+
+        if isinstance(values, list):
+            expected = set(values[0].keys())
+            columns = list(sorted(expected))
+            for value in values:
+                cols = set(value.keys())
+
+                if cols != expected:
+                    raise ValueError(
+                        f'expecting {expected} but got {cols}'
+                    )
+
+                subresult = []
+                for column in columns:
+                    if column not in value:
+                        subresult.append({'default': None})
+                    else:
+                        subresult.append(self.quote(value[column]))
+                result.append(subresult)
+
+        elif isinstance(values, dict):
+            # {"name": "test"}
+            columns = list(sorted(values.keys()))
+            for column in columns:
+                result.append(self.quote(values[column]))
+
+        return columns, result
 
     async def add(self, query, **kwargs):
         """INSERT data (or update on conflict)
@@ -308,8 +258,6 @@ class QueryExecutor(object):
 
         Arguments:
             query: Query
-            upsert: bool
-                default: True
             connection: *asyncpg.connection
                 useful for transactions
 
@@ -319,43 +267,41 @@ class QueryExecutor(object):
         # TODO: convert to PreQL
         values = query.data('values')
         connection = kwargs.get('connection')
-        sql = kwargs.get('sql', False)
+        preql = kwargs.get('preql', False)
         # TODO: support ON CONFLICT
         # upsert = kwargs.get('upsert', True)
 
-        # values is either a list of dicts or a dict
-        # or None
-        multiple = True
-        if isinstance(values, dict):
-            multiple = False
-            values = [values]
+        # values is either a list or dict or None
+        rows = 1
+        if isinstance(values, list):
+            # [{'name': 'kay'}, {'name': 'jay'}]
+            rows = len(values)
 
         source = query.data('source')
-        table = await self.database.get_table(source)
+        table = await self.database.get_table(source, scope=self.scope)
         returning = self.get_returning(table, query)
-        args = []
-        insert = self.get_insert(table, query)
-        values = self.get_values(values, args)
+        columns, values = self.get_values(values)
 
-        query, params = self.build_sql(
-            insert,
-            values,
-            returning,
-            args
-        )
-        if sql:
-            return query, params
+        query = {
+            'insert': {
+                'table': table.full_name,
+                'return': returning,
+                'columns': columns,
+                'values': values
+            }
+        }
+        if preql:
+            return query
         if returning:
-            method = 'query' if multiple else 'query_one_row'
+            method = 'query' if rows > 1 else 'query_one_row'
         else:
             method = 'execute'
         result = await getattr(self.database, method)(
             query,
-            params=params,
             connection=connection
         )
         if not returning:
-            result = self.get_inserted_rows(result)
+            result = self.get_added_rows(result, rows=rows)
         return result
 
     async def set(self, query, **kwargs):
@@ -374,7 +320,7 @@ class QueryExecutor(object):
         field = query.data('field')
         values = query.data('values')
         connection = kwargs.get('connection')
-        sql = kwargs.get('sql', False)
+        preql = kwargs.get('preql', False)
         assert(values)
         if not field:
             # values must be a dict with values
@@ -382,38 +328,30 @@ class QueryExecutor(object):
             assert(isinstance(values, dict))
 
         source = query.data('source')
-        table = await self.database.get_table(source)
+        table = await self.database.get_table(source, scope=self.scope)
         returning = self.get_returning(table, query)
-        where = self.get_where_old(table, query)
-        if where:
-            where, *args = where
-        else:
-            where = None
-            args = []
-
+        where = self.get_where(table, query)
         if field is not None:
             values = {field: values}
 
-        set_ = self.get_set(values, args)
-
-        update = self.get_update(table, query)
-        query, params = self.build_sql(
-            update,
-            set_,
-            where,
-            returning,
-            args
-        )
-        if sql:
-            return query, params
+        set_ = self.get_set(values)
+        query = {
+            'update': {
+                'table': table.full_name,
+                'set': set_,
+                'where': where,
+                'return': returning
+            }
+        }
+        if preql:
+            return query
         method = 'query' if returning else 'execute'
         result = await getattr(self.database, method)(
             query,
-            params=params,
             connection=connection
         )
         if not returning:
-            result = get_tagged_number(result)
+            result = self.get_changed_rows(result)
         return result
 
     async def delete(self, query, **kwargs):
@@ -430,31 +368,24 @@ class QueryExecutor(object):
         # TODO: convert to PreQL
         connection = kwargs.get('connection')
         source = query.data('source')
-        table = await self.database.get_table(source)
+        table = await self.database.get_table(source, scope=self.scope)
         returning = self.get_returning(table, query)
-        where = self.get_where_old(table, query)
-        if where:
-            where, *args = where
-        else:
-            where = None
-            args = []
+        where = self.get_where(table, query)
 
-        from_ = f"FROM {table.sql_name}"
-        query, params = self.build_sql(
-            'DELETE',
-            from_,
-            where,
-            returning,
-            args
-        )
+        query = {
+            'delete': {
+                'table': table.full_name,
+                'where': where,
+                'return': returning
+            }
+        }
         method = 'query' if returning else 'execute'
         result = await getattr(self.database, method)(
             query,
-            params=params,
             connection=connection
         )
         if not returning:
-            result = get_tagged_number(result)
+            result = self.get_changed_rows(result)
         return result
 
     async def truncate(self, query, **kwargs):
@@ -471,8 +402,8 @@ class QueryExecutor(object):
         # TODO: convert to PreQL
         connection = kwargs.get('connection')
         source = query.data('source')
-        table = await self.database.get_table(source)
-        query = f'TRUNCATE {table.sql_name}'
+        table = await self.database.get_table(source, scope=self.scope)
+        query = {'truncate': table.full_name}
         method = 'execute'
         return await getattr(self.database, method)(
             query,

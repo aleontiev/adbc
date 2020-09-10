@@ -1282,7 +1282,7 @@ class SQLBuilder(Builder):
         table = self.format_identifier(table)
         rest = self.combine([from_, where, returning], separator="\n", check=True)
         rest = f"\n{rest}" if rest else ""
-        return [(f"{indent}{with_}UPDATE {table} SET\n{set_}{rest}", params)]
+        return [(f"{indent}{with_}UPDATE {table}\nSET\n{set_}{rest}", params)]
 
     def escape_literal(self, literal):
         quote = self.LITERAL_QUOTE_CHARACTER
@@ -2064,7 +2064,7 @@ class SQLBuilder(Builder):
             return f"{indent}{result}"
 
         if expression is None:
-            return "{indent}NULL"
+            return f"{indent}NULL"
 
         if isinstance(expression, list):
             # assume identifier list

@@ -234,7 +234,11 @@ class Table(WithScope, Loggable):
                 jobs = [data_range, count]
                 data_hashes = None
                 if hashes:
-                    data_hashes = self.get_data_hashes()
+                    shard_size = (
+                        hashes if hashes is not True and isinstance(hashes, int)
+                        else None
+                    )
+                    data_hashes = self.get_data_hashes(shard_size=shard_size)
                     jobs.append(data_hashes)
 
                 results = await asyncio.gather(*jobs)
@@ -416,7 +420,7 @@ class Table(WithScope, Loggable):
             return result
 
         else:
-            query = await self.get_statistics_query(
+            query, params = await self.get_statistics_query(
                 max_pk=max_pk,
                 limit=limit,
                 cursor=cursor,
@@ -424,7 +428,7 @@ class Table(WithScope, Loggable):
                 count=count,
                 md5=md5,
             )
-            result = await self.database.query_one_row(*query)
+            result = await self.database.query_one_row(query, params)
             return result
 
     def order_by_alias(self, columns):
@@ -490,17 +494,18 @@ class Table(WithScope, Loggable):
             where = f"\n  WHERE {pk_} > $1"
 
         output = ", ".join(output)
-        query = [
+        query = (
             f"SELECT {output}\n"
             f"FROM (\n"
             f"  SELECT {inner}\n"
             f"  FROM {self.sql_name}{where}\n"
             f"  ORDER BY {order}{limit}\n"
             f") T"
-        ]
+        )
+        params = []
         if cursor:
-            query.append(cursor)
-        return query
+            params.append(cursor)
+        return query, params
 
     def get_min_id_query(self, limit=None, cursor=None, pk=None):
         if pk is None:

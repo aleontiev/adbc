@@ -60,9 +60,7 @@ class Database(Loggable, WithCopy, WithScope):
 
     @cached_property
     async def shard_size(self):
-        # TODO: support for other database backends
-        is_redshift = await self.is_redshift
-        return 1000 if is_redshift else 16000
+        return 16000
 
     async def close(self):
         if self._pool:
@@ -125,11 +123,6 @@ class Database(Loggable, WithCopy, WithScope):
         if not table:
             raise ValueError(f"table {schema}.{table_name} not found or no access")
         return table
-
-    @cached_property
-    async def is_redshift(self):
-        version = await self.full_version
-        return "redshift" in version.lower()
 
     @cached_property
     async def full_version(self):
