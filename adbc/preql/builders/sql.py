@@ -1099,7 +1099,7 @@ class SQLBuilder(Builder):
         if prefix:
             prefix = f"{indent}ORDER BY "
         else:
-            prefix = indent
+            prefix = ''
 
         if isinstance(order, list):
             order = self.combine(
@@ -1112,7 +1112,7 @@ class SQLBuilder(Builder):
             return f"{prefix}{order}"
         if isinstance(order, str):
             order = self.format_identifier(order)
-            return f"{prefix}{order} ASC"
+            return f"{prefix}{order}"
         if isinstance(order, dict):
             by = order.get("by")
             if not by:

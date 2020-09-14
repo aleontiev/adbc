@@ -5,7 +5,6 @@ from typing import Union
 from copy import copy
 from collections import defaultdict
 from adbc.exceptions import NotIncluded
-from adbc.sql import can_order
 from adbc.logging import Loggable
 from adbc.scope import WithScope
 from adbc.constants import SEQUENCE, TABLE, PRIMARY, UNIQUE, FOREIGN
@@ -116,6 +115,10 @@ class Table(WithScope, Loggable):
         # - related: based on foreign key constraints
         constraints = self.constraints
         pks = self.pks = get_pks(constraints) or self.column_names
+        if len(self.pks) == 1:
+            self.pk = next(iter(self.pks))
+        else:
+            self.pk = None
         uniques = self.uniques = get_uniques(constraints)
         fks = self.fks = get_fks(constraints)
 
@@ -229,7 +232,7 @@ class Table(WithScope, Loggable):
         exclude = kwargs.get("exclude", None)
         if data:
             if self.type == 'table':
-                data_range = self.get_data_range()
+                data_range = self.get_range()
                 count = self.get_count()
                 jobs = [data_range, count]
                 data_hashes = None
@@ -238,7 +241,7 @@ class Table(WithScope, Loggable):
                         hashes if hashes is not True and isinstance(hashes, int)
                         else None
                     )
-                    data_hashes = self.get_data_hashes(shard_size=shard_size)
+                    data_hashes = self.get_hashes(shard_size=shard_size)
                     jobs.append(data_hashes)
 
                 results = await asyncio.gather(*jobs)
@@ -330,7 +333,7 @@ class Table(WithScope, Loggable):
             result[key] = value
         return result
 
-    async def get_data_hashes(self, shard_size=None):
+    async def get_hashes(self, shard_size=None):
         if shard_size is None:
             shard_size = await self.database.shard_size
 
@@ -370,8 +373,8 @@ class Table(WithScope, Loggable):
         if (min_pk or max_pk) and (md5 or count):
             # may need to split up this query
             # if the pk is a UUID then min_pk and max_pk have to run separately
-            if self.pks:
-                pk = next(iter(self.pks))
+            if self.pk:
+                pk = self.pk
                 split = self.columns[pk]["type"] == "uuid"
         if split:
             # split query:
@@ -420,7 +423,7 @@ class Table(WithScope, Loggable):
             return result
 
         else:
-            query, params = await self.get_statistics_query(
+            query = await self.get_statistics_query(
                 max_pk=max_pk,
                 limit=limit,
                 cursor=cursor,
@@ -428,7 +431,7 @@ class Table(WithScope, Loggable):
                 count=count,
                 md5=md5,
             )
-            result = await self.database.query_one_row(query, params)
+            result = await self.database.query_one_row(query)
             return result
 
     def order_by_alias(self, columns):
@@ -450,148 +453,137 @@ class Table(WithScope, Loggable):
         if not count and not max_pk and not md5 and not min_pk:
             raise Exception("must pass count or max_pk or md5 or min_pk")
 
-        F = self.database.F
         columns = list(sorted(self.columns.keys()))
         pks = self.order_by_alias(self.pks)
-
-        order = ", ".join([F.column(c) for c in pks if self.can_order(c)])
+        order = pks
 
         if not md5:
             columns = pks
 
         # TODO: use alias ordering to ensure consistent
         # hashes across datastores with different schematic names
-        columns_ = [F.column(c) for c in self.order_by_alias(columns)]
+        columns = self.order_by_alias(columns)
         # concatenate values together 
-        aggregate = ",".join([f"T.{c}" for c in columns_])
-        aggregate = f"json_build_array({aggregate})"
+        aggregate = [f"T.{c}" for c in columns]
+        aggregate = {'json_build_array': aggregate}
 
-        inner = ", ".join(columns_)
         output = []
         pk = pks[0]
-        md5 = f"md5(array_to_string(array_agg({aggregate}), ',')) as md5" if md5 else None
-        count = "count(*)" if count else ""
-        pk_ = F.column(pk)
-        max_pk = f"max({pk_})" if max_pk else ""
-        min_pk = f"min({pk_})" if min_pk else ""
+
+        md5 = {
+            'md5': {
+                'array_to_string': [
+                    {'array_agg': aggregate},
+                    '`,`'
+                ]
+            }
+        } if md5 else None
+
+        count = {'count': '*'}
+        max_pk = {'max': pk} if max_pk else None
+        min_pk = {'min': pk} if min_pk else None
         if md5:
-            output.append(md5)
+            output.append({'md5': md5})
         if count:
-            output.append(count)
+            output.append({'count': count})
         if max_pk:
-            output.append(max_pk)
+            output.append({'max': max_pk})
         if min_pk:
-            output.append(min_pk)
+            output.append({'min': min_pk})
 
-        if limit:
-            limit = int(limit)
-            limit = f"\n  LIMIT {limit}"
-        else:
-            limit = ""
-
-        where = ""
+        where = None
         if cursor:
-            where = f"\n  WHERE {pk_} > $1"
+            where = {'>': [pk, cursor]}
 
-        output = ", ".join(output)
-        query = (
-            f"SELECT {output}\n"
-            f"FROM (\n"
-            f"  SELECT {inner}\n"
-            f"  FROM {self.sql_name}{where}\n"
-            f"  ORDER BY {order}{limit}\n"
-            f") T"
-        )
-        params = []
-        if cursor:
-            params.append(cursor)
-        return query, params
-
-    def get_min_id_query(self, limit=None, cursor=None, pk=None):
-        if pk is None:
-            pk = self.pks[0]
-
-        pk = self.database.F.column(pk)
-        if limit is None and cursor is None:
-            return [f"SELECT {pk} FROM {self.sql_name} ORDER BY {pk} LIMIT 1"]
-
-        where = ""
-        if cursor:
-            where = f"\n  WHERE {pk} > $1\n"
-        if limit:
-            limit = f"\n  LIMIT {int(limit)}\n"
-        query = [
-            f"SELECT T.{pk}\n"
-            f"FROM (\n"
-            f"  SELECT {pk}\n"
-            f"  FROM {self.sql_name}{where}\n"
-            f"  ORDER BY {pk}{limit}"
-            f") T LIMIT 1"
-        ]
-        if cursor:
-            query.append(cursor)
+        query = {
+            'select': {
+                'data': output,
+                'from': {
+                    'T': {
+                        'select': {
+                            'data': columns,
+                            'from': self.full_name,
+                            'where': where,
+                            'order': order,
+                            'limit': limit
+                        }
+                    }
+                },
+            },
+        }
         return query
 
-    def get_max_id_query(self, limit=None, cursor=None, pk=None):
-        if pk is None:
-            pk = self.pks[0]
+    def get_edge_query(self, max=True, limit=None, cursor=None, field=None):
+        if field is None:
+            field = self.pk
 
-        F = self.database.F
-        pk = F.column(pk)
+        if not field:
+            raise ValueError(f'table {self.full_name} has no primary key')
+
+        order = {'by': field, 'desc': max}
         if limit is None and cursor is None:
-            return [f"SELECT {pk} FROM {self.sql_name} ORDER BY {pk} DESC LIMIT 1"]
+            return {
+                'select': {
+                    'data': field,
+                    'from': self.full_name,
+                    'order': order,
+                    'limit': 1
+                }
+            }
 
-        where = ""
+        where = None
         if cursor:
-            where = f"\n  WHERE {pk} > $1\n"
-        if limit:
-            limit = f"\n  LIMIT {int(limit)}\n"
-        query = [
-            f"SELECT T.{pk}\n"
-            f"FROM (\n"
-            f"  SELECT {pk}\n"
-            f"  FROM {self.sql_name}{where}\n"
-            f"  ORDER BY {pk}{limit}"
-            f") T\n"
-            f"ORDER BY T.{pk} DESC\n"
-            "LIMIT 1"
-        ]
-        if cursor:
-            query.append(cursor)
+            where = {'>': [field, cursor]}
+        query = {
+            'select': {
+                'data': f'T.{field}',
+                'from': {
+                    'T': {
+                        'select': {
+                            'data': field,
+                            'from': self.full_name,
+                            'where': where,
+                            'order': field,
+                            'limit': limit
+                        }
+                    }
+                },
+                'order': order,
+                'limit': 1
+            }
+        }
         return query
 
     @cached_property
     def full_name(self):
         return f"{self.namespace.name}.{self.name}"
 
-    @cached_property
-    def sql_name(self):
-        return self.database.F.table(self.name, schema=self.namespace.name)
-
-    def can_order(self, column_name):
-        column = self.columns[column_name]
-        return can_order(column["type"])
-
     def get_count_query(self):
-        return (f"SELECT count(*) FROM {self.sql_name}",)
+        return {
+            'select': {
+                'data': {'count': {'count': '*'}},
+                'from': self.full_name
+            }
+        }
 
-    def get_data_range_query(self, keys):
-        new_keys = []
-        F = self.database.F
+    def get_range_query(self, keys):
+        data = []
         for key in keys:
-            column = F.column(key)
-            min_key = F.column(f"min_{key}")
-            max_key = F.column(f"max_{key}")
-            new_keys.append(
-                f"min({column}) AS {min_key}, " f"max({column}) AS {max_key}"
-            )
-        keys = ",\n  ".join(new_keys)
-        return (f"SELECT {keys}\n" f"FROM {self.sql_name}",)
+            column = key
+            min_key = f"min_{key}"
+            max_key = f"max_{key}"
+            data.append({min_key: {'min': column}, max_key: {'max': column}})
 
-    async def get_data_range(self, keys=None):
+        return {
+            'select': {
+                'data': data,
+                'from': self.full_name
+            }
+        }
+
+    async def get_range(self, keys=None):
         if keys is None:
             keys = copy(self.pks) if len(self.pks) == 1 else []
-            keys = [key for key in keys if self.can_order(key)]
             if self.on_create:
                 keys.append(self.on_create)
             if self.on_update:
@@ -601,9 +593,9 @@ class Table(WithScope, Loggable):
         if not keys:
             return None
 
-        query = self.get_data_range_query(keys)
+        query = self.get_range_query(keys)
         try:
-            row = await self.database.query_one_row(*query)
+            row = await self.database.query_one_row(query)
         except Exception as e:
             # some columns cannot be min/maxd
             # in this case, try to use ORDER BY,
@@ -635,16 +627,16 @@ class Table(WithScope, Loggable):
             return dict(result)
 
     async def get_min_id(self, limit=None, cursor=None, pk=None):
-        query = self.get_min_id_query(limit=limit, cursor=cursor, pk=pk)
-        return await self.database.query_one_value(*query)
+        query = self.get_edge_query(max=False, cursor=cursor, field=pk)
+        return await self.database.query_one_value(query)
 
     async def get_max_id(self, limit=None, cursor=None, pk=None):
-        query = self.get_max_id_query(limit=limit, cursor=cursor, pk=pk)
-        return await self.database.query_one_value(*query)
+        query = self.get_edge_query(max=True, limit=limit, cursor=cursor, field=pk)
+        return await self.database.query_one_value(query)
 
     async def get_count(self):
         query = self.get_count_query()
-        return await self.database.query_one_value(*query)
+        return await self.database.query_one_value(query)
 
     @cached_property
     async def count(self):
