@@ -1,29 +1,19 @@
 import re
 
-from adbc.sql import (
-    list_columns,
-    sort_columns,
-    where_clause,
-    should_escape,
-    get_tagged_number
-)
+
+executors = {}
+def get_executor(source, scope=None):
+    global executors
+    key = (source.name, source.url, scope)
+    if key not in executors:
+        executors[key] = QueryExecutor(source, scope=scope)
+    return executors[key]
 
 
-# TODO: support other backends
-def get_executor(source):
-    return PostgresExecutor(source)
-
-
-class PostgresExecutor(object):
-    def __init__(self, database):
+class QueryExecutor(object):
+    def __init__(self, database, scope=None):
         self.database = database
-
-    def get_insert(self, table, query):
-        values = query.data('values')
-        columns = list_columns(
-            sorted(values.keys() if isinstance(values, dict) else values[0].keys())
-        )
-        return f'INSERT INTO {table.sql_name} ({columns})'
+        self.scope = scope
 
     def all_columns(self, table, level=None):
         return list(table.columns.keys())
@@ -60,19 +50,35 @@ class PostgresExecutor(object):
 
         return list(sorted(result))
 
-    def get_select(self, table, query, count=None):
+    def get_data(self, table, query, count=False):
         field = query.data('field')
         if count:
-            columns = 'count(*)'
+            data = {'count': {'count': '*'}}
         elif field is not None:
-            columns = list_columns([field])
+            data = field
         else:
-            columns = list_columns(self.get_columns(table, query))
-        return f"SELECT {columns}"
+            data = self.get_columns(table, query)
+        return data
+
+    def get_select(self, table, query, count=False):
+        data = self.get_data(table, query, count=count)
+        from_ = self.get_from(table, query)
+        order = self.get_order(table, query)
+        limit = self.get_limit(table, query)
+        where = self.get_where(table, query)
+        return {
+            'select': {
+                'data': data,
+                'from': from_,
+                'where': where,
+                'order': order,
+                'limit': limit
+            }
+        }
 
     def get_where(self, table, query):
         args = []
-        pks = table.pks
+        pks = list(table.pks.keys())
 
         key = query.data('key')
         where = {}
@@ -82,49 +88,49 @@ class PostgresExecutor(object):
                 assert(len(key) == len(pks))
                 ands = []
                 for i, pk in enumerate(pks):
-                    ands.append({pk: key[i]})
+                    ands.append({'=': [pk, key[i]]})
 
-                where = {'.and': ands}
+                where = {'and': ands}
             else:
                 pk = pks[0]
-                where = {pk: key}
+                where = {'=': [pk, key]}
 
         # add user filters
         wheres = query.data('where')
         if wheres:
             if where:
                 # and together with PK
-                where = {'.and': [where, wheres]}
+                where = {'and': [where, wheres]}
             else:
                 where = wheres
 
-        where = where_clause(where, args)
-        return [f"WHERE {where}", *args] if where else []
+        return where or None
 
     def get_from(self, table, query):
-        return f'FROM {table.sql_name}'
-
-    def get_joins(self, table, query):
-        # TODO: implement joins
-        return ''
-
-    def get_update(self, table, query):
-        return f'UPDATE {table.sql_name}'
+        return table.full_name
 
     def get_order(self, table, query):
         sort = query.data('sort')
         if sort:
-            columns = sort_columns(sort)
-            return f'ORDER BY {columns}'
-        return ''
+            order = []
+            for column in sort:
+                desc = False
+                if column.startswith('-'):
+                    desc = True
+                    column = column[1:]
+                order.append({
+                    'by': column,
+                    'desc': desc
+                })
+        return None
 
     def get_limit(self, table, query):
         if query.data('key'):
-            return 'LIMIT 1'
+            return 1
         limit = query.data('limit')
         if limit:
-            return f'LIMIT {int(limit)}'
-        return ''
+            return int(limit)
+        return None
 
     async def count(self, query, **kwargs):
         kwargs['count'] = True
@@ -149,7 +155,7 @@ class PostgresExecutor(object):
             count: ?string
                 if set, return count of rows instead of records
             connection: ?asyncpg.connection
-            sql: if True, return the query instead
+            preql: if True, return the PreQL query instead of executing it
 
         Return:
             List of records: if no key is specified
@@ -161,33 +167,10 @@ class PostgresExecutor(object):
         connection = kwargs.get('connection', None)
         source = query.data('source')
         database = self.database
-        table = await database.get_table(source)
-        sql = kwargs.get('sql', None)
+        table = await database.get_table(source, scope=self.scope)
+        preql = kwargs.get('preql', False)
         count = kwargs.get('count', False)
         select = self.get_select(table, query, count=count)
-        where = self.get_where(table, query)
-        if where:
-            where, *args = where
-        else:
-            where = None
-            args = []
-        from_ = self.get_from(table, query)
-        joins = self.get_joins(table, query)
-        order = self.get_order(table, query)
-        limit = self.get_limit(table, query)
-
-        query = self.build_sql(
-            select,
-            from_,
-            joins,
-            where,
-            order,
-            limit,
-            args
-        )
-        if sql:
-            # just return the query
-            return query
         if count or (field and key):
             method = 'query_one_value'
         elif key:
@@ -196,68 +179,76 @@ class PostgresExecutor(object):
             method = 'query_one_column'
         else:
             method = 'query'
+
+        if preql:
+            return select
+
         return await getattr(self.database, method)(
-            *query,
+            select,
             connection=connection
         )
 
-    def get_set(self, values, args):
-        multiple = len(values) > 1
-        params = []
-        columns = []
-        for key, value in values.items():
-            args.append(value)
-            columns.append(key)
-            params.append(f'${len(args)}')
+    def quote(self, value):
+        # add literal quoting, unless it is not a string
+        return f"'{value}'" if isinstance(value, str) else value
 
-        columns = list_columns(columns)
-        params = ', '.join(params)
-        if multiple:
-            columns = f'({columns})'
-            params = f'({params})'
-        return f'SET {columns} = {params}'
+    def get_set(self, values):
+        return {
+            key: self.quote(value) for key, value in values.items()
+        }
 
     def get_returning(self, table, query):
         columns = self.get_columns(table, query)
-        if columns:
-            # if no columns are passed explicitly,
-            # do not use returning
-            return f'RETURNING {list_columns(columns)}'
-        else:
-            return ''
+        return columns if columns else None
 
-    def build_sql(self, *args):
-        last = args[-1]
-        args = args[:-1]
-        sql = '\n'.join([a for a in args if a])
-        return (sql, *last)
+    CHANGED_ROWS_REGEX = re.compile('[a-zA-Z]+ ([0-9]+)')
+    ADDED_ROWS_REGEX = re.compile('[a-zA-Z]+ [0-9]+ ([0-9]+)')
 
-    INSERTED_ROWS_REGEX = re.compile('INSERT [0-9]+ ([0-9]+)')
+    def get_added_rows(self, result, rows=None):
+        regex = self.ADDED_ROWS_REGEX
+        return self._get_changed_rows(regex, result, rows)
 
-    def get_inserted_rows(self, result):
-        match = self.INSERTED_ROWS_REGEX.match(result)
-        return int(match.group(1))
+    def get_changed_rows(self, result, rows=None):
+        regex = self.CHANGED_ROWS_REGEX
+        return self._get_changed_rows(regex, result, rows)
 
-    def get_values(self, values, args):
-        output = []
-        expected_columns = list(sorted(values[0].keys()))
-        for data in values:
-            value = []
-            columns = []
-            for k, v in sorted(data.items(), key=lambda x: x[0]):
-                columns.append(k)
-                if should_escape(v):
-                    args.append(v)
-                    value.append(f'${len(args)}')
-                else:
-                    value.append(v)
-            if columns != expected_columns:
-                raise ValueError(
-                    f'expecting {expected_columns} but got {columns}'
-                )
-            output.append(f"({', '.join(value)})")
-        output = ', \n'.join(output)
-        return f"VALUES {output}"
+    def _get_changed_rows(self, regex, result, rows):
+        match = regex.match(result)
+        return int(match.group(1)) if match else rows
+
+    def get_values(self, values) -> tuple:
+        if not values:
+            return (None, None)
+
+        result = []
+        columns = []
+
+        if isinstance(values, list):
+            expected = set(values[0].keys())
+            columns = list(sorted(expected))
+            for value in values:
+                cols = set(value.keys())
+
+                if cols != expected:
+                    raise ValueError(
+                        f'expecting {expected} but got {cols}'
+                    )
+
+                subresult = []
+                for column in columns:
+                    if column not in value:
+                        subresult.append({'default': None})
+                    else:
+                        subresult.append(self.quote(value[column]))
+                result.append(subresult)
+
+        elif isinstance(values, dict):
+            # {"name": "test"}
+            columns = list(sorted(values.keys()))
+            for column in columns:
+                result.append(self.quote(values[column]))
+
+        return columns, result
 
     async def add(self, query, **kwargs):
         """INSERT data (or update on conflict)
@@ -267,52 +258,50 @@ class PostgresExecutor(object):
 
         Arguments:
             query: Query
-            upsert: bool
-                default: True
             connection: *asyncpg.connection
                 useful for transactions
 
         Returns:
             numbers of records modified
         """
+        # TODO: convert to PreQL
         values = query.data('values')
         connection = kwargs.get('connection')
-        sql = kwargs.get('sql', False)
+        preql = kwargs.get('preql', False)
         # TODO: support ON CONFLICT
         # upsert = kwargs.get('upsert', True)
 
-        # values is either a list of dicts or a dict
-        assert(values)
-        multiple = True
-        if isinstance(values, dict):
-            multiple = False
-            values = [values]
+        # values is either a list or dict or None
+        rows = 1
+        if isinstance(values, list):
+            # [{'name': 'kay'}, {'name': 'jay'}]
+            rows = len(values)
 
         source = query.data('source')
-        table = await self.database.get_table(source)
+        table = await self.database.get_table(source, scope=self.scope)
         returning = self.get_returning(table, query)
-        args = []
-        insert = self.get_insert(table, query)
-        values = self.get_values(values, args)
+        columns, values = self.get_values(values)
 
-        query = self.build_sql(
-            insert,
-            values,
-            returning,
-            args
-        )
-        if sql:
+        query = {
+            'insert': {
+                'table': table.full_name,
+                'return': returning,
+                'columns': columns,
+                'values': values
+            }
+        }
+        if preql:
             return query
         if returning:
-            method = 'query' if multiple else 'query_one_row'
+            method = 'query' if rows > 1 else 'query_one_row'
         else:
             method = 'execute'
         result = await getattr(self.database, method)(
-            *query,
+            query,
             connection=connection
         )
         if not returning:
-            result = self.get_inserted_rows(result)
+            result = self.get_added_rows(result, rows=rows)
         return result
 
     async def set(self, query, **kwargs):
@@ -327,10 +316,11 @@ class PostgresExecutor(object):
         Returns:
             number of records updated
         """
+        # TODO: convert to PreQL
         field = query.data('field')
         values = query.data('values')
         connection = kwargs.get('connection')
-        sql = kwargs.get('sql', False)
+        preql = kwargs.get('preql', False)
         assert(values)
         if not field:
             # values must be a dict with values
@@ -338,37 +328,30 @@ class PostgresExecutor(object):
             assert(isinstance(values, dict))
 
         source = query.data('source')
-        table = await self.database.get_table(source)
+        table = await self.database.get_table(source, scope=self.scope)
         returning = self.get_returning(table, query)
         where = self.get_where(table, query)
-        if where:
-            where, *args = where
-        else:
-            where = None
-            args = []
-
         if field is not None:
             values = {field: values}
 
-        set_ = self.get_set(values, args)
-
-        update = self.get_update(table, query)
-        query = self.build_sql(
-            update,
-            set_,
-            where,
-            returning,
-            args
-        )
-        if sql:
+        set_ = self.get_set(values)
+        query = {
+            'update': {
+                'table': table.full_name,
+                'set': set_,
+                'where': where,
+                'return': returning
+            }
+        }
+        if preql:
             return query
         method = 'query' if returning else 'execute'
         result = await getattr(self.database, method)(
-            *query,
+            query,
             connection=connection
         )
         if not returning:
-            result = get_tagged_number(result)
+            result = self.get_changed_rows(result)
         return result
 
     async def delete(self, query, **kwargs):
@@ -382,32 +365,27 @@ class PostgresExecutor(object):
         Returns:
             number of records deleted
         """
+        # TODO: convert to PreQL
         connection = kwargs.get('connection')
         source = query.data('source')
-        table = await self.database.get_table(source)
+        table = await self.database.get_table(source, scope=self.scope)
         returning = self.get_returning(table, query)
         where = self.get_where(table, query)
-        if where:
-            where, *args = where
-        else:
-            where = None
-            args = []
 
-        from_ = self.get_from(table, query)
-        sql = self.build_sql(
-            'DELETE',
-            from_,
-            where,
-            returning,
-            args
-        )
+        query = {
+            'delete': {
+                'table': table.full_name,
+                'where': where,
+                'return': returning
+            }
+        }
         method = 'query' if returning else 'execute'
         result = await getattr(self.database, method)(
-            *sql,
+            query,
             connection=connection
         )
         if not returning:
-            result = get_tagged_number(result)
+            result = self.get_changed_rows(result)
         return result
 
     async def truncate(self, query, **kwargs):
@@ -421,12 +399,13 @@ class PostgresExecutor(object):
         Returns:
             True
         """
+        # TODO: convert to PreQL
         connection = kwargs.get('connection')
         source = query.data('source')
-        table = await self.database.get_table(source)
-        sql = f'TRUNCATE {table.sql_name}'
+        table = await self.database.get_table(source, scope=self.scope)
+        query = {'truncate': table.full_name}
         method = 'execute'
         return await getattr(self.database, method)(
-            sql,
+            query,
             connection=connection
         )

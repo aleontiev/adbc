@@ -2,9 +2,10 @@ import io
 from math import ceil
 from asyncio import gather
 from jsondiff.symbols import insert, delete
-from adbc.sql import get_pks, can_order, get_tagged_number, print_query
+from adbc.sql import print_query
 from adbc.utils import AsyncBuffer, aecho, confirm
 from adbc.constants import SEP, SEPN
+from adbc.preql import build
 from .merge import WithMerge
 from .drop import WithDrop
 from .create import WithCreate
@@ -42,12 +43,19 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         transaction = aecho()  # connection.transaction() if delete else aecho()
 
         def get_query(q):
+            columns = q.table.order_by_alias(
+                q.table.columns.keys()
+            )
+            q = q.take(*columns)
             if cursor_min:
-                q = q.where(
-                    {".and": [{pk: {">": cursor_min}}, {pk: {"<=": cursor_max}}]}
-                )
+                q = q.where({
+                    "and": [
+                        {'>': [pk, cursor_min]},
+                        {'<=': [pk, cursor_max]}
+                    ]
+                })
             else:
-                q = q.where({pk: {"<=": cursor_max}})
+                q = q.where({'<=': [pk, cursor_max]})
             return q
 
         try:
@@ -60,14 +68,18 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                         target_query = get_query(target_model)
                         await target_query.delete(connection=connection)
 
-                target_columns = list(sorted(target_model.table.columns.keys()))
+                target_columns = target_model.table.order_by_alias(
+                    target_model.table.columns.keys()
+                )
                 # copy from source to buffer
-                source_sql = await source_query.get(sql=True)
+                source_query = await source_query.get(preql=True)
                 if self.parallel_copy:
                     buffer = AsyncBuffer()
                     copy_from, copy_to = await gather(
                         self.copy_from(
-                            query=source_sql, output=buffer.write, close=buffer
+                            query=source_query,
+                            output=buffer.write,
+                            close=buffer
                         ),
                         target.copy_to(
                             table_name=target_table,
@@ -80,7 +92,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                     return copy_to
                 else:
                     buffer = io.BytesIO()
-                    await self.copy_from(query=source_sql, output=buffer)
+                    await self.copy_from(query=source_query, output=buffer)
                     buffer.seek(0)
                     return await target.copy_to(
                         table_name=target_table,
@@ -102,16 +114,17 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         target_schema,
         target_table,
         target_metadata,
+        scope
     ):
-        source_model = await self.get_model(source_table, schema=source_schema)
-        target_model = await target.get_model(target_table, schema=target_schema)
-        schema = source_metadata["schema"]
+        source_model = await self.get_model(source_table, schema=source_schema, scope=scope)
+        target_model = await target.get_model(target_table, schema=target_schema, scope=scope)
+        schema = source_metadata  # ["schema"]
         columns = schema["columns"]
         column_names = list(sorted(columns.keys()))
         indexes = schema.get("indexes", {})
         constraints = schema.get("constraints", {})
-        pks = get_pks(indexes, constraints, column_names)
-        source_count = source_metadata["data"]["count"]
+        pks = source_model.table.pks  #  get_pks(indexes, constraints, column_names)
+        source_count = source_metadata["rows"]["count"]
 
         source_max = await self.shard_size
         target_max = await target.shard_size
@@ -119,11 +132,10 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         num_shards = 1
         pk = None
         if len(pks) == 1:
-            pk = pks[0]
+            pk = next(iter(pks.keys()))
 
         if source_count > max_size and pk:
-            if can_order(columns[pk]["type"]):
-                num_shards = ceil(source_count / max_size)
+            num_shards = ceil(source_count / max_size)
 
         shards_label = ""
         if num_shards > 1:
@@ -137,10 +149,12 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         max_size = max_size if num_shards > 1 else None
         last = num_shards - 1
         source_low = source_high = target_high = None
-        if pk and target_metadata["data"]["range"]:
+        target_rows = target_metadata['rows']
+        source_rows = source_metadata['rows']
+        if pk and target_rows["range"]:
             # pk should be here
-            target_range = target_metadata["data"]["range"][pk]
-            source_range = source_metadata["data"]["range"][pk]
+            target_range = target_rows["range"][pk]
+            source_range = source_rows["range"][pk]
             source_low = source_range["min"]
             source_high = source_range["max"]
             target_high = target_range["max"]
@@ -153,7 +167,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             # only delete rows not within the bounds of the source data
             if pk and shard == 0 and source_low:
                 # drop any target rows with id before the lowest source ID
-                await target_model.where({pk: {"<": source_low}}).delete()
+                await target_model.where({'<': [pk, source_low]}).delete()
 
             if pk and (target_high is None or cursor and cursor > target_high):
                 # skip the check and move on to delete/copy
@@ -228,7 +242,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
 
             if not single and pk and shard == last:
                 # drop after the last shard
-                await target_model.where({pk: {">": source_high}}).delete()
+                await target_model.where({'>': [pk, source_high]}).delete()
 
             cursor = source_max
 
@@ -236,15 +250,11 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         return {"copied": copied, "skipped": skipped}
 
     async def copy_metadata(self, diff, scope=None):
-        translate = self.get_scope_translation(scope=scope, to="target")
-        return await self.merge(diff, "schema", [], translate=translate)
+        return await self.merge(diff, "schema", [], scope=scope)
 
     async def copy_data(
         self, target, source_info, target_info, diff, scope=None, check_all=False,
     ):
-        if not diff:
-            return {}
-
         keys = []
         values = []
         to_source = self.get_scope_translation(scope=scope, to="source")
@@ -252,19 +262,25 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         if check_all:
             # check all tables
             for schema_name, tables in target_info.items():
+                source_schema = to_source.get(schema_name, schema_name)
+                target_schema = to_target.get(schema_name, schema_name)
+
+                schema_scope = self.get_child_scope(source_schema, scope=scope)
+                to_source_table = self.get_scope_translation(
+                    scope=schema_scope, to='source', child_key='tables'
+                )
+                to_target_table = self.get_scope_translation(
+                    scope=schema_scope, to='target', child_key='tables'
+                )
+
                 for table_name, table in tables.items():
 
                     source_metadata = source_info[schema_name][table_name]
                     target_metadata = target_info[schema_name][table_name]
+                    source_table = to_source_table.get(table_name, table_name)
+                    target_table = to_target_table.get(table_name, table_name)
 
-                    source_schema = to_source.get(schema_name, schema_name)
-                    target_schema = to_target.get(schema_name, schema_name)
-
-                    keys.append((target_schema, table_name))
-
-                    # TODO: table name translation here
-                    source_table = target_table = table_name
-
+                    keys.append((target_schema, target_table))
                     values.append(
                         self._copy_table(
                             target,
@@ -274,28 +290,45 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                             target_schema,
                             target_table,
                             target_metadata,
+                            scope
                         )
                     )
         else:
+            if not diff:
+                return {}
             # only look over diffed tables
             # this is usually sufficient, unless a tables content has changed
             # but min id/max id/count have not changed
             # this can happen for tables with frequent updates
+
+            # if a table is immutable, however, this is reliable
+            # and will be more efficient as it will avoid checking hashes
+            # on large tables without count mismatches
             for schema_name, schema_changes in diff.items():
                 if schema_name == delete or schema_name == insert:
                     continue
 
+                schema_scope = self.get_child_scope(schema_name, scope=scope)
+                to_source_table = self.get_scope_translation(
+                    scope=schema_scope, to='source', child_key='tables'
+                )
+                to_target_table = self.get_scope_translation(
+                    scope=schema_scope, to='target', child_key='tables'
+                )
+
                 for table_name, changes in schema_changes.items():
-                    if "data" in changes:
+                    if "rows" in changes:
 
                         source_metadata = source_info[schema_name][table_name]
                         target_metadata = target_info[schema_name][table_name]
 
                         source_schema = to_source.get(schema_name, schema_name)
                         target_schema = to_target.get(schema_name, schema_name)
-                        keys.append((target_schema, table_name))
-                        source_table = target_table = table_name
 
+                        source_table = to_source_table.get(table_name, table_name)
+                        target_table = to_target_table.get(table_name, table_name)
+
+                        keys.append((target_schema, target_table))
                         values.append(
                             self._copy_table(
                                 target,
@@ -319,23 +352,26 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         return result
 
     async def copy(
-        self, target, scope=None, check_all=True, refresh=True, final_diff=True
+        self, target, scope=None, check_all=True, final_diff=True, exclude=None
     ):
-        if refresh:
-            # clear schema caches at the start if refresh=True
-            # useful if some changes were applied after the Database
-            # has been used for other operations
-            self.clear_cache()
-            target.clear_cache()
+        schema_diff = await self.diff(
+            target,
+            scope=scope,
+            data=False,
+            exclude=exclude
+        )
 
-        schema_diff = await self.diff(target, scope=scope, data=False)
-        schema_changes = await target.copy_metadata(schema_diff, scope=scope)
+        schema_changes = await target.copy_metadata(
+            schema_diff,
+            scope=scope
+        )
 
         if schema_changes:
-            target.clear_cache()
+            # reset target schema
+            target.reset()
 
         source_info, target_info, data_diff = await self.diff(
-            target, scope=scope, info=True
+            target, scope=scope, info=True, exclude=exclude
         )
         data_changes = await self.copy_data(
             target,
@@ -347,7 +383,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         )
         # TODO: drop and add the FK constraints before/after copy_data
         if final_diff:
-            final_diff = await self.diff(target, scope=scope)
+            final_diff = await self.diff(target, scope=scope, exclude=exclude)
         return {
             "schema_changes": schema_changes,
             "data_changes": data_changes,
@@ -363,12 +399,19 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         connection = aecho(connection) if connection else pool.acquire()
         close = kwargs.pop("close", False)
         query = kwargs.pop("query", None)
+        params = kwargs.pop('params', None)
+
         if table_name:
             target_label = f"{schema_name}.{table_name}" if schema_name else table_name
         else:
             if not query:
                 raise NotImplementedError("table or query is required")
-            target_label = print_query(query)
+            if isinstance(query, (list, dict)):
+                # compile from PreQL
+                query, params = build(query, dialect=self.backend.dialect, combine=True)
+
+            target_label = print_query(query, params)
+
 
         if self.prompt:
             if not confirm(f"{self.name} ({self.tag}): {SEP}copy from {target_label}{SEPN}", True):
@@ -381,13 +424,9 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             async with transaction:
                 result = None
                 if table_name:
-                    result = get_tagged_number(
-                        await conn.copy_from_table(table_name, **kwargs)
-                    )
+                    result = await self.backend.copy_from_table(conn, table_name, **kwargs)
                 else:
-                    result = get_tagged_number(
-                        await conn.copy_from_query(*query, **kwargs)
-                    )
+                    result = await self.backend.copy_from_query(conn, query, params, **kwargs)
                 if close:
                     if hasattr(close, "close"):
                         # close passed in object
@@ -405,7 +444,9 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         table_name = kwargs.pop("table_name", None)
         transaction = kwargs.pop("transaction", False)
         schema_name = kwargs.get('schema_name', None)
-        target_label = f"{schema_name}.{table_name}" if schema_name else table_name
+        columns = ', '.join(kwargs.get('columns', []))
+        columns = f' ({columns})' if columns else ''
+        target_label = f"{schema_name}.{table_name}{columns}" if schema_name else table_name
         connection = kwargs.pop("connection", None) or self._connection
         connection = aecho(connection) if connection else pool.acquire()
 
@@ -418,6 +459,4 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         async with connection as conn:
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
-                return get_tagged_number(
-                    await conn.copy_to_table(table_name, **kwargs)
-                )
+                return await self.backend.copy_to_table(conn, table_name, **kwargs)

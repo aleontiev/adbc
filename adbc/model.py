@@ -6,7 +6,7 @@ class Model(Query):
         self.table = table
         if 'state' not in kwargs:
             kwargs['state'] = {
-                'source': {'table': table.name, 'schema': table.namespace.name}
+                'source': [table.namespace.name, table.name]
             }
 
         super().__init__(**kwargs)

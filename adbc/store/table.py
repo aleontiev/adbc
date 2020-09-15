@@ -1,13 +1,60 @@
 import asyncio
+import re
+
+from typing import Union
 from copy import copy
 from collections import defaultdict
+from adbc.exceptions import NotIncluded
 from adbc.logging import Loggable
-from adbc.sql import get_pks, can_order
+from adbc.scope import WithScope
+from adbc.constants import SEQUENCE, TABLE, PRIMARY, UNIQUE, FOREIGN
 from cached_property import cached_property
-from adbc.utils import split_field
+from adbc.utils import get_first
 
 
-class Table(Loggable):
+
+def get_fks(constraints):
+    """Get foreign key fields given constraint list"""
+    fks = {}
+
+    if constraints:
+        for name, constraint in constraints.items():
+            if constraint['type'] == FOREIGN and len(constraint['columns']) == 1:
+                column = constraint['columns'][0]
+                fks[column] = {
+                    'to': constraint['related_name'],
+                    'by': constraint['related_columns'],
+                    'name': name
+                }
+
+    return fks
+
+
+def get_pks(constraints):
+    """Get primary key(s) given constraint list"""
+    pks = {}
+
+    if constraints:
+        for name, constraint in constraints.items():
+            if constraint['type'] == PRIMARY and len(constraint['columns']) == 1:
+                column = constraint['columns'][0]
+                pks[column] = name
+
+    return pks
+
+
+def get_uniques(constraints):
+    """Get unique key(s) given constraint list"""
+    uniques = {}
+    if constraints:
+        for name, constraint in constraints.items():
+            if constraint["type"] == UNIQUE and len(constraint['columns']) == 1:
+                column = constraint['columns'][0]
+                uniques[column] = name
+    return uniques
+
+
+class Table(WithScope, Loggable):
     type = "table"
 
     def __init__(
@@ -21,6 +68,7 @@ class Table(Loggable):
         verbose=False,
         tag=None,
         alias=None,
+        type=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -29,110 +77,262 @@ class Table(Loggable):
         else:
             self.scope = scope
 
+        self.type = type or TABLE
         self.name = name
         self.verbose = verbose
         self.parent = self.namespace = namespace
         self.database = namespace.database
         self.alias = alias or name
+        self.tag = tag
+
         self.on_create = self.scope.get("on_create", None)
         self.on_update = self.scope.get("on_update", None)
         self.on_delete = self.scope.get("on_update", None)
         self.immutable = self.scope.get(
             "immutable", not (bool(self.on_update) or bool(self.on_delete))
         )
-        self.columns = {
-            k: v
-            for k, v in split_field(
-                sorted(columns or [], key=lambda c: c["name"]), "name"
-            )
-        }
 
-        if not self.scope.get("sequences", True):
-            # ignore nextval / sequence-based default values
-            for column in self.columns.values():
-                if "default" in column:
-                    default = column["default"]
-                    if isinstance(default, str) and default.startswith("nextval("):
-                        column["default"] = None
-
+        self.columns = self.get_children("columns", columns)
         self.column_names = list(self.columns.keys())
-        self.constraints = {
-            k: v
-            for k, v in split_field(
-                sorted(constraints or [], key=lambda c: c["name"]), "name"
-            )
-        }
-        self.indexes = {
-            k: v
-            for k, v in split_field(
-                sorted(indexes or [], key=lambda c: c["name"]), "name"
-            )
-        }
+        self.constraints = self.get_children("constraints", constraints or [])
+        self.indexes = self.get_children("indexes", indexes or [])
 
-        self.tag = tag
-        self.pks = []
+        if self.type == SEQUENCE:
+            # sequences do not have constraints/indexes
+            self.init_sequence()
+        else:
+            self.init_table()
 
-        self.pks = get_pks(self.indexes, self.constraints, self.column_names)
+    def init_sequence(self):
+        pass
 
-        # if disabled, remove constraints/indexes
-        # but only after they are used to determine possible primary key
-        constraints = self.scope.get("constraints", True)
-        if not constraints:
-            self.constraints = None
-        elif isinstance(constraints, str):
-            self.constraints = {
-                k: v for k, v in self.constraints.items() if v["type"] in constraints
-            }
+    def init_table(self):
+        """Normal table initializer"""
+        # in one loop, create a two-way values binding for these properties:
+        # - sequence: based on auto-increment (MySQL) or nextval (Postgres)
+        # - primary: based on primary constraint or index
+        # - unique: based on unique constraints
+        # - related: based on foreign key constraints
+        constraints = self.constraints
+        pks = self.pks = get_pks(constraints) or self.column_names
+        if len(self.pks) == 1:
+            self.pk = next(iter(self.pks))
+        else:
+            self.pk = None
+        uniques = self.uniques = get_uniques(constraints)
+        fks = self.fks = get_fks(constraints)
 
-        if not self.scope.get("indexes", True):
-            self.indexes = None
+        for name, column in self.columns.items():
+            if "default" in column:
+                default = column["default"]
+                default = column['default'] = self.database.backend.parse_expression(
+                    default
+                )
+                if isinstance(default, dict) and 'nextval' in default:
+                    # TODO: move nextval into backend, non-standard SQL
+                    column["sequence"] = column.get(
+                        "sequence", default['nextval'][1:-1]
+                    )
+                else:
+                    column["sequence"] = column.get("sequence", False)
+
+            if column.get("primary"):
+                if name not in pks:
+                    primary = column.get("primary")
+                    constraint_name = (
+                        primary
+                        if isinstance(primary, str)
+                        else f"{self.name}__{name}__pk"
+                    )
+                    pks[name] = constraint_name
+                    constraints[constraint_name] = {
+                        "type": PRIMARY,
+                        "columns": [name],
+                    }
+            else:
+                column["primary"] = pks.get(name, False)
+            if column.get("unique"):
+                if name not in uniques:
+                    unique = column.get("unique")
+                    constraint_name = (
+                        unique if isinstance(unique, str) else f"{self.name}__{name}__uk"
+                    )
+                    uniques[name] = constraint_name
+                    constraints[constraint_name] = {
+                        "type": UNIQUE,
+                        "columns": [name],
+                    }
+            else:
+                column["unique"] = uniques.get(name, False)
+
+            related = column.get('related')
+            if related:
+                if name not in fks:
+                    constraint_name = (
+                        related if isinstance(related, str) else f"{self.name}__{name}__fk"
+                    )
+                    by = related['by']
+                    to = related['to'],
+                    if not isinstance(by, list):
+                        by = [by]
+
+                    fks[name] = {
+                        'to': related['to'],
+                        'by': by,
+                        'name': constraint_name
+                    }
+                    constraints[constraint_name] = {
+                        "type": FOREIGN,
+                        "columns": [name],
+                        "related_name": to,
+                        "related_columns": by
+                    }
+            else:
+                column['related'] = fks.get(name, None)
 
     def __str__(self):
         return f"{self.namespace}.{self.name}"
 
+    def get_children(self, child_key: str, children: list):
+        result = {}
+        translation = self.get_scope_translation(
+            self.scope, from_=self.tag, child_key=child_key
+        )
+        translate = lambda x: translation.get(x, x)
+        scope = self.scope
+        for child in sorted(children, key=lambda c: translate(c["name"])):
+            # real schema name
+            name = child.pop("name")
+            # alias name
+            alias = translate(name)
+            if alias != name:
+                child["alias"] = alias
+            try:
+                child_scope = self.get_child_scope(
+                    name, scope=scope, child_key=child_key
+                )
+            except NotIncluded:
+                continue
+            else:
+                result[name] = child
+        return result
+
+    async def get_sequence_last_value(self):
+        query = {
+            'select': {
+                'data': 'last_value',
+                'from': self.full_name,
+            }
+        }
+        return await self.database.query_one_value(query)
+
     async def get_info(self, schema=True, data=True, hashes=False, **kwargs):
         result = {}
+        exclude = kwargs.get("exclude", None)
         if data:
-            data_range = self.get_data_range()
-            count = self.get_count()
-            jobs = [data_range, count]
-            data_hashes = None
-            if hashes:
-                data_hashes = self.get_data_hashes()
-                jobs.append(data_hashes)
+            if self.type == 'table':
+                data_range = self.get_range()
+                count = self.get_count()
+                jobs = [data_range, count]
+                data_hashes = None
+                if hashes:
+                    shard_size = (
+                        hashes if hashes is not True and isinstance(hashes, int)
+                        else None
+                    )
+                    data_hashes = self.get_hashes(shard_size=shard_size)
+                    jobs.append(data_hashes)
 
-            results = await asyncio.gather(*jobs)
-            if hashes:
-                data_range, count, data_hashes = results
-            else:
-                data_range, count = results
+                results = await asyncio.gather(*jobs)
+                if hashes:
+                    data_range, count, data_hashes = results
+                else:
+                    data_range, count = results
 
-            result["data"] = {
-                "count": count,
-                "range": data_range,
-            }
-            if hashes:
-                result["data"]["hashes"] = data_hashes
-        if schema:
-            result["schema"] = self.get_schema()
+                result["rows"] = {
+                    "count": count,
+                    "range": data_range,
+                }
+                if hashes:
+                    result["rows"]["hashes"] = data_hashes
+            else: # sequence
+                value = await self.get_sequence_last_value()
+                result['value'] = value
+
+        schema = self.get_schema(exclude=exclude)
+        result.update(schema)
+
+        result["type"] = self.type
 
         self.log(f"{self}: info")
         return result
 
-    def get_schema(self):
-        result = {"columns": self.columns}
-        if self.constraints is not None:
-            result["constraints"] = self.constraints
-        if self.indexes is not None:
-            result["indexes"] = self.indexes
+    def realias(self, result: dict):
+        new_result = {}
+        for key, value in result.items():
+            if 'alias' in value:
+                value = copy(value)
+                alias = value.pop('alias')
+            else:
+                alias = key
+            new_result[alias] = value
+        return new_result
+
+    def get_schema(self, exclude=None):
+        """
+        exclude:
+            e.g: {
+                "columns": ['default'],
+                "constraints": ['deferrable', 'deferred']
+            }
+        """
+        if self.type == 'table':
+            exclude = exclude or {}
+            result = {
+                "columns": self.realias(
+                    self.exclude(self.columns, exclude.get("columns"))
+                )
+            }
+            if self.constraints is not None:
+                result["constraints"] = self.realias(
+                    self.exclude(
+                        self.constraints, exclude.get("constraints")
+                    )
+                )
+
+            if self.indexes is not None:
+                result["indexes"] = self.realias(self.exclude(self.indexes, exclude.get("indexes")))
+            return result
+        else:
+            # TODO: schema for sequences: min, max, start, increment_by
+            return {}
+
+    def exclude(self, source: dict, exclude: Union[list, dict]) -> dict:
+        if not exclude:
+            return source
+        if isinstance(exclude, list):
+            fields = exclude
+            names = None
+            types = None
+        else:
+            names = exclude.get("names", None)
+            fields = exclude.get("fields", None)
+            types = exclude.get("types", None)
+
+        result = {}
+        for key, value in source.items():
+            if names and key in names:
+                continue
+            if types and value.get("type") in types:
+                continue
+            if fields:
+                for f in fields:
+                    value.pop(f, None)
+
+            result[key] = value
         return result
 
-    def get_decode_boolean(self, column):
-        F = self.database.F
-        column = self.F.column(column)
-        return f"decode({column}, true, 'true', false, 'false') as {column}"
-
-    async def get_data_hashes(self, shard_size=None):
+    async def get_hashes(self, shard_size=None):
         if shard_size is None:
             shard_size = await self.database.shard_size
 
@@ -171,9 +371,9 @@ class Table(Loggable):
         split = False
         if (min_pk or max_pk) and (md5 or count):
             # may need to split up this query
-            # if the pk is a UUID then min_pk and max_pk have to run separate
-            if self.pks:
-                pk = self.pks[0]
+            # if the pk is a UUID then min_pk and max_pk have to run separately
+            if self.pk:
+                pk = self.pk
                 split = self.columns[pk]["type"] == "uuid"
         if split:
             # split query:
@@ -230,8 +430,14 @@ class Table(Loggable):
                 count=count,
                 md5=md5,
             )
-            result = await self.database.query_one_row(*query)
+            result = await self.database.query_one_row(query)
             return result
+
+    def order_by_alias(self, columns):
+        return sorted(
+            columns,
+            key=lambda c: self.columns[c].get('alias', c)
+        )
 
     async def get_statistics_query(
         self,
@@ -242,195 +448,141 @@ class Table(Loggable):
         limit=None,
         cursor=None,
     ):
-        # TODO: refactor to JSQL
+        # TODO: refactor to PreQL
         if not count and not max_pk and not md5 and not min_pk:
             raise Exception("must pass count or max_pk or md5 or min_pk")
 
-        F = self.database.F
-        redshift = await self.database.is_redshift
-        decode = False
-        aggregator = "array_to_string(array_agg"
-        end = "), ';')"
-        cast = False
-        if redshift:
-            # TODO: fix, technically this applies to Redshift, not Postgres <9
-            # in practice, nobody else is running Postgres 8 anymore...
-            aggregator = "listagg"
-            end = ", ';')"
-            decode = True
-            cast = True
-
         columns = list(sorted(self.columns.keys()))
-        pks = self.pks
-        order = ", ".join([F.column(c) for c in pks if self.can_order(c)])
-        cast = "::varchar" if cast else ""
+        pks = self.order_by_alias(self.pks)
+        order = pks
 
         if not md5:
             columns = pks
-        columns_ = [F.column(c) for c in columns]
 
-        # concatenate all column names and values in pseudo-json
-        aggregate = ",".join(
-            [f"T.{c}{cast}" for c in columns_]
-        )
-        aggregate = f"concat_ws(',', {aggregate})"
+        # TODO: use alias ordering to ensure consistent
+        # hashes across datastores with different schematic names
+        columns = self.order_by_alias(columns)
+        # concatenate values together 
+        aggregate = [f"T.{c}" for c in columns]
+        aggregate = {'json_build_array': aggregate}
 
-        inner = ", ".join(
-            [
-                self.get_decode_boolean(c)
-                if decode and self.is_boolean(c)
-                else (
-                    columns_[i]
-                    if not self.is_array(c)
-                    else f"concat('[', array_to_string({columns_[i]}, ','), ']') {columns_[i]}"
-                )
-                for i, c in enumerate(columns)
-            ]
-        )
         output = []
         pk = pks[0]
-        md5 = f"md5({aggregator}({aggregate}{end}) as md5" if md5 else None
-        count = "count(*)" if count else ""
-        pk_ = F.column(pk)
-        max_pk = f"max({pk_})" if max_pk else ""
-        min_pk = f"min({pk_})" if min_pk else ""
+
+        md5 = {
+            'md5': {
+                'array_to_string': [
+                    {'array_agg': aggregate},
+                    '`,`'
+                ]
+            }
+        } if md5 else None
+
+        count = {'count': '*'}
+        max_pk = {'max': pk} if max_pk else None
+        min_pk = {'min': pk} if min_pk else None
         if md5:
-            output.append(md5)
+            output.append({'md5': md5})
         if count:
-            output.append(count)
+            output.append({'count': count})
         if max_pk:
-            output.append(max_pk)
+            output.append({'max': max_pk})
         if min_pk:
-            output.append(min_pk)
+            output.append({'min': min_pk})
 
-        if limit:
-            limit = int(limit)
-            limit = f"\n  LIMIT {limit}"
-        else:
-            limit = ""
-
-        where = ""
+        where = None
         if cursor:
-            where = f"\n  WHERE {pk_} > $1"
+            where = {'>': [pk, cursor]}
 
-        output = ", ".join(output)
-        query = [
-            f"SELECT {output}\n"
-            f"FROM (\n"
-            f"  SELECT {inner}\n"
-            f"  FROM {self.sql_name}{where}\n"
-            f"  ORDER BY {order}{limit}\n"
-            f") T"
-        ]
-        if cursor:
-            query.append(cursor)
+        query = {
+            'select': {
+                'data': output,
+                'from': {
+                    'T': {
+                        'select': {
+                            'data': columns,
+                            'from': self.full_name,
+                            'where': where,
+                            'order': order,
+                            'limit': limit
+                        }
+                    }
+                },
+            },
+        }
         return query
 
-    def get_min_id_query(self, limit=None, cursor=None, pk=None):
-        if pk is None:
-            pk = self.pks[0]
+    def get_edge_query(self, max=True, limit=None, cursor=None, field=None):
+        if field is None:
+            field = self.pk
 
-        pk = self.database.F.column(pk)
+        if not field:
+            raise ValueError(f'table {self.full_name} has no primary key')
+
+        order = {'by': field, 'desc': max}
         if limit is None and cursor is None:
-            return [f"SELECT {pk} FROM {self.sql_name} ORDER BY {pk} LIMIT 1"]
+            return {
+                'select': {
+                    'data': field,
+                    'from': self.full_name,
+                    'order': order,
+                    'limit': 1
+                }
+            }
 
-        where = ""
+        where = None
         if cursor:
-            where = f"\n  WHERE {pk} > $1\n"
-        if limit:
-            limit = f"\n  LIMIT {int(limit)}\n"
-        query = [
-            f"SELECT T.{pk}\n"
-            f"FROM (\n"
-            f"  SELECT {pk}\n"
-            f"  FROM {self.sql_name}{where}\n"
-            f"  ORDER BY {pk}{limit}"
-            f") T LIMIT 1"
-        ]
-        if cursor:
-            query.append(cursor)
-        return query
-
-    def get_max_id_query(self, limit=None, cursor=None, pk=None):
-        if pk is None:
-            pk = self.pks[0]
-
-        F = self.database.F
-        pk = F.column(pk)
-        if limit is None and cursor is None:
-            return [f"SELECT {pk} FROM {self.sql_name} ORDER BY {pk} DESC LIMIT 1"]
-
-        where = ""
-        if cursor:
-            where = f"\n  WHERE {pk} > $1\n"
-        if limit:
-            limit = f"\n  LIMIT {int(limit)}\n"
-        query = [
-            f"SELECT T.{pk}\n"
-            f"FROM (\n"
-            f"  SELECT {pk}\n"
-            f"  FROM {self.sql_name}{where}\n"
-            f"  ORDER BY {pk}{limit}"
-            f") T\n"
-            f"ORDER BY T.{pk} DESC\n"
-            "LIMIT 1"
-        ]
-        if cursor:
-            query.append(cursor)
+            where = {'>': [field, cursor]}
+        query = {
+            'select': {
+                'data': f'T.{field}',
+                'from': {
+                    'T': {
+                        'select': {
+                            'data': field,
+                            'from': self.full_name,
+                            'where': where,
+                            'order': field,
+                            'limit': limit
+                        }
+                    }
+                },
+                'order': order,
+                'limit': 1
+            }
+        }
         return query
 
     @cached_property
     def full_name(self):
         return f"{self.namespace.name}.{self.name}"
 
-    @cached_property
-    def sql_name(self):
-        return self.database.F.table(self.name, schema=self.namespace.name)
-
-    def can_order(self, column_name):
-        column = self.columns[column_name]
-        return can_order(column["type"])
-
-    def is_boolean(self, column_name):
-        column = self.columns[column_name]
-        type = column["type"]
-        return type == "boolean"
-
-    def is_array(self, name):
-        column = self.columns[name]
-        type = column["type"]
-        return "[]" in type or "idvector" in type or "intvector" in type
-
-    def is_short(self, name):
-        column = self.columns[name]
-        return column["type"] != "pg_node_tree"
-
-    def is_uuid(self, name):
-        column = self.columns[name]
-        return column["type"] != "uuid"
-
     def get_count_query(self):
-        # TODO: move into Q
-        return (f'SELECT count(*) FROM {self.sql_name}', )
+        return {
+            'select': {
+                'data': {'count': {'count': '*'}},
+                'from': self.full_name
+            }
+        }
 
-    def get_data_range_query(self, keys):
-        new_keys = []
-        F = self.database.F
+    def get_range_query(self, keys):
+        data = []
         for key in keys:
-            column = F.column(key)
-            min_key = F.column(f'min_{key}')
-            max_key = F.column(f'max_{key}')
-            new_keys.append(
-                f'min({column}) AS {min_key}, '
-                f'max({column}) AS {max_key}'
-            )
-        keys = ",\n  ".join(new_keys)
-        return (f"SELECT {keys}\n" f'FROM {self.sql_name}', )
+            column = key
+            min_key = f"min_{key}"
+            max_key = f"max_{key}"
+            data.append({min_key: {'min': column}, max_key: {'max': column}})
 
-    async def get_data_range(self, keys=None):
+        return {
+            'select': {
+                'data': data,
+                'from': self.full_name
+            }
+        }
+
+    async def get_range(self, keys=None):
         if keys is None:
             keys = copy(self.pks) if len(self.pks) == 1 else []
-            keys = [key for key in keys if self.can_order(key)]
             if self.on_create:
                 keys.append(self.on_create)
             if self.on_update:
@@ -440,9 +592,9 @@ class Table(Loggable):
         if not keys:
             return None
 
-        query = self.get_data_range_query(keys)
+        query = self.get_range_query(keys)
         try:
-            row = await self.database.query_one_row(*query)
+            row = await self.database.query_one_row(query)
         except Exception as e:
             # some columns cannot be min/maxd
             # in this case, try to use ORDER BY,
@@ -474,16 +626,16 @@ class Table(Loggable):
             return dict(result)
 
     async def get_min_id(self, limit=None, cursor=None, pk=None):
-        query = self.get_min_id_query(limit=limit, cursor=cursor, pk=pk)
-        return await self.database.query_one_value(*query)
+        query = self.get_edge_query(max=False, cursor=cursor, field=pk)
+        return await self.database.query_one_value(query)
 
     async def get_max_id(self, limit=None, cursor=None, pk=None):
-        query = self.get_max_id_query(limit=limit, cursor=cursor, pk=pk)
-        return await self.database.query_one_value(*query)
+        query = self.get_edge_query(max=True, limit=limit, cursor=cursor, field=pk)
+        return await self.database.query_one_value(query)
 
     async def get_count(self):
         query = self.get_count_query()
-        return await self.database.query_one_value(*query)
+        return await self.database.query_one_value(query)
 
     @cached_property
     async def count(self):

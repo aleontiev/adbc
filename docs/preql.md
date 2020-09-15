@@ -4,41 +4,343 @@ In order to support different database backends and allow for user generation of
 
 PreQL is similar in function to SQLAlchemy but is easier to port across languages and generate with various tools because it is based on JSON.
 
-The intuition behind PreQL is to consider an infix representation of a parsed SQL query.
-The query is represented as an object with a single key corresponding to a command (SELECT, UPDATE, INSERT, DELETE, ALTER TABLE, etc)
-This query object can have other objects inside that represents clauses, expressions, identifiers, and literals.
-
 ### Definitions
 
-A **statement** object represents a SQL query or statement, e.g. an entire SELECT statement with all of its clauses
-A **clause** object or array represents a part of a query, e.g. a SELECT statement has clauses for WHERE, FROM, GROUP BY, etc
-An **expression** object represents a SQL expression more complicated than a literal or identifier
-An **identifier** is a string that represents a column, table, schema, database, or user.
-A **literal** is a SQL user string, boolean, or number
+- A PreQL **backend** is an RDBMS-specific compiler that renders PreQL into SQL and parameters
+- A PreQL **style** is a setting that determins how parameterized queries should be constructed
+- A PreQL **dialect** is a combination of backend and style which can be used by a specific downstream RDBMS driver
+- A **statement** is a PreQL object that represents a SQL statement, e.g. an entire SELECT statement with all of its clauses
+- A **clause** is a PreQL object or array that represents a part of a statement, e.g. the FROM clause in a SELECT statement
+- An **expression** is a PreQL object that represents a SQL expression more complicated than a literal or identifier
+- A **literal** refers to a SQL literal: string, boolean, or number
+- An **identifier** is a string that represents a column, table, schema, database, constraint, index, or user
 
+### Supported Backends
 
-### Schema
+- Postgres
+- MySQL (in progress)
+- SQLite (in progress)
 
-PreQL can be validated with this JSON Schema:
+### Supported Styles
 
-TODO
+PreQL supports many parameter styles to accomodate all of the different SQL drivers (e.g. `asyncpg`, `psycopg2`, `libmysql`, `sqlite3`)
+
+- Numeric (e.g. "SELECT * FROM user WHERE id = :1")
+- Dollar Numeric (e.g. "SELECT * FROM user WHERE id = $1")
+- Question Mark (e.g. "SELECT * FROM user WHERE id = ?")
+- Format (e.g. "SELECT * FROM user WHERE id = %s")
+- Named (e.g. "SELECT * FROM user WHERE id = :id")
+- Dollar Named (e.g. "SELECT * FROM user WHERE id = $id")
+
+### Structure
+
+The intuition behind the structure of a PreQL query is to consider an infix representation of a SQL query:
+
+- The query is represented as a single-key object (SKO) with the name of a command (e.g. `SELECT`, `UPDATE`, `INSERT`, `DELETE`, `ALTER TABLE`, etc)
+- This query object can have other objects inside that represents expressions, including clauses, sub-queries, functions, keywords, operators, identifiers, and literals
+- Clauses are represented by the data in specific keys of the query object (e.g. `with`, `from`, `data`, `return`)
+- Sub-queries are represented by a SKO with the command name as the key (e.g. `select`)
+- Functions are represented by a SKO with the function name as the key, and an array of arguments or non-array (interpretted as the sole argument) (e.g. `md5`, `concat`)
+- Keywords are represented by a SKO with the function name as the key and "null" as the value (e.g. `default`)
+- Special operators (3+ operands or clausal) are represented by a SKO with the clause name as the key (e.g. `case`, `between`) and an object of arguments specific to each clause type
+- Normal operators are represented by a SKO with the operator as the key (e.g. `=`, `LIKE`, `NOT`) and an array of arguments or single argument for unary operators
+- Identifiers are represented by strings without any special quoting, with possible dot characters (`.`) indicating separation between identifier parts (e.g. `"public.user"` represents the table user in the schema public)
+- Literal booleans or numbers are represented as-is (e.g. `1.1`, `True`)
+- Literal strings are represented by strings with an initial character and final character both equal to single quote (`'`) or double quote (`"`) (e.g. `"john o'conner"` represents the literal "john o'conner")
+- Escaped literal strings are represented by strings with an initial character and final character both equal to tick mark (`) and are mostly identical to literals
+
+### Caveats
+
+- Some PreQL queries may actually require multiple SQL queries (e.g. `alter` or `create` with array arguments), so PreQL always returns an array of query results (even though this is not very intuitive for `select`)
+- Even though all queries produced by PreQL will be valid SQL, not all queries will execute on all backends; for a trivial example, consider a custom user-defined function "foo" which is valid to specify in PreQL/SQL but will not successfully execute elsewhere unless "foo" is defined there as well
+
+### SQL Injection
+
+To provide safety from SQL injection, PreQL ensures the following:
+- Identifiers are always escaped with identifier quote characters (e.g. `"` in Postgres)
+- Normal literal strings are not escaped by PreQL and will instead by returned separately as parameters to later be interpretted by a SQL driver
+- Escaped literal strings are escaped by PreQL using SQL-standard escaping (doubling quote characters inside the literal)
+- The names of all keywords and functions are validated for alphanumeric characters
+- The names of operators are validated by cross-checking a known list
+- It is not possible to add arbitrary and unvalidated raw SQL in PreQL
+
+This means that, even if working with unvalidated user input, PreQL queries should be protected from injection.
+
+### Statements
+
+#### alter database
+
+#### alter schema
+
+#### alter table
+
+#### alter sequence
+
+#### alter column
+
+#### alter constraint
+
+#### alter index
+
+#### create database
+
+Represents a CREATE DATABASE statement
+
+PreQL:
 ```
-{
+{       
+    "create": {
+        "database": {
+            "maybe": True,
+            "name": "test",
+            "owner": "user",
+            "encoding": "utf-8"
+        }
+    }
 }
 ```
 
-### Statements
+SQL (Postgres):
+```
+[(
+    'CREATE DATABASE IF NOT EXISTS "test" OWNER "user" ENCODING utf-8', []
+)]
+```
+
+#### create schema
+
+Represents a CREATE SCHEMA statement
+
+PreQL:
+```
+{
+    "create": {
+        "schema": {
+            "maybe": True,
+            "name": "test"
+        }
+    }
+}
+```
+
+SQL (Postgres):
+```
+[(
+    'CREATE SCHEMA IF NOT EXISTS "test"', []
+)]
+```
+
+#### create table
+
+Represents a CREATE TABLE statement
+
+PreQL:
+```
+{
+    "create": {
+        "table": {
+            "name": "user",
+            "columns": {
+                "id": {
+                    "type": "integer",
+                }
+            }.
+            "constraints": {
+                "pk": {
+                    "type": "primary",
+                    "columns": ["id"],
+                }
+            },
+            "indexes": {
+                "idx": {
+                    "type": "btree",
+                    "columns": ["first_name", "last_name"]
+                }
+            }
+        }
+    }
+}
+```
+
+SQL (Postgres):
+```
+[(
+    'CREATE TABLE "user"'
+    '    "id" integer,'
+    '    PRIMARY KEY "id"', []
+), (
+    'CREATE INDEX "idx" ON "user" USING btree ("first_name", "last_name")', []
+)]
+```
+
+#### create sequence
+
+Represents one or more CREATE SEQUENCE statements
+
+PreQL:
+```
+{
+    "create": {
+        "sequence": {
+            "maybe": True,
+            "name": "user_id_seq",
+            "owned_by": "user.id",
+            "min": 0,
+            "max": 10000,
+            "start": 1,
+            "increment": 10
+        }
+    }
+}
+```
+
+SQL (Postgres)
+```
+[(
+    'CREATE SEQUENCE IF NOT EXISTS "user_id_seq" OWNED BY "user"."id" MIN 0 MAX 10000 START 1 INCREMENT BY 10', []
+)]
+```
+
+#### create index
+
+Represents one or more CREATE INDEX statements
+
+PreQL:
+```
+{
+    "create": {
+        "index": {
+            "maybe": True,
+            "name": "user_cmp",
+            "on": "user",
+            "concurrently": True,
+            "columns": ["first_name", "last_name"]
+        }
+    }
+}
+```
+
+SQL (Postgres):
+```
+[(
+    'CREATE INDEX CONCURRENTLY IF NOT EXISTS "user_cmp" ON "user" ("first_name", "last_name")', []
+)]
+```
+
+#### create column
+
+Represents a ALTER TABLE statement with ADD COLUMN
+
+PreQL:
+```
+{
+    "create": {
+        "column": {
+            "on": "user",
+            "name": "updated",
+            "type": "timestamp with time zone",
+        }
+    }
+}
+```
+
+SQL (Postgres):
+```
+[(
+    "ALTER TABLE "user" ADD COLUMN "updated" timestamp with time zone", []
+)]
+```
+
+#### create multiple
+
+It is possible to create many schematic elements at once by passing an array of objects to `create`.
+Each element in this array is expected to match one of the above.
+
+PreQL will automatically normalize the query into a minimum number of DDL statements necessary to execute the intent on the given backend.
+For example, creating two columns on the same table will produce a single ALTER TABLE statement for most backends (unless they do not support it)
+
+PreQL:
+```
+{
+    "create": [{
+        "column": {
+            "on": "user",
+            "name": "updated",
+            "type": "timestamp with time zone",
+            "default": {"now": {}}
+        }
+    }, {
+        "column": {
+            "on": "user",
+            "name": "created",
+            "type": "timestamp with time zone",
+            "default": "'2000-01-01T00:00:00Z'"
+        }
+    }]
+}
+```
+
+SQL (Postgres):
+
+```
+[(
+    'ALTER TABLE "user"\n'
+    '    ADD COLUMN "updated" timestamp with time zone DEFAULT now()\n'
+    '    ADD COLUMN "created" timestamp with time zone DEFAULT $1\n',
+    ["2000-01-01T00:00:00Z"]
+)]
+```
+
+SQL (SQLite):
+```
+[(
+    'ALTER TABLE "user" ADD COLUMN "updated" timestamp with time zone DEFAULT now()', []
+), (
+    'ALTER TABLE "user" ADD COLUMN "created" timestamp with time zone DEFAULT $1', ["2000-01-01T00:00:00Z"]
+)]
+```
+
+#### drop database
+TODO
+
+#### drop schema
+TODO
+
+#### drop table
+TODO
+
+#### drop sequence
+TODO
+
+#### drop index
+TODO
+
+#### drop column
+
+TODO
+
+#### drop constraint
+
+TODO
 
 #### select
 
 Represents a SELECT statement
 
-Example:
+PreQL:
 ```
 {
     "select": {
-        "with": {...},
-        "return": {
+        "with": {
+            "query": {
+                "select": {
+                    "data": "name"
+                    "from": "groups"
+                }
+            },
+            "as": "group_counts"
+        },
+        "data": {
             "id": "user.id",
             "name": {
                 "concat": [
@@ -53,21 +355,20 @@ Example:
         "from": {
             "user": "public.user"
         },
-        "join": {
-            "profile": {
-                "to": "public.profile",
-                "on": {
-                    "=": ["profile.user_id", "user.id"]
-                }
-            },
-            "group_users": {
-                "type": "left",
-                "to": "public.group_users",
-                "on": {
-                    "=": ["group_users.user_id", "users.id"]
-                }
+        "join": [{
+            "as": "profile",
+            "to": "public.profile",
+            "on": {
+                "=": ["profile.user_id", "user.id"]
             }
-        },
+        }, {
+            "as": "group_users",
+            "type": "left",
+            "to": "public.group_users",
+            "on": {
+                "=": ["group_users.user_id", "users.id"]
+            }
+        }],
         "where": {
             "and": [{
                 ">": ["profile.created", "'2018-01-01'"]
@@ -85,121 +386,91 @@ Example:
         "order": [{
             "by": "user.created"
             "desc": True
-        }],
+        }, "user.updated"],
         "limit": 100,
         "offset": 10,
     }
 }
 ```
+
+SQL:
+TODO
+
 #### insert
 
 Represents an INSERT statement
 
-Example:
+PreQL:
 ```
 {
     "insert": {
-        "into": "films",
-        "columns": ["id", "name"]
-        "values": [[1, "test"]],
-        "return": {...}
+        "table": "films",
+        "columns": ["name"]
+        "values": [["a", "b"]],
+        "return": ["id"]
     }
 }
 ```
+
+SQL:
+TODO
 
 #### update
 
 Represents an UPDATE statement
 
-Example:
+PreQL:
 ```
 {
     "update": {
-        "with": {...},
-        "into": {...},
+        "table": {"u": "user"},
         "set": {
-            "a": "`DEFAULT`",
+            "a": {"default": null},
             "b": {"concat": ["u.x", "u.y"]}
         },
+        "with": {...},
+        "where": {...},
+        "return": {...},
+    }
+}
+```
+
+SQL (Postgres):
+TODO
+
+#### delete
+
+Represents a DELETE statement
+
+PreQL:
+```
+{
+    "delete": {
+        "table": "user",
+        "with": {...}
         "where": {...},
         "return": {...}
     }
 }
 ```
 
-#### delete
-
-Represents a DELETE statement
-
-Example:
-```
-{
-    "delete": {
-        "with": {...}
-        "from": {...},
-        "where": {...},
-        "returning": {...}
-    }
-}
-```
+SQL (Postgres):
+TODO
 
 #### truncate
 
 Represents a TRUNCATE statement
 
-Example:
+PreQL:
 ```
 {
-    "truncate": "table"
+    "truncate": "user"
 }
 ```
 
-#### create database
-
-Represents a CREATE DATABASE statement
-
-Example:
+SQL (Postgres):
 ```
-{       
-    "create database": {
-        "name": "test",
-        "owner": "user",
-        "encoding": "utf-8"
-    }
-}
+[(
+    'TRUNCATE TABLE "user"', []
+)]
 ```
-
-#### create schema
-```
-{
-    "create schema": {
-        "name": "test"
-    }
-}
-```
-
-#### create table
-```
-{
-    "create table": {
-        "name": "...",
-        "columns": {...}
-        "constraints": {...},
-        "indexes": {...}
-    }
-}
-```
-
-#### create sequence
-
-#### create index
-
-#### drop database
-
-#### drop schema
-
-#### drop table
-
-#### drop sequence
-
-#### drop index

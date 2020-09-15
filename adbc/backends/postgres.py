@@ -1,433 +1,708 @@
+import re
+import json
+import ssl
+
+from typing import Union
 from .base import DatabaseBackend
 from cached_property import cached_property
 from asyncpg import create_pool, connect
 from urllib.parse import urlparse, parse_qs, urlencode
-import json
-import ssl
+from adbc.preql.dialect import Dialect, Backend, ParameterStyle
+from adbc.preql import parse, build
 
 
-VERSION_QUERY = "SELECT version()"
+EMPTY_CLAUSE = {'=': [1, 1]}
+TAGGED_NUMBER_REGEX = re.compile(r'[a-zA-Z]+ ([0-9]+)')
 
-TABLE_COLUMNS_QUERY = """
-SELECT
-    R.relname as name,
-    A.attname as column,
-    pg_catalog.format_type(A.atttypid, A.atttypmod) as type,
-    pg_get_expr(D.adbin, D.adrelid) as default,
-    NOT A.attnotnull AS null
-FROM pg_attribute A
-INNER JOIN pg_class R ON R.oid = A.attrelid
-INNER JOIN pg_namespace N ON R.relnamespace = N.oid
-LEFT JOIN pg_attrdef D ON A.atthasdef = true AND D.adrelid = R.oid AND
-    D.adnum = A.attnum
-WHERE N.nspname = '{namespace}' AND A.attnum > 0 AND R.relkind = 'r'
- AND NOT A.attisdropped {query}
-"""
-
-
-TABLE_CONSTRAINTS_QUERY = """SELECT
-    R.relname as name,
-    C.conname as constraint,
-    C.condeferrable as deferrable,
-    C.condeferred as deferred,
-    C.contype::varchar as type,
-    F.relname as related_name,
-    C.consrc as check,
-    Rel.attname as related_columns,
-    A.attname as columns
-FROM pg_class R
-JOIN pg_constraint C ON C.conrelid = R.oid
-JOIN pg_namespace N ON N.oid = R.relnamespace
-LEFT JOIN pg_class F ON F.oid = C.confrelid
-LEFT JOIN pg_attribute Rel ON F.oid = Rel.attrelid AND Rel.attnum = ANY(C.confkey)
-LEFT JOIN pg_attribute A ON R.oid = A.attrelid AND A.attnum = ANY(C.conkey)
-WHERE N.nspname = '{namespace}' and R.relkind = 'r' {query}
-"""
-
-
-TABLE_INDEXES_QUERY = """SELECT
-    R.relname as name,
-    IR.relname as index,
-    IA.amname as type,
-    I.indisprimary as primary,
-    I.indisunique as unique,
-    pg_get_indexdef(I.indexrelid) as def
-FROM pg_class R
-JOIN pg_index I ON R.oid = I.indrelid
-JOIN pg_class IR ON IR.oid = I.indexrelid
-JOIN pg_namespace N ON N.oid = R.relnamespace
-LEFT JOIN pg_am IA ON IA.oid = IR.relam
-WHERE N.nspname = '{namespace}' and R.relkind = 'r' {query}
-"""
-
-"""
-TABLES_JSQL = {
-    "select": {
-        "name": "Columns.name",
-        "columns": "Columns.result",
-        "constraints": "Constraints.result",
-        "indexes": "Indexes.result"
-    },
-    "from": {
-        "select": {
-            "name": "R.relname",
-            "result": {
-                "json_agg": {
-                    "json_build_object": [
-                        "'name'",
-                        "A.attname",
-                        "'type'", {
-                            "pg_catalog.format_type": [
-                                "A.attypid",
-                                "A.atttypmod"
-                            ]
-                        }
-                    ]
-                }
-            }
-        },
-        "from": {
-            "A": "pg_attribute",
-        },
-        "join": {
-            "R": {
-                "from": "pg_class",
-                "on": {
-                    "=": [
-                        "R.oid",
-                        "A.attrelid"
-                    ]
-                }
-            },
-            "N": {
-                "from": "pg_namespace",
-                "on": {
-                    "=": [
-                        "R.relnamespace",
-                        "N.oid"
-                    ]
-                }
-            },
-            "D": {
-                "type": "left",
-                "from": "pg_attrdef",
-                "on": {
-                    "and": [{
-                        "true": "A.atthasdef"
-                    }, {
-                        "=": [
-                            "D.adrelid",
-                            "R.oid"
-                        ]
-                    }, {
-                        "=": [
-                            "D.adnum",
-                            "A.attnum"
-                        ]
-                    }]
-                }
-            }
-        }
-    },
-    "join": {
-        "Constraints": {
-            "type": "left",
-            "from": {
-                ...
-            }
-        },
-        "Indexes": {
-            "type": "left",
-            "on": {
-                "=": [
-                    "Indexes.name",
-                    "Columns.name"
-                ]
-            }
-        }
-    }
-}
-"""
-
-TABLES_QUERY = """SELECT
-    Columns.name as name,
-    Columns.result as columns,
-    Constraints.result as constraints,
-    Indexes.result as indexes
-FROM (
-    SELECT
-        R.relname as name,
-        json_agg(json_build_object(
-            'name', A.attname,
-            'type', pg_catalog.format_type(A.atttypid, A.atttypmod),
-            'default', pg_get_expr(D.adbin, D.adrelid),
-            'null', NOT A.attnotnull
-        )) as result
-    FROM pg_attribute A
-    INNER JOIN pg_class R ON R.oid = A.attrelid
-    INNER JOIN pg_namespace N ON R.relnamespace = N.oid
-    LEFT JOIN pg_attrdef D ON A.atthasdef = true AND D.adrelid = R.oid AND
-        D.adnum = A.attnum
-    WHERE A.attnum > 0 AND N.nspname = '{namespace}' AND R.relkind = 'r'
-          {query} AND NOT A.attisdropped
-    GROUP BY R.relname
-) Columns
-LEFT JOIN (
-    SELECT
-        R.relname as name,
-        json_agg(json_build_object(
-            'name', C.conname,
-            'deferrable', C.condeferrable,
-            'deferred', C.condeferred,
-            'type', C.contype,
-            'related_columns', array_to_json(array(
-                SELECT attname FROM pg_attribute
-                JOIN (SELECT a, b FROM (SELECT unnest(C.confkey) as a, generate_series(1, array_length(C.confkey, 1)) as b) x) ORD on ORD.a = attnum
-                WHERE attnum = ANY(C.confkey) AND attrelid = F.oid
-            )),
-            'columns', array_to_json(array(
-                SELECT attname FROM pg_attribute
-                JOIN (SELECT a, b FROM (SELECT unnest(C.conkey) as a, generate_series(1, array_length(C.conkey, 1)) as b) x) ORD on ORD.a = attnum
-                WHERE attnum = ANY(C.conkey) AND attrelid = R.oid
-                ORDER BY ORD.b
-            )),
-            'related_name', F.relname,
-            'check', C.consrc
-        )) as result
-    FROM pg_class R
-    JOIN pg_constraint C ON C.conrelid = R.oid
-    JOIN pg_namespace N ON N.oid = R.relnamespace
-    LEFT JOIN pg_class I ON C.conindid = I.oid
-    LEFT JOIN pg_class F ON F.oid = C.confrelid
-    WHERE N.nspname = '{namespace}' and R.relkind = 'r' {query}
-    GROUP BY R.relname
-) Constraints ON Columns.name = Constraints.name
-LEFT JOIN (
-    SELECT
-        R.relname as name,
-        json_agg(json_build_object(
-            'name', IR.relname,
-            'type', IA.amname,
-            'primary', I.indisprimary,
-            'unique', I.indisunique,
-            'columns', array_to_json(array(
-                SELECT attname FROM pg_attribute
-                JOIN (SELECT a, b FROM (SELECT unnest(I.indkey) as a, generate_series(1, array_length(I.indkey, 1)) as b) x) ORD on ORD.a = attnum
-                WHERE attnum = ANY(I.indkey) AND attrelid = R.oid
-            ))
-        )) as result
-    FROM pg_class R
-    JOIN pg_index I ON R.oid = I.indrelid
-    JOIN pg_class IR ON IR.oid = I.indexrelid
-    JOIN pg_namespace N ON N.oid = R.relnamespace
-    LEFT JOIN pg_am IA ON IA.oid = IR.relam
-    WHERE N.nspname = '{namespace}' and R.relkind = 'r' {query}
-    GROUP BY R.relname
-) Indexes ON Indexes.name = Columns.name;
-"""  # noqa
-
-
-class SQLFormatter(object):
-    @classmethod
-    def identifier(cls, name):
-        return f'"{name}"'
-
-    @classmethod
-    def column(cls, name, table=None, schema=None):
-        name = cls.identifier(name)
-        if table:
-            table = cls.table(name, schema=schema)
-            return f'{table}.{name}'
-        else:
-            return name
-
-    @classmethod
-    def schema(cls, name):
-        return cls.identifier(name)
-
-    @classmethod
-    def constraint(cls, name, schema=None):
-        return cls.table(name, schema=schema)
-
-    @classmethod
-    def index(cls, name, schema=None):
-        return cls.table(name, schema=schema)
-
-    @classmethod
-    def database(cls, name):
-        return cls.identifier(name)
-
-    @classmethod
-    def table(cls, name, schema=None):
-        name = cls.identifier(name)
-        if schema:
-            schema = cls.schema(schema)
-            return f'{schema}.{name}'
-        return name
-
-
-class PostgresSQLFormatter(SQLFormatter):
-    pass
 
 
 class PostgresBackend(DatabaseBackend):
     """Postgres backend based on asyncpg"""
 
     has_json_aggregation = True
-    F = PostgresSQLFormatter()
     default_schema = 'public'
+    dialect = Dialect(
+        backend=Backend.POSTGRES,
+        style=ParameterStyle.DOLLAR_NUMERIC
+    )
 
-    @staticmethod
-    def get_include_clause(include, table, column, tag=None):
-        """Get query filters that in/exclude based on a particular column"""
+    def build(self, query: Union[dict, list]):
+        return build(query, dialect=self.dialect)
 
-        if not include or include is True:
-            # no filters
-            return ("", [])
+    def parse_expression(self, expression: str):
+        """Return parsed PreQL expression"""
+        return parse(expression, Backend.POSTGRES)
 
-        args = []
-        query = []
-        count = 1
-        includes = excludes = False
-        for key, should in include.items():
-            should_dict = isinstance(should, dict)
-            if should_dict:
-                should_dict = should
-                if "enabled" in should:
-                    should = should["enabled"]
+    async def copy_to_table(self, connection, table_name, **kwargs):
+        result = await connection.copy_to_table(table_name, **kwargs)
+        return self.get_tagged_number(result)
 
-            if not should:
-                # disabled config block, skip
-                continue
+    async def copy_from_table(self, connection, table_name, **kwargs):
+        result = await connection.copy_from_table(table_name, **kwargs)
+        return self.get_tagged_number(result)
 
-            should = bool(should)
-            if key.startswith("~"):
-                should = not should
-                key = key[1:]
+    async def copy_from_query(self, connection, query, params=None, **kwargs):
+        params = params or []
+        result = await connection.copy_from_query(query, *params, **kwargs)
+        return self.get_tagged_number(result)
 
-            wild = False
-            if "*" in key:
-                wild = True
-                operator = "~~" if should else "!~~"
-                key = key.replace("*", "%")
-            else:
-                operator = "=" if should else "!="
+    async def execute(self, connection, query, params=None):
+        params = params or []
+        return await connection.execute(query, *params)
 
-            if tag is None:
-                name = key
-            else:
-                name = should_dict.get(tag, key) if should_dict else key
-                if wild and should_dict and tag in should_dict:
-                    raise ValueError(f"Cannot have tag '{name}' for wild key '{key}'")
+    async def cursor(self, connection, query, params=None):
+        params = params or []
+        async for x in connection.cursor(query, *params):
+            yield x
 
-            args.append(name)
-            query.append('({}."{}" {} ${})'.format(table, column, operator, count))
-            count += 1
-            if should:
-                includes = True
-            else:
-                excludes = True
+    async def fetch(self, connection, query, params=None):
+        params = params or []
+        return await connection.fetch(query, *params)
 
-        if includes and not excludes:
-            union = "OR"
-        else:
-            union = "AND"
-        result = " {} ".format(union).join(query), args
-        return result
+    def get_tagged_number(self, value):
+        match = TAGGED_NUMBER_REGEX.match(value)
+        if not match:
+            raise Exception('not a tagged number: {value}')
+
+        return int(match.group(1))
 
     @staticmethod
     def get_databases_query(include, tag=None):
         table = "pg_database"
         column = "datname"
-        args = []
-        query, args = PostgresBackend.get_include_clause(
+
+        where = PostgresBackend.get_include_preql(
             include, table, column, tag=tag
-        )
-        if query:
-            query = " AND {}".format(query)
-
-        F = PostgresBackend.F
-        column = F.column(column)
-        table = F.table(table)
-        args.insert(
-            0,
-            f'SELECT {column} FROM {table} WHERE datistemplate = false {query}'
-        )
-        return args
-
-    @staticmethod
-    def get_namespaces_query(include, tag=None):
-        table = "pg_namespace"
-        column = "nspname"
-        query, args = PostgresBackend.get_include_clause(
-            include, table, column, tag=tag
-        )
-        if query:
-            query = "WHERE {}".format(query)
-
-        F = PostgresBackend.F
-        column = F.column(column)
-        table = F.table(table)
-        args.insert(0, f'SELECT {column} FROM {table} {query}')
-        return args
-
-    @staticmethod
-    def get_version_query():
-        return (VERSION_QUERY,)
-
-    @classmethod
-    def get_query(cls, name, *args, **kwargs):
-        return getattr(cls, f"get_{name}_query")(*args, **kwargs)
+        ) or EMPTY_CLAUSE
+        return {
+            'select': {
+                'data': column,
+                'from': table,
+                'where': {
+                    'and': [{
+                        '=': ['datistemplate', False]
+                    }, where]
+                }
+            }
+        }
 
     @staticmethod
     def get_tables_query(namespace, include, tag=None):
         table = "R"
         column = "relname"
-        args = []
-        query, args = PostgresBackend.get_include_clause(
+        where = PostgresBackend.get_include_preql(
+            include, table, column, tag=tag
+        ) or EMPTY_CLAUSE
+
+        columns = {
+            'select': {
+                'data': {
+                    'name': 'R.relname',
+                    'kind': {
+                        'case': [{
+                            'when': {
+                                '=': ['R.relkind', '`r`']
+                            },
+                            'then': '`table`'
+                        }, {
+                            'when': {
+                                '=': ['R.relkind', '`S`']
+                            },
+                            'then': '`sequence`'
+                        }, {
+                            'else': '`other`'
+                        }]
+                    },
+                    'result': {
+                        'json_agg': {
+                            'json_build_object': [
+                                '`name`',
+                                'A.attname',
+                                '`type`',
+                                {
+                                    'pg_catalog.format_type': [
+                                        'A.atttypid', 'A.atttypmod'
+                                    ]
+                                },
+                                "`default`",
+                                {
+                                    'pg_get_expr': ['D.adbin', 'D.adrelid']
+                                },
+                                "`null`",
+                                {
+                                    'not': 'A.attnotnull'
+                                }
+                            ]
+                        }
+                    }
+                },
+                'from': {
+                    'A': 'pg_attribute'
+                },
+                'join': [{
+                    'to': 'pg_class',
+                    'as': 'R',
+                    'on': {'=': ['R.oid', 'A.attrelid']}
+                }, {
+                    'to': 'pg_namespace',
+                    'as': 'N',
+                    'on': {'=': ['R.relnamespace', 'N.oid']}
+                }, {
+                    'type': 'left',
+                    'to': 'pg_attrdef',
+                    'as': 'D',
+                    'on': {
+                        'and': [{
+                            '=': ['A.atthasdef', True]
+                        }, {
+                            '=': ['D.adrelid', 'R.oid']
+                        }, {
+                            '=': ['D.adnum', 'A.attnum']
+                        }]
+                    }
+                }],
+                'where': {
+                    'and': [{
+                        '>': ['A.attnum', 0]
+                    }, {
+                        'or': [{
+                            '=': ['R.relkind', '`r`']
+                        }, {
+                            '=': ['R.relkind', '`S`']
+                        }]
+                    }, {
+                        'not': 'A.attisdropped'
+                    }, {
+                        '=': ['N.nspname', f'"{namespace}"']
+                    }, where]
+                },
+                'group': ['R.relname', 'R.relkind']
+            }
+        }
+        constraints = {
+            'select': {
+                'data': {
+                    'name': 'R.relname',
+                    'result': {
+                        'json_agg': {
+                            'json_build_object': [
+                                "`name`",
+                                'C.conname',
+                                "`deferrable`",
+                                'C.condeferrable',
+                                "`deferred`",
+                                'C.condeferred',
+                                "`type`",
+                                {
+                                    'case': [{
+                                        'when': {'=': ['C.contype', "`c`"]},
+                                        'then': "`check`"
+                                    }, {
+                                        'when': {'=': ['C.contype', "`f`"]},
+                                        'then': "`foreign`"
+                                    }, {
+                                        'when': {'=': ['C.contype', "`p`"]},
+                                        'then': "`primary`"
+                                    }, {
+                                        'when': {'=': ['C.contype', "`u`"]},
+                                        'then': "`unique`"
+                                    }, {
+                                        'when': {'=': ['C.contype', "`t`"]},
+                                        'then': "`trigger`"
+                                    }, {
+                                        'else': "`exclude`"
+                                    }]
+                                },
+                                "`related_columns`",
+                                {
+                                    'array_to_json': {
+                                        'array': {
+                                            'select': {
+                                                'data': 'attname',
+                                                'from': 'pg_attribute',
+                                                'join': {
+                                                    'to': {
+                                                        'select': {
+                                                            'data': ['a', 'b'],
+                                                            'from': {
+                                                                'x': {
+                                                                    'select': {
+                                                                        'data': {
+                                                                            'a': {
+                                                                                'unnest': 'C.confkey'
+                                                                            },
+                                                                            'b': {
+                                                                                'generate_series': [
+                                                                                    1,
+                                                                                    {
+                                                                                        'array_length': ['C.confkey', 1]
+                                                                                    }
+                                                                                ]
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    'as': 'ord',
+                                                    'on': {'=': ['ord.a', 'pg_attribute.attnum']}
+                                                },
+                                                'where': {
+                                                    'and': [{
+                                                        '=': ['pg_attribute.attnum', {'any': 'C.confkey'}]
+                                                    }, {
+                                                        '=': ['pg_attribute.attrelid', 'F.oid']
+                                                    }]
+                                                },
+                                                'order': 'ord.b'
+                                            }
+                                        }
+                                    }
+                                },
+                                "`columns`",
+                                {
+                                    'array_to_json': {
+                                        'array': {
+                                            'select': {
+                                                'data': 'attname',
+                                                'from': 'pg_attribute',
+                                                'join': {
+                                                    'to': {
+                                                        'select': {
+                                                            'data': ['a', 'b'],
+                                                            'from': {
+                                                                'x': {
+                                                                    'select': {
+                                                                        'data': {
+                                                                            'a': {
+                                                                                'unnest': 'C.conkey'
+                                                                            },
+                                                                            'b': {
+                                                                                'generate_series': [
+                                                                                    1,
+                                                                                    {
+                                                                                        'array_length': ['C.conkey', 1]
+                                                                                    }
+                                                                                ]
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    'as': 'ord',
+                                                    'on': {'=': ['ord.a', 'pg_attribute.attnum']}
+                                                },
+                                                'where': {
+                                                    'and': [{
+                                                        '=': ['pg_attribute.attnum', {'any': 'C.conkey'}]
+                                                    }, {
+                                                        '=': ['attrelid', 'R.oid']
+                                                    }]
+                                                },
+                                                'order': 'ord.b'
+                                            }
+                                        }
+                                    }
+                                },
+                                "`related_name`",
+                                'F.relname',
+                                "`check`",
+                                'C.consrc'
+                            ]
+                        }
+                    }
+                },
+                'from': {
+                    'R': 'pg_class'
+                },
+                'join': [{
+                    'to': 'pg_constraint',
+                    'as': 'C',
+                    'on': {'=': ['C.conrelid', 'R.oid']}
+                }, {
+                    'to': 'pg_namespace',
+                    'as': 'N',
+                    'on': {'=': ['N.oid', 'R.relnamespace']}
+                }, {
+                    'type': 'left',
+                    'as': 'I',
+                    'to': 'pg_class',
+                    'on': {'=': ['C.conindid', 'I.oid']}
+                }, {
+                    'type': 'left',
+                    'to': 'pg_class',
+                    'as': 'F',
+                    'on': {'=': ['F.oid', 'C.confrelid']}
+                }],
+                'where': {
+                    'and': [{
+                        '=': ['N.nspname', f'"{namespace}"']
+                    }, {
+                        '=': ['R.relkind', "`r`"]
+                    }, where]
+                },
+                'group': 'R.relname'
+            }
+        }
+        indexes = {
+            'select': {
+                'data': {
+                    'name': 'R.relname',
+                    'result': {
+                        'json_agg': {
+                            'json_build_object': [
+                                '`name`',
+                                'IR.relname',
+                                '`type`',
+                                'IA.amname',
+                                '`primary`',
+                                'I.indisprimary',
+                                '`unique`',
+                                'I.indisunique',
+                                '`columns`',
+                                {
+                                    'array_to_json': {
+                                        'array': {
+                                            'select': {
+                                                'data': 'attname',
+                                                'from': 'pg_attribute',
+                                                'join': {
+                                                    'to': {
+                                                        'select': {
+                                                            'data': ['a', 'b'],
+                                                            'from': {
+                                                                'x': {
+                                                                    'select': {
+                                                                        'data': {
+                                                                            'a': {
+                                                                                'unnest': 'I.indkey'
+                                                                            },
+                                                                            'b': {
+                                                                                'generate_series': [
+                                                                                    1,
+                                                                                    {
+                                                                                        'array_length': ['I.indkey', 1]
+                                                                                    }
+                                                                                ]
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    'as': 'ord',
+                                                    'on': {'=': ['ord.a', 'pg_attribute.attnum']}
+                                                },
+                                                'where': {
+                                                    'and': [{
+                                                        '=': ['pg_attribute.attnum', {'any': 'I.indkey'}]
+                                                    }, {
+                                                        '=': ['attrelid', 'R.oid']
+                                                    }]
+                                                },
+                                                'order': 'ord.b'
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                },
+                'from': {
+                    'R': 'pg_class'
+                },
+                'join': [{
+                    'to': 'pg_index',
+                    'as': 'I',
+                    'on': {'=': ['R.oid', 'I.indrelid']}
+                }, {
+                    'to': 'pg_class',
+                    'as': 'IR',
+                    'on': {'=': ['IR.oid', 'I.indexrelid']}
+                }, {
+                    'to': 'pg_namespace',
+                    'as': 'N',
+                    'on': {'=': ['N.oid', 'R.relnamespace']}
+                }, {
+                    'to': 'pg_am',
+                    'type': 'left',
+                    'as': 'IA',
+                    'on': {'=': ['IA.oid', 'IR.relam']}
+                }],
+                'where': {
+                    'and': [{
+                        '=': ['N.nspname', f'"{namespace}"']
+                    }, {
+                        '=': ['R.relkind', "`r`"]
+                    }, where]
+                },
+                'group': 'R.relname'
+            }
+        }
+        query = {
+            'select': {
+                'data': {
+                    'name': 'Columns.name',
+                    'columns': 'Columns.result',
+                    'constraints': 'Constraints.result',
+                    'indexes': 'Indexes.result',
+                    'type': 'Columns.kind'
+                },
+                'from': {
+                    'Columns': columns
+                },
+                'join': [{
+                    'type': 'left',
+                    'as': 'Constraints',
+                    'on': {'=': ['Constraints.name', 'Columns.name']},
+                    'to': constraints
+                }, {
+                    'type': 'left',
+                    'as': 'Indexes',
+                    'on': {'=': ['Columns.name', 'Indexes.name']},
+                    'to': indexes
+                }],
+            }
+        }
+        return query
+
+    @staticmethod
+    def get_namespaces_query(include, tag=None):
+        table = "pg_namespace"
+        column = "nspname"
+        where = PostgresBackend.get_include_preql(
             include, table, column, tag=tag
         )
-        if query:
-            query = f" AND ({query})"
-        args.insert(0, TABLES_QUERY.format(namespace=namespace, query=query))
-        return args
+        query = {
+            'select': {
+                'data': column,
+                'from': table,
+                'where': where
+            }
+        }
+        return query
+
+    @staticmethod
+    def get_version_query():
+        return {'select': {'data': {'version': {'version': []}}}}
 
     @staticmethod
     def get_table_indexes_query(namespace, include, tag=None):
         table = "R"
         column = "relname"
-        args = []
-        query, args = PostgresBackend.get_include_query(include, table, column, tag=tag)
-        if query:
-            query = f" AND ({query})"
-        args.insert(0, TABLE_INDEXES_QUERY.format(namespace=namespace, query=query))
-        return args
+        where = PostgresBackend.get_include_preql(include, table, column, tag=tag) or EMPTY_CLAUSE
+        query = {
+            'select': {
+                'data': {
+                    'name': 'R.relname',
+                    'index': 'IR.relname',
+                    'type': 'IA.amname',
+                    'primary': 'I.indisprimary',
+                    'unique': 'I.indisunique',
+                    'def': {
+                        'pg_get_indexdef': 'I.indexrelid'
+                    }
+                },
+                'from': {'R': 'pg_class'},
+                'join': [{
+                    'to': 'pg_index',
+                    'as': 'I',
+                    'on': {'=': ['R.oid', 'I.indrelid']}
+                }, {
+                    'to': 'pg_class',
+                    'as': 'IR',
+                    'on': {'=': ['IR.oid', 'I.indexrelid']}
+                }, {
+                    'to': 'pg_namespace',
+                    'as': 'N',
+                    'on': {'=': ['N.oid', 'R.relnamespace']}
+                }, {
+                    'type': 'left',
+                    'to': 'pg_am',
+                    'as': 'IA',
+                    'on': {'=': ['IA.oid', 'IR.relam']}
+                }],
+                'where': {
+                    'and': [
+                        {'=': ['N.nspname', f'"{namespace}"']},
+                        {'=': ['R.relkind', '`r`']},
+                        where
+                    ]
+                }
+            }
+        }
+        return query
 
     @staticmethod
     def get_table_constraints_query(namespace, include, tag=None):
         table = "R"
         column = "relname"
-        args = []
-        query, args = PostgresBackend.get_include_clause(
+        where = PostgresBackend.get_include_preql(
             include, table, column, tag=tag
-        )
-        if query:
-            query = f" AND ({query})"
-        args.insert(0, TABLE_CONSTRAINTS_QUERY.format(namespace=namespace, query=query))
-        return args
+        ) or EMPTY_CLAUSE
+        query = {
+            'select': {
+                'data': {
+                    'name': 'R.relname',
+                    'constraint': 'C.conname',
+                    'deferrable': 'C.condeferrable',
+                    'deferred': 'C.condeferred',
+                    'type': {
+                        'case': [{
+                            'when': {'=': ['C.contype', "`c`"]},
+                            'then': "`check`"
+                        }, {
+                            'when': {'=': ['C.contype', "`f`"]},
+                            'then': "`foreign`"
+                        }, {
+                            'when': {'=': ['C.contype', "`p`"]},
+                            'then': "`primary`"
+                        }, {
+                            'when': {'=': ['C.contype', "`u`"]},
+                            'then': "`unique`"
+                        }, {
+                            'when': {'=': ['C.contype', "`t`"]},
+                            'then': "`trigger`"
+                        }, {
+                            'else': "`exclude`"
+                        }]
+                    },
+                    'related_name': 'F.relname',
+                    'check': 'C.consrc',
+                    'related_columns': 'Rel.attname',
+                    'columns': 'A.attname'
+                },
+                'from': {
+                    'R': 'pg_class'
+                },
+                'join': [{
+                    'to': 'pg_constraint',
+                    'as': 'C',
+                    'on': {'=': ['C.conrelid', 'R.oid']}
+                }, {
+                    'to': 'pg_namespace',
+                    'as': 'N',
+                    'on': {'=': ['N.oid', 'R.relnamespace']}
+                }, {
+                    'type': 'left',
+                    'to': 'pg_class',
+                    'as': 'F',
+                    'on': {'=': ['F.oid', 'C.confrelid']}
+                }, {
+                    'type': 'left',
+                    'to': 'pg_attribute',
+                    'as': 'Rel',
+                    'on': {
+                        'and': [{
+                            '=': ['F.oid', 'Rel.attrelid']
+                        }, {
+                            '=': ['Rel.attnum', {'any': 'C.confkey'}]
+                        }]
+                    }
+                }, {
+                    'type': 'left',
+                    'to': 'pg_attribute',
+                    'as': 'A',
+                    'on': {
+                        'and': [{
+                            '=': ['R.oid', 'A.attrelid']
+                        }, {
+                            '=': ['A.attnum', {'any': 'C.conkey'}]
+                        }]
+                    }
+                }],
+                'where': {
+                    'and': [
+                        {'=': ['N.nspname', f'"{namespace}"']},
+                        {'=': ['R.relkind', '`r`']},
+                        where
+                    ]
+                }
+            }
+        }
+        return query
 
     @staticmethod
     def get_table_columns_query(namespace, include, tag=None):
         table = "R"
         column = "relname"
-        args = []
-        query, args = PostgresBackend.get_include_clause(
+        where = PostgresBackend.get_include_preql(
             include, table, column, tag=tag
-        )
-        if query:
-            query = f" AND ({query})"
-        args.insert(0, TABLE_COLUMNS_QUERY.format(namespace=namespace, query=query))
-        return args
+        ) or EMPTY_CLAUSE
+        query = {
+            'select': {
+                'data': {
+                    'name': 'R.relname',
+                    'kind': {
+                        'case': [{
+                            'when': {'=': ['R.relkind', '`r`']},
+                            'then': '`table`'
+                        }, {
+                            'when': {'=': ['R.relkind', '`S`']},
+                            'then': '`sequence`'
+                        }, {
+                            'else': '`other`'
+                        }]
+                    },
+                    'column': 'A.attname',
+                    'type': {
+                        'pg_catalog.format_type': ['A.atttypid', 'A.atttypmid']
+                    },
+                    'default': {
+                        'pg_get_expr': ['D.adbin', 'D.adrelid']
+                    },
+                    'null': {
+                        'not': 'A.attnotnull'
+                    }
+                },
+                'from': {
+                    'A': 'pg_attribute'
+                },
+                'join': [{
+                    'to': 'pg_class',
+                    'as': 'R',
+                    'on': {'=': ['R.oid', 'A.attrelid']}
+                }, {
+                    'to': 'pg_namespace',
+                    'as': 'N',
+                    'on': {'=': ['R.relnamespace', 'N.oid']}
+                }, {
+                    'to': 'pg_attrdef',
+                    'type': 'left',
+                    'as': 'D',
+                    'on': {
+                        'and': [{
+                            '=': ['A.atthasdef', True]
+                        }, {
+                            '=': ['D.adrelid', 'R.oid']
+                        }, {
+                            '=': ['D.adnum', 'A.attnum']
+                        }]
+                    }
+                }],
+                'where': {
+                    'and': [{
+                        '=': ['N.nspname', f'"{namespace}"']
+                    }, {
+                        '>': ['A.attnum', 0]
+                    }, {
+                        'or': [{
+                            '=': ['R.relkind', '`r`']
+                        }, {
+                            '=': ['R.relkind', '`S`']
+                        }]
+                    }, {
+                        'not': 'A.attisdropped'
+                    }, where]
+                }
+            }
+        }
+        return query
 
     @staticmethod
     async def create_pool(*args, **kwargs):
@@ -442,6 +717,9 @@ class PostgresBackend(DatabaseBackend):
         else:
             dsn = kwargs.get('dsn', None)
             if dsn and 'sslrootcert' in dsn:
+                # asyncpg bug: the rootcert must be passed as a relative path
+                # e.g. sslrootcert=rds-bundle.pem will not attempt to use the
+                # rds-bundle.pem file from the current directory
                 parsed = urlparse(dsn)
                 query = parse_qs(parsed.query)
                 cafile = query.pop('sslrootcert')[0]

@@ -1,10 +1,10 @@
 # adbc
 
-`adbc` (short for **A**synchronous **D**ata**B**ase **C**onnector) is a library and CLI that provides high-level abstractions for comparing and copying databases.
+`adbc` (short for **A**synchronous **D**ata**B**ase **C**onnector) is a library and CLI that provides high-level abstractions for querying, comparing, and copying databases.
 
 ## Support
 
-`adbc` currently support Postgres only, Redshift, MySQL, and SQLite backends are in progress
+`adbc` currently support Postgres only; Redshift, MySQL, and SQLite backends are in progress:
 - [x] Postgres (asyncpg)
 - [ ] Redshift (WIP)
 - [ ] MySQL (WIP)
@@ -62,36 +62,33 @@ databases:                              # database definitions
         prompt: ?boolean                        # database calls require prompt
 workflows:                              # workflow definitions
     name:                                   # workflow name
-        verbose: ?boolean                       # verbosity
+        verbose: ?[boolean, integer]            # verbosity
         steps:                                  # step list
         - type: query                             # run a SQL/PreQL query
           source: string                            # database name
-          query: string                             # query to run
+          query: [string, object, list]             # query string or PreQL object or list
         - type: info                              # get info about a database
           source: string                            # database name
           scope: ?object                            # scope the data
           schema: ?boolean                          # include schema information (default: True)
           data: ?boolean                            # include data information (default: True)
-          hashes: ?boolean                          # include data hash information (default: True)
-          refresh: ?boolean                         # refresh database schema before operation
+          hashes: ?[boolean, integer]               # include data hash information + hash shard size (default: True)
         - type: diff                              # compare two databases
-          source: string                            # database name
+          source: string                            # origin database name
           target: string                            # other database name
           scope: ?object                            # scope the data
           schema: ?boolean                          # include schema information (default: True)
           data: ?boolean                            # include data information (default: True)
-          hashes: ?boolean                          # include data hash information (default: True)
-          refresh: ?boolean                         # refresh database schema before operation
+          hashes: ?[boolean, integer]               # include data hash information (default: True)
         - type: copy                              # copy a database into another
           source: string                            # database name
           target: string                            # other database name
           scope: ?object                            # scope to a subset of the data
-          refresh: ?boolean                         # refresh database schema before operation
 ```
 
 ## Databases
 
-Databases are the central abstraction in `adbc`, each representing a distinct datastore at a network or file location.
+Databases are the central abstraction in `adbc`, each representing a distinct datastore identified primarily by either a local path or URI.
 They provide the following features:
 
 1. Async query execution: run queries at different levels of abstractions:
@@ -103,11 +100,11 @@ They provide the following features:
         "LEFT JOIN user_groups ON user_groups.user_id = users.id "
         "WHERE users.country = $1 "
         "GROUP BY users.id ",
-        'USA'
     )
+    params = ['USA']
 
     # execute
-    value = await database.execute(*query);
+    value = await database.execute(query, params);
     print(value) #  [{"name": "jay", "num_groups": 2}]
 
     # stream
@@ -129,24 +126,23 @@ They provide the following features:
 ``` python
     query = {
         "select": {
-            "values": {
+            "data": {
                 "name": "users.name",
                 "num_groups": {
                     "count": "user_groups.id"
                 }
             },
             "from": "users",
-            "join": {
-                "user_groups": {
-                    "to": "user_groups",
-                    "type": "left",
-                    "on": {
-                        "=": ["user_groups.user_id", "users.id"]
-                    }
+            "join": [{
+                "as": "ug",
+                "to": "user_groups",
+                "type": "left",
+                "on": {
+                    "=": ["ug.user_id", "users.id"]
                 }
-            },
+            }],
             "group": "users.id",
-            "where": {"=": ["id", 101]}
+            "where": {"=": ["country", "'USA'"]}
         }
     }
 
@@ -196,23 +192,112 @@ They provide the following features:
 
 ## Workflows
 
-Workflows provide a high-level interface for defining multi-database operations in a sequence of steps. A workflow has a name and one or more steps of the following types:
+Workflows provide a high-level interface for defining multi-database operations in a sequence of steps.
+A workflow has a name and one or more steps of the following types:
 
-### info
+### Types
 
-An **info** workflow obtains schema/data information from a source database.
+#### info
 
-### diff
+An **info** step extracts schema and/or statistics from a source database.
+This provides the basis for diffing and copying.
 
-A diff workflow obtains schema/data information from source and target databases, then compares the two.
+#### diff
 
-### copy
+A **diff** step extracts schema and/or statistics from source and target databases, then compares the two.
 
-A copy workflow syncs schema and data information from a source database into a target database.
+#### copy
 
-### query
+A **copy** step syncs schema and data from a source database into a target database.
+This step performs **lazy replication**: syncing a target to a source on an arbitrary schedule without any change data capture or logical replication to rely on.
+To do this efficiently, diffs are performed on the data in each table, with large tables split into shards.
+This means that subsequent copies between the same source and target will take less time as only deltas must be applied.
 
-A query workflow runs a query against a source database. This can be used to return information or perform an update or schema change.
+#### query
+
+A **query** step runs a query against a source database.
+This can be used to query for arbitrary information or to perform data updates or schema changes.
+
+### Scope
+
+Except for `query`, all of the commands accept a `scope` parameter which defines the scope of interaction with the selected database.
+For example, an `info` step can capture information about an entire database (if `scope` is not provided), or it can capture information about one or more schemas, or a specific table or set of tables.
+Many of the `Database` methods also accept scope, notably `get_model`, `get_table`, and `get_children`.
+The `Database` object also accepts an initial `scope` parameter, which is used as a default when scope is not provided.
+
+#### null (default)
+
+If `scope` is omitted or explicitly set to `null`, then the entire database is considered in scope for the operation.
+This can be dangerous when used with the `copy` operation, because any namespaces or tables in the target that are not in the source will be deleted.
+
+#### object
+
+If `scope` is an object (dict), it is expected to contain a child object called `schemas`.
+There are two types of keys in `schemas` which are referred to as selectors:
+
+- Identifiers (e.g. "*", "name")
+- Field selectors, prefixed by "&" (e.g. "&type")
+
+Selectors are composed together with precedence given to specificity (less wildcards match with more precedence, identifier selectors match before field selectors)
+
+This means you can define a scope which uses selectors like mixins for shorter and less redundant configuration, e.g:
+
+``` yaml
+scope:
+    schemas:
+        public:  # only the public schema, ignore other schemas
+            '*': # apply this to all tables
+                enabled: False  # not enabled
+                constraints: 
+                    '&type': # only primary key checks
+                        unique: False  
+                        check: False
+                        foreign: False
+            'auth_*': # sync these tables 
+                enabled: True
+            auth_user: 
+                constraints: True  # all constraints
+    
+```
+For multi-datasource operations `diff` and `copy`, `scope` can also be used to translate between schema, table, and column names. This is only allowed inside identifier selectors.
+
+### Introspection
+
+By default, a `Database` will attempt to use introspection to determine the schema of the database when a particular table is requested.
+This is done by querying the "INFORMATION_SCHEMA" tables (or equivalent) which are provided by RDBMS systems as meta catalogs.
+In order to avoid over-querying this information, `Database` uses an internal cache which is keyed by `scope` and table name.
+
+It is possible to disable introspection by setting `introspect: False` in the root of the scope object.
+When this happens, `Database` instances will not make any queries to determine metadata and will instead depend entirely on the data provided in the scope.
+Only non-wildcard identifiers must be used, and all of a tables columns/constraints/indexes should be provided in the `scope`, as in this example:
+
+``` yaml
+scope:
+    introspect: False
+    schemas:
+        public:
+            auth_user:
+                columns:
+                    id:
+                        type: int
+                    first_name:
+                        type: string
+                    last_name:
+                        type: string
+                constraints:
+                    pk:
+                        type: primary
+                indexes:
+                    name_ck:
+                        type: check
+                        check:
+                            '!=':
+                                - first_name
+                                - last_name
+```
+
+This feature can be used to provide fast ORM access to data based on JSON configuration, without incurring the cost of database queries to determine the schema.
+However, it is enabled by default because the main intent of the library is to flexibly support any scope of work, including unscoped or partially scoped operations with wildcards.
 
 ## Use Cases
 
@@ -220,21 +305,27 @@ A query workflow runs a query against a source database. This can be used to ret
 
 ### Lazy Replication
 
-**What?** copying one database to another in a stateless and interruptible way
+**What?** copying any subset of a database to another in a stateless and interruptible way
 
 **How?** This type of replication is implemented by the function `Database.copy` and the *copy* workflow step
 
 ### Fingerprinting
 
-**What?** Capturing a sample of a database that can be used for comparison
+**What?** Capturing a sample of a database that can be used as a reference point in a future comparison
 
 **How?** Fingerprinting is implemented by `Database.get_info` and the *info* step
+
+### ORM
+
+What? interact with a known database specified in JSON configuration
+
+How? This is made possible by `Database.get_model`
 
 ### Reverse ORM
 
 **What?** interact with an unknown database using an ORM
 
-**How?** This is made by possible by the *introspection* feature of databases
+**How?** This is made by possible by *introspection* in `Database.get_children`
 
 ### Cross-database denormalization
 

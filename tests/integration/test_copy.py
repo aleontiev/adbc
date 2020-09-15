@@ -12,40 +12,54 @@ from adbc.symbols import delete, insert
 async def test_copy():
     # 0. define constants
     timestamp_column = G('column', type='timestamp with time zone', null=True)
-    unique_constraint = G('constraint', type='unique', columns=['name'])
     test_size = 1000
     copy_size = 1000
     other_size = 100
     table_definition = G(
         'table',
-        schema={
-            'columns': {'id': G('column', type='integer'), 'name': G('column', type='text')},
-            'constraints': {'test_id': G('constraint', type='primary', columns=['id'])},
-            'indexes': {'test_id': G('index', type='btree', primary=True, unique=True, columns=['id'])}
+        columns={
+            'id': G('column', type='integer', primary='test_id'),
+            'slug': G('column', type='text', null=True),
+            'name': G('column', type='text')
+        },
+        constraints={
+            'test_id': G('constraint', type='primary', columns=['id'])
+        },
+        indexes={
+            'test_id': G('index', type='btree', primary=True, unique=True, columns=['id'])
         }
+    )
+    target_definition = G(
+        'table',
+        columns={
+            'id': G('column', type='integer', primary='test_id'),
+            'slug': G('column', type='text', null=True),
+            'anombre': G('column', type='text')
+        },
+        constraints={'test_id': G('constraint', type='primary', columns=['id'])},
+        indexes={'test_id': G('index', type='btree', primary=True, unique=True, columns=['id'])}
     )
     copy_definition = G(
         'table',
-        schema={
-            'columns': {'id': G('column', type='integer'), 'name': G('column', type='text')},
-            'constraints': {'copy_id': G('constraint', type='primary', columns=['id'])},
-            'indexes': {'copy_id': G('index', type='btree', primary=True, unique=True, columns=['id'])}
-        }
+        columns={'id': G('column', type='integer', primary='copy_id'), 'name': G('column', type='text')},
+        constraints={'copy_id': G('constraint', type='primary', columns=['id'])},
+        indexes={'copy_id': G('index', type='btree', primary=True, unique=True, columns=['id'])}
     )
     other_definition = G(
         'table',
-        schema={
-            'columns': {'id': G('column', type='integer'), 'name': G('column', type='text')},
-            'constraints': {'other_id': G('constraint', type='primary', columns=['id'])},
-            'indexes': {'other_id': G('index', type='btree', primary=True, unique=True, columns=['id'])}
+        columns={
+            'id': G('column', type='integer', primary='other_id'), 'name': G('column', type='text')
+        },
+        constraints={
+            'other_id': G('constraint', type='primary', columns=['id'])
+        },
+        indexes={
+            'other_id': G('index', type='btree', primary=True, unique=True, columns=['id'])
         }
     )
-    unique_index = G(
-        'index',
-        columns=['name'],
-        type='btree',
-        unique=True
-    )
+    unique_constraint = G('constraint', type='unique', columns=['slug'])
+    unique_index = G('index', type='btree', unique=True, columns=['slug'])
+
     # scope includes "copy" and "test" but not "other"
     scope = {
         "schemas": {
@@ -54,7 +68,15 @@ async def test_copy():
                 "target": "testing",
                 "tables": {
                     "copy": True,
-                    "test": True
+                    "test": {
+                        "target": "prueba",  # renamed from "test" to "prueba" in "target"
+                        "columns": {
+                            "*": True,
+                            "name": {
+                                "target": "anombre"  # renamed from "name" to "anombre"
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -82,16 +104,30 @@ async def test_copy():
                 (source_copy, copy_size),
                 (source_other, other_size)
             ):
-                # bypass model interface for generate series
-                table = source.F.table(model.table.name)
-                query = f"INSERT INTO {table} (id, name) SELECT S, concat('name', S) FROM generate_series(1, {size}) S"
+                # PreQL to generate series (cannot use model interface to do this)
+                query = {
+                    'insert': {
+                        'table': model.table.full_name,
+                        'columns': ['id', 'name'],
+                        'values': {
+                            'select': {
+                                'data': ['S', {'name': {'concat': ['`name`', 'S']}}],
+                                'from': {
+                                    'S': {
+                                        'generate_series': [1, size]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 await source.execute(query)
 
             # create a target entry in a different schema
             await target.create_schema('other')
-            await target.create_table("test", table_definition, schema='other')
+            await target.create_table("test", target_definition, schema='other')
             other_model = await target.get_model('test', schema='other')
-            await other_model.values({'id': 1, 'name': 'other-1'}).add()
+            await other_model.values({'id': 1, 'anombre': 'other-1'}).add()
 
             # 4. run copy to populate target
             data = await source.copy(target, scope=scope)
@@ -99,7 +135,7 @@ async def test_copy():
                 'schema_changes': {
                     insert: {
                         'testing': {
-                            'test': table_definition,
+                            'prueba': target_definition,
                             'copy': copy_definition
                         }
                     }
@@ -110,7 +146,7 @@ async def test_copy():
                             'copied': copy_size,
                             'skipped': 0
                         },
-                        'test': {
+                        'prueba': {
                             'copied': test_size,
                             'skipped': 0
                         }
@@ -119,12 +155,13 @@ async def test_copy():
                 'final_diff': {}
             }
 
-            # check to make sure "other" was not moved
-            target_model = await target.get_model('test', schema='testing')
+            # check to make sure "test" was moved to "prueba"
+            target_model = await target.get_model('prueba', schema='testing')
             assert target_model is not None
             target_count = await target_model.count()
             assert target_count == test_size
 
+            # check to make sure "other" was not moved
             target_other = None
             try:
                 target_other = await target.get_model('other', schema='testing')
@@ -138,10 +175,10 @@ async def test_copy():
                 "test", "created", timestamp_column
             )
             await source.create_constraint(
-                "test", "name_unique", unique_constraint
+                "test", "slug_unique", unique_constraint
             )
             await source.alter_column(
-                'test', 'name', patch={'null': False}
+                'test', 'name', patch={'null': True}
             )
             await source_model.key(1).values({'name': 'changed-1'}).set()
             await source_model.key(3).delete()
@@ -149,6 +186,10 @@ async def test_copy():
             await source.create_column(
                 'test', 'updated', timestamp_column
             )
+
+            # reset both databases to re-trigger schema queries
+            # before next copy
+            source.reset()
 
             # 6. run copy again
             data = await source.copy(target, scope=scope)
@@ -159,25 +200,32 @@ async def test_copy():
                 'skipped': copy_size
             }
             assert len(data_changes.keys()) == 1
+
+            # TODO: validate proper renaming of columns
+            # referenced inside of constraints and indexes...
+
             assert data == {
                 'final_diff': {},
                 'schema_changes': {
                     'testing': {
-                        'test': {
+                        'prueba': {
                             'columns': {
                                 insert: {
                                     'created': timestamp_column,
                                     'updated': timestamp_column
+                                },
+                                'anombre': {
+                                    'null': [False, True]
                                 }
                             },
                             'constraints': {
                                 insert: {
-                                    'name_unique': unique_constraint
+                                    'slug_unique': unique_constraint
                                 }
                             },
                             'indexes': {
                                 insert: {
-                                    'name_unique': unique_index
+                                    'slug_unique': unique_index
                                 }
                             }
                         }
@@ -188,4 +236,4 @@ async def test_copy():
             other_count = await other_model.count()
             assert other_count == 1
             record = await other_model.key(1).get()
-            assert dict(record) == {'id': 1, 'name': 'other-1'}
+            assert dict(record) == {'id': 1, 'anombre': 'other-1', 'slug': None}

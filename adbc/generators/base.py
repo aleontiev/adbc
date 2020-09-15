@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Union
 from dataclasses import dataclass, field
 from dataclasses_json import dataclass_json
 
@@ -14,6 +14,10 @@ class Column(Generator):
     type: str
     default: str = None
     null: bool = False
+    sequence: Union[bool, str] = False
+    primary: Union[bool, str] = False
+    unique: Union[bool, str] = False
+    related: dict = None
 
 
 @dataclass_json
@@ -27,10 +31,6 @@ class Constraint(Generator):
     related_columns: List[str] = field(default_factory=list)
     related_name: str = None
 
-    def __post_init__(self):
-        if len(self.type) > 0:
-            self.type = self.type[0]
-
 
 @dataclass_json
 @dataclass
@@ -43,16 +43,11 @@ class Index(Generator):
 
 @dataclass_json
 @dataclass
-class TableSchema(Generator):
+class Table(Generator):
+    type: str = 'table'
     columns: Dict[str, Column] = field(default_factory=dict)
     constraints: Dict[str, Constraint] = field(default_factory=dict)
     indexes: Dict[str, Index] = field(default_factory=dict)
-
-
-@dataclass_json
-@dataclass
-class Table(Generator):
-    schema: Dict[str, TableSchema] = field(default_factory=dict)
 
 
 registry = {

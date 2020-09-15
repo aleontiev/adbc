@@ -9,8 +9,9 @@ class DiffStep(Step):
         self._validate("target")
 
     async def execute(self):
+        if self.refresh:
+            self.source.reset()
         return await self.source.diff(
             self.target,
             scope=self.scope,
-            refresh=self.refresh
         )

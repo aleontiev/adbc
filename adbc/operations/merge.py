@@ -1,76 +1,141 @@
 from asyncio import gather
 from adbc.symbols import insert, delete
+import json
 
 
-class WithAlterSQL(object):
+class WithAlterPreQL(object):
     def get_alter_constraint_query(
-        self, table_name, name, deferred=None, deferrable=None, schema=None
+        self, table, name, deferred=None, deferrable=None, schema=None
     ):
-        remainder = []
-        if deferrable is not None:
-            remainder.append("DEFERRABLE" if deferrable else "NOT DEFERRABLE")
+        table = f'{schema}.{table}' if schema else table
+        constraint = {}
         if deferred is not None:
-            remainder.append(
-                "INTIIALLY DEFERRED" if deferred else "INITIALLY IMMEDIATE"
-            )
-        remainder = " ".join(remainder)
-        if not remainder:
-            return []
+            constraint['deferred'] = deferred
+        if deferrable is not None:
+            constraint['deferrable'] = deferrable
 
-        table = self.F.table(table_name, schema=schema)
-        constraint = self.F.constraint(name)
-        return (f"ALTER TABLE {table}\nALTER CONSTRAINT {constraint} {remainder}",)
+        if constraint:
+            constraint.update({
+                'name': name,
+                'on': table
+            })
+            return {
+                'alter': {'constraint': constraint}
+            }
+        return None
 
     def get_alter_column_query(
-        self, table, column, null=None, type=None, schema=None, **kwargs
+        self, table, name, null=None, type=None, schema=None, **kwargs
     ):
+        table = f'{schema}.{table}' if schema else table
+        column = {}
         has_default = "default" in kwargs
         default = kwargs.get("default") if has_default else None
-        remainder = ""
+
+        if has_default:
+            column['default'] = default
         if type is not None:
-            remainder = f"TYPE {type}"
-        elif null is not None:
-            remainder = f'{"DROP" if null else "SET"} NOT NULL'
-        elif has_default:
-            remainder = (
-                f'{"SET" if default is not None else "DROP"} DEFAULT '
-                f'{default if default is not None else ""}'
-            )
-        if not remainder:
-            return []
-        table = self.F.table(table, schema=schema)
-        column = self.F.column(column)
-        return (f"ALTER TABLE {table}\nALTER COLUMN {column} {remainder}",)
+            column['type'] = type
+        if null is not None:
+            column['null'] = null
+
+        if column:
+            column.update({
+                'name': name,
+                'on': table
+            })
+            return {
+                'alter': {
+                    'column': column
+                }
+            }
+        return None
 
 
-class WithMerge(WithAlterSQL):
+class WithMerge(WithAlterPreQL):
     async def alter_column(self, table, name, patch=None, schema=None):
         patch = patch or {}
         query = self.get_alter_column_query(
             table, name, schema=schema, **patch
         )
-        await self.execute(*query)
+        await self.execute(query)
         return True
 
-    def _translate(self, d, translate):
-        if isinstance(d, dict) and d and translate:
+    def _translate_schemas(self, d, scope, to):
+        translate = self.get_scope_translation(
+            scope=scope, to=to
+        ) or {}
+        if isinstance(d, dict):
             new = {}
-            for k, v in d.items():
-                t = translate.get(k, k)
-                new[t] = v
+            for schema_name, schema in d.items():
+                new_schema_name = translate.get(schema_name, schema_name)
+                child_scope = self.get_child_scope(new_schema_name, scope=scope)
+                new[new_schema_name] = self._translate_tables(schema, child_scope, to)
             return new
-        else:
-            return d
+        raise NotImplementedError()
 
-    async def merge(self, diff, level, parents=None, parallel=True, translate=None):
+    def _translate_tables(self, d, scope, to):
+        translate = self.get_scope_translation(
+            scope=scope, to=to, child_key='tables'
+        ) or {}
+        if isinstance(d, dict):
+            new = {}
+            for table_name, table in d.items():
+                new_table_name = translate.get(table_name, table_name)
+                child_scope = self.get_child_scope(
+                    new_table_name,
+                    scope=scope,
+                    child_key='tables'
+                )
+                new[new_table_name] = table
+                for child_key in ('indexes', 'constraints', 'columns'):
+                    new[new_table_name][child_key] = self._translate(
+                        child_key,
+                        table.get(child_key, {}),
+                        child_scope,
+                        to
+                    )
+            return new
+        raise NotImplementedError()
+
+    def _translate(self, level, d, scope, to=None):
+        """Copy helper: provides deep translation of named schematics"""
+        if not to:
+            to = self.tag
+
+        if level == 'schemas':
+            # translate schemas +... tables +... table items
+            return self._translate_schemas(d, scope, to)
+        elif level == 'tables':
+            # translate tables +... table items
+            return self._translate_tables(d, scope, to)
+        elif level == 'indexes' or level == 'constraints' or level == 'columns':
+            # translate table items: base case
+            translate = self.get_scope_translation(
+                scope=scope, to=to, child_key=level
+            )
+            if isinstance(d, dict):
+                if not translate:
+                    return d
+                new = {}
+                for k, v in d.items():
+                    t = translate.get(k, k)
+                    new[t] = v
+                return new
+            raise NotImplementedError()
+        else:
+            raise ValueError(f'translate: unexpected level "{level}"')
+
+
+    async def merge(self, diff, level, parents=None, parallel=True, scope=None):
         if not diff:
             # both schemas are identical
             return {}
 
         if parents:
-            self.log(f'merge: {".".join(parents)} {level}s')
+            self.log(f'merge: {".".join(parents)}.{level}s {diff}')
         else:
-            self.log(f"merge: all {level}s")
+            self.log(f"merge: {level}s {diff}")
 
         plural = f"{level}s" if level[-1] != "x" else f"{level}es"
         create_all = getattr(self, f"create_{plural}")
@@ -85,8 +150,8 @@ class WithMerge(WithAlterSQL):
             # and creating all in source not in target
             create, drop = diff
 
-            create = self._translate(create, translate)
-            drop = self._translate(drop, translate)
+            create = self._translate(plural, create, scope)
+            drop = self._translate(plural, drop, scope)
 
             # do these two actions in parallel
             inserted, deleted = await gather(
@@ -100,7 +165,8 @@ class WithMerge(WithAlterSQL):
             return result
         else:
             assert isinstance(diff, dict)
-            diff = self._translate(diff, translate)
+
+            diff = self._translate(plural, diff, scope)
 
             routines = []
             names = []
@@ -115,7 +181,8 @@ class WithMerge(WithAlterSQL):
                     action = drop_all(changes, parents=parents)
                     names.append(delete)
                 elif merge:
-                    action = merge(name, changes, parents=parents)
+                    child_scope = self.get_child_scope(name, scope=scope, child_key=plural)
+                    action = merge(name, changes, parents=parents, scope=child_scope)
                     names.append(name)
 
                 if action:
@@ -126,15 +193,18 @@ class WithMerge(WithAlterSQL):
 
             if routines:
                 results = await gather(*routines)
-            return {r[0]: r[1] for r in zip(names, results)}
+            return {r[0]: r[1] for r in zip(names, results) if r[1] is not None}
 
-    async def merge_constraint(self, name, diff, parents=None):
+    async def merge_constraint(self, name, diff, parents=None, scope=None):
         kwargs = {}
         kwargs = {}
         if "deferred" in diff:
             kwargs["deferred"] = diff["deferred"][0]
+            diff['deferred'] = list(reversed(diff['deferred']))
         if "deferrable" in diff:
             kwargs["deferrable"] = diff["deferrable"][0]
+            diff['deferrable'] = list(reversed(diff['deferrable']))
+
         if not kwargs:
             raise Exception(
                 f"expecting constraint diff to have deferrable or deferred, is: {diff}"
@@ -149,22 +219,27 @@ class WithMerge(WithAlterSQL):
         query = self.get_alter_constraint_query(
             table_name, name, schema=schema_name, **kwargs
         )
-        await self.execute(*query)
+        await self.execute(query)
         return diff
 
-    async def merge_index(self, column, diff, parents=None):
+    async def merge_index(self, column, diff, parents=None, scope=None):
         raise NotImplementedError()
 
-    async def merge_column(self, column, diff, parents=None):
+    async def merge_column(self, column, diff, parents=None, scope=None):
         kwargs = {}
         if "null" in diff:
             kwargs["null"] = diff["null"][0]
+            diff['null'] = list(reversed(diff['null']))
         if "type" in diff:
             kwargs["type"] = diff["type"][0]
+            diff['type'] = list(reversed(diff['type']))
         if "default" in diff:
             kwargs["default"] = diff["default"][0]
+            diff['default'] = list(reversed(diff['default']))
+
         if not kwargs:
-            raise Exception("expecting column diff to have null, type, or default")
+            # can only change null, type, or default
+            return None
 
         if len(parents) == 1:
             schema_name = None
@@ -175,14 +250,13 @@ class WithMerge(WithAlterSQL):
         query = self.get_alter_column_query(
             table_name, column, schema=schema_name, **kwargs
         )
-        await self.execute(*query)
+        await self.execute(query)
         return diff
 
-    async def merge_table(self, table_name, diff, parents=None):
+    async def merge_table(self, table_name, diff, parents=None, scope=None):
         parents = parents + [table_name]
-        diff = diff.get("schema", {})
         return {
-            plural: await self.merge(diff[plural], child, parents, parallel=False)
+            plural: await self.merge(diff[plural], child, parents, parallel=False, scope=scope)
             for child, plural in (
                 ("column", "columns"),
                 ("constraint", "constraints"),
@@ -191,6 +265,6 @@ class WithMerge(WithAlterSQL):
             if diff.get(plural)
         }
 
-    async def merge_schema(self, schema_name, diff, parents=None):
+    async def merge_schema(self, schema_name, diff, parents=None, scope=None):
         # merge schemas in diff (have tables in common but not identical)
-        return await self.merge(diff, "table", parents + [schema_name])
+        return await self.merge(diff, "table", parents + [schema_name], scope=scope)

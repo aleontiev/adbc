@@ -13,32 +13,28 @@ async def test_workflow():
     # 0. define constants
     user_definition = G(
         'table',
-        schema={
-            'columns': {
-                'id': G('column', type='integer'),
-                'name': G('column', type='text', null=True),
-                'email': G('column', type='text')
-            },
-            'constraints': {
-                'user_id': G('constraint', type='primary', columns=['id'])
-            },
-            'indexes': {
-                'user_id': G('index', primary=True, unique=True, type='btree', columns=['id'])
-            }
+        columns={
+            'id': G('column', type='integer', primary='user_id'),
+            'name': G('column', type='text', null=True),
+            'email': G('column', type='text')
+        },
+        constraints={
+            'user_id': G('constraint', type='primary', columns=['id'])
+        },
+        indexes={
+            'user_id': G('index', primary=True, unique=True, type='btree', columns=['id'])
         }
     )
     action_definition = G(
         'table',
-        schema={
-            'columns': {
-                'id': G('column', type='integer'),
-                'data': G('column', type='text'),
-                'user_email': G('column', type='text'),
-                'user_name': G('column', type='text', null=True)
-            },
-            'constraints': {
-                'action_id': G('constraint', type='primary', columns=['id'])
-            },
+        columns={
+            'id': G('column', type='integer', primary='action_id'),
+            'data': G('column', type='text'),
+            'user_email': G('column', type='text'),
+            'user_name': G('column', type='text', null=True)
+        },
+        constraints={
+            'action_id': G('constraint', type='primary', columns=['id'])
         }
     )
     async with setup_test_database('main') as main:

@@ -11,15 +11,23 @@ class WithDiff(WithInfo):
         data=True,
         schema=True,
         info=False,
-        refresh=False,
         hashes=False,
+        exclude=None,
     ):
         self.log(f"{self}: diff")
         source_info = self.get_info(
-            scope=scope, schema=schema, data=data, refresh=refresh, hashes=hashes
+            scope=scope,
+            schema=schema,
+            data=data,
+            hashes=hashes,
+            exclude=exclude,
         )
         target_info = target.get_info(
-            scope=scope, schema=schema, data=data, refresh=refresh, hashes=hashes
+            scope=scope,
+            schema=schema,
+            data=data,
+            hashes=hashes,
+            exclude=exclude,
         )
         source_info, target_info = await gather(source_info, target_info)
         diff_info = diff(source_info, target_info, syntax="symmetric")

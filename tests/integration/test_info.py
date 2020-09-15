@@ -13,17 +13,15 @@ async def test_info():
         columns=['name']
     )
     table_definition = {
-        "schema": {
-            "columns": {
-                "id": G('column', type='integer'),
-                "name": G('column', type='text', null=True)
-            },
-            "constraints": {
-                "id_primary": G('constraint',
-                    type='primary',
-                    columns=['id']
-                )
-            },
+        "columns": {
+            "id": G('column', type='integer', primary='id_primary', sequence=True),
+            "name": G('column', type='text', null=True)
+        },
+        "constraints": {
+            "id_primary": G('constraint',
+                type='primary',
+                columns=['id']
+            )
         }
     }
     scope = {"schemas": {"testing": True}}
@@ -39,16 +37,25 @@ async def test_info():
         table = model.table
 
         assert table is not None
-        assert table.pks == ["id"]
-        assert table.columns == table_definition["schema"]["columns"]
+        assert table.pks == {"id": "id_primary"}
+        table_definition['columns']['id']['sequence'] = 'testing.test__id__seq'
+        table_definition['columns']['id']['default'] = {
+            'nextval': "'testing.test__id__seq'"
+        }
+        assert table.columns == table_definition["columns"]
 
         # add (INSERT)
-        jay = await model.values({"id": 1, "name": "Jay"}).take("*").add()
-        await model.values({"id": 2, "name": "Quinn"}).add()
-        await model.values({"id": 3}).add()
+        jay = await model.values({"name": "Jay"}).take("*").add()
+        await model.values({"name": "Quinn"}).add()
+        await model.add()
 
         # count/get (SELECT)
-        query = model.where({".or": [{"name": {"contains": "ay"}}, {"id": 3}]})
+        query = model.where({
+            "or": [
+                {"icontains": ["name", "'ja'"]},
+                {"in": ['id', [3, 999]]}
+            ]
+        })
         count = await query.count()
         assert count == 2
         results = await query.sort("id").get()
@@ -57,27 +64,30 @@ async def test_info():
         assert dict(results[1]) == {"id": 3, "name": None}
 
         # UPDATE
+        # TODO: use where(id=3) to test where in set
         updated = await model.key(3).values({"name": "Ash"}).set()
         assert updated == 1
 
         # DELETE
-        deleted = await model.where({"id": {"=": 2}}).take("name").delete()
+        deleted = await model.key(2).take("name").delete()
         assert len(deleted) == 1
         assert deleted[0]["name"] == "Quinn"
 
         # 5. get database statistics
         info = await source.get_info(scope=scope)
-        expect_schema = table_definition["schema"]
-        actual_schema = info["testing"]["test"]["schema"]
-        test_data = info["testing"]["test"]["data"]
+        expect_schema = table_definition
+        actual_schema = info["testing"]["test"]
+        seq = info['testing']['test__id__seq']
+        assert seq == {'value': 3, 'type': 'sequence'}
+        actual_data = actual_schema['rows']
         assert expect_schema["columns"] == actual_schema["columns"]
         assert expect_schema["constraints"] == actual_schema["constraints"]
-        assert test_data["count"] == 2
-        assert test_data["range"] == {"id": {"min": 1, "max": 3}}
+        assert actual_data["count"] == 2
+        assert actual_data["range"] == {"id": {"min": 1, "max": 3}}
 
         # 6. add new schema elements
-        table_definition["schema"]["columns"]["created"] = timestamp_column
-        table_definition["schema"]["constraints"]["unique_name"] = unique_name
+        table_definition["columns"]["created"] = timestamp_column
+        table_definition["constraints"]["unique_name"] = unique_name
         await source.create_column(
             "test", "created", timestamp_column, schema="testing"
         )
@@ -86,15 +96,34 @@ async def test_info():
         )
 
         # 7. add new data
-        await model.values([{"id": 6, "name": "Jim"}, {"id": 5, "name": "Jane"}]).add()
+        await model.values([
+            {"id": 6, "name": "Jim"},
+            {"id": 5, "name": "Jane"}
+        ]).add()
 
         # 8. get database statistics again with an aliased scope
         # alias scope supports translation during diff/copy
         info = await source.get_info(scope=alias_scope, hashes=True)
-        actual_schema = info["main"]["test"]["schema"]
-        test_data = info["main"]["test"]["data"]
+
+        actual_schema = info["main"]["test"]
+        actual_data = actual_schema["rows"]
+        # expect unique to be set 
+        expect_schema['columns']['name']['unique'] = 'unique_name'
         assert expect_schema["columns"] == actual_schema["columns"]
         assert expect_schema["constraints"] == actual_schema["constraints"]
-        assert test_data["count"] == 4
-        assert test_data["range"] == {"id": {"min": 1, "max": 6}}
-        assert test_data['hashes'] == {1: '38dcabe82cf0aeef4e6601bf3a4c17da'}
+        assert actual_data["count"] == 4
+        assert actual_data["range"] == {"id": {"min": 1, "max": 6}}
+        assert actual_data['hashes'] == {1: '566991d4b9cf37367cab89ab93b74a3d'}
+
+        # 9. test exclusion: ignore certain fields
+        excludes = ['unique', 'primary', 'related']
+        info = await source.get_info(
+            scope=alias_scope,
+            hashes=True,
+            exclude={'columns': excludes}
+        )
+        actual_schema = info['main']['test']
+        for name, column in expect_schema['columns'].items():
+            for exclude in excludes:
+                column.pop(exclude)
+        assert expect_schema['columns'] == actual_schema['columns']

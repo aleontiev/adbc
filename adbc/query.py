@@ -28,14 +28,18 @@ class NestedFeature(object):
 
 class Query(object):
     # methods
-    def __init__(self, database=None, state=None, executor=None):
+    def __init__(self, database=None, state=None, executor=None, scope=None):
         """
         Arguments:
-            state: internal query representation
+            database: Database object
+            state: internal query representation$
+            executor: pre-existing executor (optional)
+            scope: scope with which the model was called
         """
         self._state = state or {}
         self.database = database
-        self.executor = executor or get_executor(self.database)
+        self.scope = scope
+        self.executor = executor or get_executor(self.database, scope)
 
     def get_state(self, level=None):
         state = self.state
@@ -170,13 +174,27 @@ class Query(object):
     def validate_sort(self, level, query):
         return True
 
+    def simple_expression(self, simple, join='and'):
+        expr = []
+        for key, value in simple.items():
+            key = key.split('__')
+            len_key = len(key)
+            if len_key == 1:
+                operator = '='
+                key = key[0]
+            elif len_key == 2:
+                operator = key[-1]
+                key = '__'.join(key[:-1])
+            expr.append({operator: [key, value]})
+        return {join: expr} if len(expr) > 1 else expr[0]
+
     def _where(self, *args, **kwargs):
         """
         Example:
             .where({
                 'or': [
-                    {'contains': {'users.location.name': "'New York'"}}},
-                    {'not': {'in': {'users': [1, 2]}}}
+                    {'contains': {'users.location.name': "'New York'"}},
+                    {'not': {'in': ['users', [1, 2]}}
                 ]
             })
             .where(id=1)
@@ -186,11 +204,11 @@ class Query(object):
             raise ValueError('at least one argument required')
 
         level = args[0]
-        if len(args) >= 1:
+        if len(args) > 1:
             query = args[1]
 
-        if not query:
-            query = kwargs
+        if not query and kwargs:
+            query = self.simple_expression(kwargs)
 
         if not query:
             raise ValueError('no query arguments defined')
@@ -245,7 +263,12 @@ class Query(object):
                 sub[key] = value
 
         if copy:
-            return Query(database=self.database, state=state, executor=self.executor)
+            return Query(
+                database=self.database,
+                state=state,
+                executor=self.executor,
+                scope=self.scope
+            )
         else:
             return self
 

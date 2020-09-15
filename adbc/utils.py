@@ -260,3 +260,6 @@ class AsyncBuffer(object):
         if self._debug:
             print('read buffer: ', result)
         return result
+
+def flatten(x):
+    return [a for b in x for a in b]

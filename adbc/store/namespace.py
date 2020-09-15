@@ -16,7 +16,6 @@ INDEX_COLUMNS_REGEX = re.compile('.*USING [a-z_]+ [(](["A-Za-z_, ]+)[)]$')
 
 
 class Namespace(Loggable, WithScope, WithInfo):
-    type = "ns"
     child_key = "tables"
 
     def __init__(
@@ -36,13 +35,9 @@ class Namespace(Loggable, WithScope, WithInfo):
         self.alias = alias or name
         self.verbose = verbose
         self.tag = tag
-        self._tables = {}
 
     def __str__(self):
         return f"{self.database}.{self.name}"
-
-    def clear_cache(self):
-        self._tables = {}
 
     def get_table(
         self,
@@ -51,22 +46,40 @@ class Namespace(Loggable, WithScope, WithInfo):
         constraints=None,
         indexes=None,
         scope=None,
-        refresh=False,
+        type=None,
     ):
-        if name not in self._tables or refresh:
-            assert columns is not None
-            scope = self.get_child_scope(name, scope=scope)
-            self._tables[name] = Table(
-                name,
-                namespace=self,
-                columns=columns,
-                constraints=constraints,
-                indexes=indexes,
-                verbose=self.verbose,
-                scope=scope,
-                tag=self.tag,
-            )
-        return self._tables[name]
+        scope = scope or self.scope
+        return self.cache_by(
+            'tables',
+            {'scope': scope, 'name': name},
+            lambda: self._get_table(name, columns, constraints, indexes, scope, type)
+        )
+
+    def _get_table(
+        self,
+        name,
+        columns,
+        constraints,
+        indexes,
+        scope,
+        type
+    ):
+        assert columns is not None
+        translation = self.get_scope_translation(scope=scope, from_=self.tag)
+        alias = translation.get(name, name)
+        table_scope = self.get_child_scope(name, scope=scope)
+        return Table(
+            name,
+            alias=alias,
+            namespace=self,
+            columns=columns,
+            constraints=constraints,
+            indexes=indexes,
+            verbose=self.verbose,
+            scope=table_scope,
+            tag=self.tag,
+            type=type
+        )
 
     def parse_index_columns(self, definition):
         match = INDEX_COLUMNS_REGEX.match(definition)
@@ -78,10 +91,19 @@ class Namespace(Loggable, WithScope, WithInfo):
         include = self.get_child_include(scope=scope)
         return self.database.backend.get_query(name, self.name, include, tag=self.tag)
 
-    async def get_children(self, scope=None, refresh=False):
+    async def get_children(self, scope=None):
+        scope = scope or self.scope
+        return await self.cache_by_async(
+            'children',
+            scope,
+            lambda: self._get_children(scope)
+        )
+
+    async def _get_children(self, scope):
         json_aggregation = self.database.backend.has("json_aggregation")
         tables = defaultdict(dict)
         database = self.database
+        results = []
         if not json_aggregation:
             columns_query = self.get_query("table_columns", scope=scope)
             constraints_query = self.get_query("table_constraints", scope=scope)
@@ -102,8 +124,12 @@ class Namespace(Loggable, WithScope, WithInfo):
             constraints = await constraints
 
             for record in columns:
-                # name, column, type, default, null
+                # name, kind, column, type, default, null
                 name = record[0]
+                kind = record[1]
+
+                if "type" not in tables[name]:
+                    tables[name]["type"] = kind
                 if "name" not in tables[name]:
                     tables[name]["name"] = name
 
@@ -112,10 +138,10 @@ class Namespace(Loggable, WithScope, WithInfo):
 
                 tables[name]["columns"].append(
                     {
-                        "name": record[1],
-                        "type": record[2],
-                        "default": record[3],
-                        "null": record[4],
+                        "name": record[2],
+                        "type": record[3],
+                        "default": record[4],
+                        "null": record[5],
                     }
                 )
             for record in constraints:
@@ -186,38 +212,42 @@ class Namespace(Loggable, WithScope, WithInfo):
                         "columns": columns,
                     }
         else:
-            query = self.get_query("tables")
-            async for row in database.stream(*query):
+            query = self.get_query("tables", scope=scope)
+            async for row in database.stream(query):
                 try:
                     table = self.get_table(
                         row[0],
-                        row[1],
-                        row[2],
-                        row[3],
-                        scope=scope,
-                        refresh=refresh,
+                        columns=row[1],
+                        constraints=row[2],
+                        indexes=row[3],
+                        type=row[4],
+                        scope=scope
                     )
                 except NotIncluded:
                     pass
                 else:
-                    yield table
+                    results.append(table)
 
         for table in tables.values():
             try:
-                yield self.get_table(
+                table = self.get_table(
                     table["name"],
-                    table.get("columns", []),
-                    list(table.get("constraints", {}).values()),
-                    list(table.get("indexes", {}).values()),
-                    scope=scope,
-                    refresh=refresh,
+                    columns=table.get("columns", []),
+                    constraints=list(table.get("constraints", {}).values()),
+                    indexes=list(table.get("indexes", {}).values()),
+                    type=table['type'],
+                    scope=scope
                 )
             except NotIncluded:
                 pass
+            else:
+                results.append(table)
+        return results
 
     @cached_property
     async def tables(self):
         tables = {}
-        async for child in self.get_children():
+        children = await self.get_children()
+        for child in children:
             tables[child.name] = child
         return tables
