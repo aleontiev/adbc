@@ -277,10 +277,6 @@ class Database(Loggable, WithCopy, WithScope):
             tag=self.tag,
         )
 
-    @property
-    def F(self):
-        return self.backend.F
-
     @cached_property
     def backend(self):
         return self.host._backend

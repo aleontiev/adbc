@@ -2,7 +2,7 @@ import io
 from math import ceil
 from asyncio import gather
 from jsondiff.symbols import insert, delete
-from adbc.sql import get_tagged_number, print_query
+from adbc.sql import print_query
 from adbc.utils import AsyncBuffer, aecho, confirm
 from adbc.constants import SEP, SEPN
 from adbc.preql import build
@@ -135,8 +135,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             pk = next(iter(pks.keys()))
 
         if source_count > max_size and pk:
-            if source_model.table.can_order(columns[pk]["type"]):
-                num_shards = ceil(source_count / max_size)
+            num_shards = ceil(source_count / max_size)
 
         shards_label = ""
         if num_shards > 1:
@@ -301,6 +300,10 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             # this is usually sufficient, unless a tables content has changed
             # but min id/max id/count have not changed
             # this can happen for tables with frequent updates
+
+            # if a table is immutable, however, this is reliable
+            # and will be more efficient as it will avoid checking hashes
+            # on large tables without count mismatches
             for schema_name, schema_changes in diff.items():
                 if schema_name == delete or schema_name == insert:
                     continue
@@ -421,13 +424,9 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             async with transaction:
                 result = None
                 if table_name:
-                    result = get_tagged_number(
-                        await self.backend.copy_from_table(conn, table_name, **kwargs)
-                    )
+                    result = await self.backend.copy_from_table(conn, table_name, **kwargs)
                 else:
-                    result = get_tagged_number(
-                        await self.backend.copy_from_query(conn, query, params, **kwargs)
-                    )
+                    result = await self.backend.copy_from_query(conn, query, params, **kwargs)
                 if close:
                     if hasattr(close, "close"):
                         # close passed in object
@@ -460,6 +459,4 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         async with connection as conn:
             transaction = conn.transaction() if transaction else aecho()
             async with transaction:
-                return get_tagged_number(
-                    await self.backend.copy_to_table(conn, table_name, **kwargs)
-                )
+                return await self.backend.copy_to_table(conn, table_name, **kwargs)

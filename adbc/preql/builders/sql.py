@@ -957,9 +957,15 @@ class SQLBuilder(Builder):
                     target = self.format_identifier(target)
 
                 elif isinstance(target, dict):
-                    # TODO: support for LATERAL
-                    target = self.get_subquery(target, style, params, depth=depth)
-                    target = f"(\n{target}\n{indent})"
+                    target_key = next(iter(target.keys()))
+                    if self.is_command(target_key):
+                        # subquery in FROM
+                        # TODO: support for LATERAL
+                        target = self.get_subquery(target, style, params, depth=depth)
+                        target = f"(\n{target}\n{indent})"
+                    else:
+                        # function in FROM, e.g. FROM generate_series(...) AS S
+                        target = self.get_expression(target, style, params, depth=depth)
 
                 results.append(f"{target} AS {name}")
                 result = self.combine(results, separator=", ")

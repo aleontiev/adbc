@@ -128,7 +128,6 @@ class Table(WithScope, Loggable):
                 default = column['default'] = self.database.backend.parse_expression(
                     default
                 )
-
                 if isinstance(default, dict) and 'nextval' in default:
                     # TODO: move nextval into backend, non-standard SQL
                     column["sequence"] = column.get(

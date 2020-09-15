@@ -104,9 +104,23 @@ async def test_copy():
                 (source_copy, copy_size),
                 (source_other, other_size)
             ):
-                # bypass model interface for generate series
-                table = source.F.table(model.table.name)
-                query = f"INSERT INTO {table} (id, name) SELECT S, concat('name', S) FROM generate_series(1, {size}) S"
+                # PreQL to generate series (cannot use model interface to do this)
+                query = {
+                    'insert': {
+                        'table': model.table.full_name,
+                        'columns': ['id', 'name'],
+                        'values': {
+                            'select': {
+                                'data': ['S', {'name': {'concat': ['`name`', 'S']}}],
+                                'from': {
+                                    'S': {
+                                        'generate_series': [1, size]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 await source.execute(query)
 
             # create a target entry in a different schema

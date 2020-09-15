@@ -1,3 +1,7 @@
+import re
+import json
+import ssl
+
 from typing import Union
 from .base import DatabaseBackend
 from cached_property import cached_property
@@ -5,61 +9,17 @@ from asyncpg import create_pool, connect
 from urllib.parse import urlparse, parse_qs, urlencode
 from adbc.preql.dialect import Dialect, Backend, ParameterStyle
 from adbc.preql import parse, build
-import json
-import ssl
-
 
 
 EMPTY_CLAUSE = {'=': [1, 1]}
+TAGGED_NUMBER_REGEX = re.compile(r'[a-zA-Z]+ ([0-9]+)')
 
-class SQLFormatter(object):
-    @classmethod
-    def identifier(cls, name):
-        return f'"{name}"'
-
-    @classmethod
-    def column(cls, name, table=None, schema=None):
-        name = cls.identifier(name)
-        if table:
-            table = cls.table(name, schema=schema)
-            return f'{table}.{name}'
-        else:
-            return name
-
-    @classmethod
-    def schema(cls, name):
-        return cls.identifier(name)
-
-    @classmethod
-    def constraint(cls, name, schema=None):
-        return cls.table(name, schema=schema)
-
-    @classmethod
-    def index(cls, name, schema=None):
-        return cls.table(name, schema=schema)
-
-    @classmethod
-    def database(cls, name):
-        return cls.identifier(name)
-
-    @classmethod
-    def table(cls, name, schema=None):
-        name = cls.identifier(name)
-        if schema:
-            schema = cls.schema(schema)
-            return f'{schema}.{name}'
-        return name
-
-
-class PostgresSQLFormatter(SQLFormatter):
-    pass
 
 
 class PostgresBackend(DatabaseBackend):
     """Postgres backend based on asyncpg"""
 
     has_json_aggregation = True
-    F = PostgresSQLFormatter()
     default_schema = 'public'
     dialect = Dialect(
         backend=Backend.POSTGRES,
@@ -74,14 +34,17 @@ class PostgresBackend(DatabaseBackend):
         return parse(expression, Backend.POSTGRES)
 
     async def copy_to_table(self, connection, table_name, **kwargs):
-        return await connection.copy_to_table(table_name, **kwargs)
+        result = await connection.copy_to_table(table_name, **kwargs)
+        return self.get_tagged_number(result)
 
     async def copy_from_table(self, connection, table_name, **kwargs):
-        return await connection.copy_from_table(table_name, **kwargs)
+        result = await connection.copy_from_table(table_name, **kwargs)
+        return self.get_tagged_number(result)
 
     async def copy_from_query(self, connection, query, params=None, **kwargs):
         params = params or []
-        return await connection.copy_from_query(query, *params, **kwargs)
+        result = await connection.copy_from_query(query, *params, **kwargs)
+        return self.get_tagged_number(result)
 
     async def execute(self, connection, query, params=None):
         params = params or []
@@ -96,58 +59,12 @@ class PostgresBackend(DatabaseBackend):
         params = params or []
         return await connection.fetch(query, *params)
 
-    @staticmethod
-    def get_include_preql(include, table, column, tag=None):
-        clauses = []
-        column = f'{table}.{column}'
-        if not include or include is True:
-            return None
+    def get_tagged_number(self, value):
+        match = TAGGED_NUMBER_REGEX.match(value)
+        if not match:
+            raise Exception('not a tagged number: {value}')
 
-        includes = excludes = False
-        for key, should in include.items():
-            should_dict = isinstance(should, dict)
-            if should_dict:
-                should_dict = should
-                if 'enabled' in should:
-                    should = should['enabled']
-            if not should:
-                continue
-            should = bool(should)
-            if key.startswith('~'):
-                should = not should
-                key = key[1:]
-
-            wild = False
-            if "*" in key:
-                wild = True
-                operator = "~~" if should else "!~~"
-                key = key.replace("*", "%")
-            else:
-                operator = "=" if should else "!="
-
-            if tag is None:
-                name = key
-            else:
-                name = should_dict.get(tag, key) if should_dict else key
-                if wild and should_dict and tag in should_dict:
-                    raise ValueError(f"Cannot have tag '{name}' for wild key '{key}'")
-
-            clauses.append({operator: [column, f"'{name}'"]})
-            if should:
-                includes = True
-            else:
-                excludes = True
-
-        if len(clauses) > 1:
-            if includes and not excludes:
-                union = "or"
-            else:
-                union = "and"
-            return {union: clauses}
-        elif len(clauses) == 1:
-            return clauses[0]
-        else:
-            return None
+        return int(match.group(1))
 
     @staticmethod
     def get_databases_query(include, tag=None):
@@ -574,10 +491,6 @@ class PostgresBackend(DatabaseBackend):
     def get_version_query():
         return {'select': {'data': {'version': {'version': []}}}}
 
-    @classmethod
-    def get_query(cls, name, *args, **kwargs):
-        return getattr(cls, f"get_{name}_query")(*args, **kwargs)
-
     @staticmethod
     def get_table_indexes_query(namespace, include, tag=None):
         table = "R"
@@ -804,6 +717,9 @@ class PostgresBackend(DatabaseBackend):
         else:
             dsn = kwargs.get('dsn', None)
             if dsn and 'sslrootcert' in dsn:
+                # asyncpg bug: the rootcert must be passed as a relative path
+                # e.g. sslrootcert=rds-bundle.pem will not attempt to use the
+                # rds-bundle.pem file from the current directory
                 parsed = urlparse(dsn)
                 query = parse_qs(parsed.query)
                 cafile = query.pop('sslrootcert')[0]

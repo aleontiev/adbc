@@ -1,7 +1,7 @@
 import copy
 
 
-class WithCreateQuery(object):
+class WithCreatePreQL(object):
     def get_create_database_query(self, name):
         return {
             'create': {
@@ -92,7 +92,7 @@ class WithCreateQuery(object):
         }
 
 
-class WithCreate(WithCreateQuery):
+class WithCreate(WithCreatePreQL):
     async def create_column(self, table, name, column, schema=None):
         return await self.execute(
             self.get_create_column_query(table, name, column, schema=schema)

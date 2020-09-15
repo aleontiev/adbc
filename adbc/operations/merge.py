@@ -3,63 +3,62 @@ from adbc.symbols import insert, delete
 import json
 
 
-class WithAlterSQL(object):
+class WithAlterPreQL(object):
     def get_alter_constraint_query(
-        self, table_name, name, deferred=None, deferrable=None, schema=None
+        self, table, name, deferred=None, deferrable=None, schema=None
     ):
-        remainder = []
-        if deferrable is not None:
-            remainder.append("DEFERRABLE" if deferrable else "NOT DEFERRABLE")
+        table = f'{schema}.{table}' if schema else table
+        constraint = {}
         if deferred is not None:
-            remainder.append(
-                "INITIALLY DEFERRED" if deferred else "INITIALLY IMMEDIATE"
-            )
-        remainder = " ".join(remainder)
-        if not remainder:
-            return []
+            constraint['deferred'] = deferred
+        if deferrable is not None:
+            constraint['deferrable'] = deferrable
 
-        table = self.F.table(table_name, schema=schema)
-        constraint = self.F.constraint(name)
-        return (f"ALTER TABLE {table}\nALTER CONSTRAINT {constraint} {remainder}",)
+        if constraint:
+            constraint.update({
+                'name': name,
+                'on': table
+            })
+            return {
+                'alter': {'constraint': constraint}
+            }
+        return None
 
     def get_alter_column_query(
-        self, table, column, null=None, type=None, schema=None, **kwargs
+        self, table, name, null=None, type=None, schema=None, **kwargs
     ):
+        table = f'{schema}.{table}' if schema else table
+        column = {}
         has_default = "default" in kwargs
         default = kwargs.get("default") if has_default else None
-        remainder = ""
+
+        if has_default:
+            column['default'] = default
         if type is not None:
-            remainder = f"TYPE {type}"
-        elif null is not None:
-            remainder = f'{"DROP" if null else "SET"} NOT NULL'
-        elif has_default:
-            remainder = (
-                f'{"SET" if default is not None else "DROP"} DEFAULT '
-                f'{default if default is not None else ""}'
-            )
-        if not remainder:
-            return []
-        table = self.F.table(table, schema=schema)
-        column = self.F.column(column)
-        # preql: {
-        #   "alter": {
-        #       "column": {
-        #           "name": "public.a.b",
-        #           "default": default,
-        #           "type": "type",
-        #           ""
-        #       }
-        #  }
-        return (f"ALTER TABLE {table}\nALTER COLUMN {column} {remainder}",)
+            column['type'] = type
+        if null is not None:
+            column['null'] = null
+
+        if column:
+            column.update({
+                'name': name,
+                'on': table
+            })
+            return {
+                'alter': {
+                    'column': column
+                }
+            }
+        return None
 
 
-class WithMerge(WithAlterSQL):
+class WithMerge(WithAlterPreQL):
     async def alter_column(self, table, name, patch=None, schema=None):
         patch = patch or {}
         query = self.get_alter_column_query(
             table, name, schema=schema, **patch
         )
-        await self.execute(*query)
+        await self.execute(query)
         return True
 
     def _translate_schemas(self, d, scope, to):
@@ -220,7 +219,7 @@ class WithMerge(WithAlterSQL):
         query = self.get_alter_constraint_query(
             table_name, name, schema=schema_name, **kwargs
         )
-        await self.execute(*query)
+        await self.execute(query)
         return diff
 
     async def merge_index(self, column, diff, parents=None, scope=None):
@@ -251,7 +250,7 @@ class WithMerge(WithAlterSQL):
         query = self.get_alter_column_query(
             table_name, column, schema=schema_name, **kwargs
         )
-        await self.execute(*query)
+        await self.execute(query)
         return diff
 
     async def merge_table(self, table_name, diff, parents=None, scope=None):
