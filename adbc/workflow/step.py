@@ -1,6 +1,5 @@
 from adbc.logging import Loggable
 from adbc.store import Database
-from adbc.utils import is_dsn
 
 
 class Step(Loggable):

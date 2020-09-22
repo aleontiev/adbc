@@ -154,7 +154,7 @@ class QueryExecutor(object):
             query: Query
             count: ?string
                 if set, return count of rows instead of records
-            connection: ?asyncpg.connection
+            connection: ?connection
             preql: if True, return the PreQL query instead of executing it
 
         Return:
@@ -258,7 +258,7 @@ class QueryExecutor(object):
 
         Arguments:
             query: Query
-            connection: *asyncpg.connection
+            connection: ?connection
                 useful for transactions
 
         Returns:
@@ -310,7 +310,7 @@ class QueryExecutor(object):
         Arguments:
             query: Query
             count: ?string
-            connection: ?asyncpg.connection
+            connection: ?connection
                 useful for transactions
 
         Returns:
@@ -359,7 +359,7 @@ class QueryExecutor(object):
 
         Arguments:
             query: Query
-            connection: ?asyncpg.connection
+            connection: ?connection
                 useful for transactions
 
         Returns:
@@ -393,7 +393,7 @@ class QueryExecutor(object):
 
         Arguments:
             query: Query
-            connection: ?asyncpg.connection
+            connection: ?connection
                 useful for transactions
 
         Returns:

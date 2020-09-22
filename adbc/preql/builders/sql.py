@@ -16,26 +16,25 @@ def add_key(d, k, v):
     return d
 
 
-CONSTRAINT_ABBREVIATIONS = {
-    "primary": "pk",
-    "foreign": "fk",
-    "unique": "uk",
-    "check": "ck",
-    "exclude": "xk",
-}
-
-SCHEMA_ORDER = {
-    "database": 1,
-    "schema": 2,
-    "table": 3,
-    "sequence": 4,
-    "index": 5,
-    "column": 6,
-    "constraint": 7,
-}
 
 
 class SQLBuilder(Builder):
+    CONSTRAINT_ABBREVIATIONS = {
+        "primary": "pk",
+        "foreign": "fk",
+        "unique": "uk",
+        "check": "ck",
+        "exclude": "xk",
+    }
+    SCHEMA_ORDER = {
+        "database": 1,
+        "schema": 2,
+        "table": 3,
+        "sequence": 4,
+        "index": 5,
+        "column": 6,
+        "constraint": 7,
+    }
     CONSTRAINT_TYPES = {
         "x": "exclude",
         "p": "primary key",
@@ -1394,7 +1393,7 @@ class SQLBuilder(Builder):
         return constraints
 
     def get_auto_constraint_name(self, table, name, type):
-        suffix = CONSTRAINT_ABBREVIATIONS[type]
+        suffix = self.CONSTRAINT_ABBREVIATIONS[type]
         return f"{table}__{name}__{suffix}"
 
     def build_alter_table(

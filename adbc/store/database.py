@@ -7,6 +7,7 @@ from adbc.utils import get_version_number, confirm, aecho
 from adbc.model import Model
 from adbc.sql import print_query
 from adbc.operations.copy import WithCopy
+from adbc.operations.apply import WithApply
 from adbc.logging import Loggable
 from adbc.constants import SEP, SEPN
 from adbc.preql import build
@@ -15,7 +16,7 @@ from .namespace import Namespace
 SKIP_CA_CHECK = os.environ.get('ADBC_SKIP_CA_CHECK') == '1'
 
 
-class Database(Loggable, WithCopy, WithScope):
+class Database(Loggable, WithCopy, WithScope, WithApply):
     child_key = "schemas"
 
     def __init__(

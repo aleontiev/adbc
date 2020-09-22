@@ -110,28 +110,6 @@ def get(context, path, null=None):
     return context
 
 
-def is_dsn(url):
-    from asyncpg.connect_utils import _parse_connect_dsn_and_args
-
-    try:
-        _parse_connect_dsn_and_args(
-            dsn=url,
-            host=None,
-            port=None,
-            user=None,
-            password=None,
-            passfile=None,
-            database=None,
-            ssl=None,
-            connect_timeout=None,
-            server_settings=None,
-        )
-    except Exception:
-        raise
-    else:
-        return True
-
-
 def merge(dictionary, other):
     for k, v in other.items():
         if isinstance(v, collections.abc.Mapping):
@@ -263,3 +241,9 @@ class AsyncBuffer(object):
 
 def flatten(x):
     return [a for b in x for a in b]
+
+
+def raise_not_implemented(message):
+    def inner(*args, **kwargs):
+        raise NotImplementedError(message)
+    return inner

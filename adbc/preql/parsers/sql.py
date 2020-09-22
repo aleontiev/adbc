@@ -3,7 +3,7 @@ import re
 FUNCTION_REGEX = re.compile(r'^([a-zA-Z][0-9a-zA-Z._]*)\(([^)]*)\)$')
 
 
-class SQLParser(SQLParser):
+class SQLParser:
     def remove_cast(self, literal: str):
         if '::' in literal:
             literal = literal.split('::')[0]

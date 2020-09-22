@@ -100,7 +100,7 @@ class Namespace(Loggable, WithScope, WithInfo):
         )
 
     async def _get_children(self, scope):
-        return await self.backend.get_tables(self, scope)
+        return await self.database.backend.get_tables(self, scope)
 
     @cached_property
     async def tables(self):

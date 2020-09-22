@@ -2,12 +2,20 @@ import re
 import json
 import ssl
 
-from sqliteschema import extractor
-from aiosqlite import connect
+from adbc.utils import raise_not_implemented
+
+try:
+    import sqliteschema
+    from aiosqlite import connect
+except ImportError:
+    # this backend will fail
+    # but allows import to succeed
+    connect = raise_not_implemented('install aiosqlite')
+    sqliteschema = raise_not_implemented('install sqliteschema')
+
 from typing import Union
 from .base import DatabaseBackend
 from cached_property import cached_property
-from asyncpg import create_pool, connect
 from urllib.parse import urlparse, parse_qs, urlencode
 from adbc.preql.dialect import Dialect, Backend, ParameterStyle
 from adbc.preql import parse, build
@@ -35,7 +43,7 @@ class SqliteBackend(DatabaseBackend):
     default_schema = 'main'
     dialect = Dialect(
         backend=Backend.SQLITE,
-        style=ParameterStyle.QUESTION
+        style=ParameterStyle.QUESTION_MARK
     )
 
     def build(self, query: Union[dict, list]):

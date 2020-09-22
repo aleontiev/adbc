@@ -1,3 +1,5 @@
+from collections import defaultdict
+from typing import Union
 from .sql import SQLBuilder
 
 
@@ -286,7 +288,7 @@ class PostgresBuilder(SQLBuilder):
 
         normalized = []
         by_other["table"] = None
-        for type, clauses in sorted(by_other.items(), key=lambda x: SCHEMA_ORDER[x[0]]):
+        for type, clauses in sorted(by_other.items(), key=lambda x: self.SCHEMA_ORDER[x[0]]):
             # in order: database, schema, table, ..., column, constraint
             if type == "table":
                 clauses = list(by_table.values())
@@ -295,7 +297,7 @@ class PostgresBuilder(SQLBuilder):
             normalized.append({type: clauses})
 
         for type, clauses in sorted(
-            renames.items(), key=lambda x: -1 * SCHEMA_ORDER[x[0]]
+            renames.items(), key=lambda x: -1 * self.SCHEMA_ORDER[x[0]]
         ):
             # in order: constraint, column,..., table, schema, database
             normalized.append({type: clauses})

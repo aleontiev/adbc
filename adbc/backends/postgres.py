@@ -3,9 +3,17 @@ import json
 import ssl
 
 from typing import Union
+from collections import defaultdict
 from .base import DatabaseBackend
 from cached_property import cached_property
-from asyncpg import create_pool, connect
+from adbc.utils import raise_not_implemented
+
+try:
+    from asyncpg import create_pool, connect
+except ImportError:
+    create_pool = raise_not_implemented('install asyncpg')
+    connect = raise_not_implemented('install async')
+
 from urllib.parse import urlparse, parse_qs, urlencode
 from adbc.preql.dialect import Dialect, Backend, ParameterStyle
 from adbc.preql import parse, build
@@ -65,7 +73,7 @@ class PostgresBackend(DatabaseBackend):
 
         return int(match.group(1))
 
-    def get_tables(self, namespace, scope):
+    async def get_tables(self, namespace, scope):
         tables = defaultdict(dict)
         results = []
         query = namespace.get_query("tables", scope=scope)
@@ -513,7 +521,7 @@ class PostgresBackend(DatabaseBackend):
         return {'select': {'data': {'version': {'version': []}}}}
 
     @staticmethod
-    async def create_pool(self, url, **kwargs):
+    async def create_pool(url, **kwargs):
         if 'init' not in kwargs:
             # initialize connection with json loading
             kwargs['init'] = PostgresBackend.initialize
@@ -542,7 +550,7 @@ class PostgresBackend(DatabaseBackend):
                 kwargs['ssl'] = ctx
             else:
                 kwargs['dsn'] = url
-        return await create_pool(*args, **kwargs)
+        return await create_pool(**kwargs)
 
     @staticmethod
     async def initialize(connection):

@@ -6,7 +6,6 @@ authors = ["aleontiev <alonetiev@gmail.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.7"
-asyncpg = "^0.18.3"
 cached_property = "^1.5.1"
 ipython = "^7.6.1"
 cleo = "^0.7.6"
@@ -16,6 +15,10 @@ aiobotocore = "^0.12.0"
 uvloop = "^0.14.0"
 blessings = "^1.7"
 dataclasses_json = "^0.5.2"
+aiosqlite = {version = "^0", extras = ["sqlite"]}
+sqliteschema = {version = "^0", extras = ["sqlite"]}
+aiomysql = {version = "^0", extras = ["mysql"]}
+asyncpg = {version = "^0", extras = ["postgres"]}
 
 [tool.poetry.dev-dependencies]
 pytest = "^5.0"
@@ -28,4 +31,3 @@ adbc = "adbc.cli:main"
 [build-system]
 requires = ["poetry>=1"]
 build-backend = "poetry.masonry.api"
-
