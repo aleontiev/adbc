@@ -283,7 +283,7 @@ class Database(Loggable, WithCopy, WithScope):
 
     async def get_pool(self):
         return await self.backend.create_pool(
-            dsn=self.host.url,
+            self.host.url,
             max_size=self.max_pool_size,
             min_size=self.min_pool_size,
             skip_ca_check=SKIP_CA_CHECK

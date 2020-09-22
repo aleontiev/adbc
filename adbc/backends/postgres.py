@@ -19,7 +19,6 @@ TAGGED_NUMBER_REGEX = re.compile(r'[a-zA-Z]+ ([0-9]+)')
 class PostgresBackend(DatabaseBackend):
     """Postgres backend based on asyncpg"""
 
-    has_json_aggregation = True
     default_schema = 'public'
     dialect = Dialect(
         backend=Backend.POSTGRES,
@@ -65,6 +64,28 @@ class PostgresBackend(DatabaseBackend):
             raise Exception('not a tagged number: {value}')
 
         return int(match.group(1))
+
+    def get_tables(self, namespace, scope):
+        tables = defaultdict(dict)
+        results = []
+        query = namespace.get_query("tables", scope=scope)
+        database = namespace.database
+        async for row in database.stream(query):
+            try:
+                table = namespace.get_table(
+                    row[0],
+                    columns=row[1],
+                    constraints=row[2],
+                    indexes=row[3],
+                    type=row[4],
+                    scope=scope
+                )
+            except NotIncluded:
+                pass
+            else:
+                results.append(table)
+
+        return results
 
     @staticmethod
     def get_databases_query(include, tag=None):
@@ -492,220 +513,7 @@ class PostgresBackend(DatabaseBackend):
         return {'select': {'data': {'version': {'version': []}}}}
 
     @staticmethod
-    def get_table_indexes_query(namespace, include, tag=None):
-        table = "R"
-        column = "relname"
-        where = PostgresBackend.get_include_preql(include, table, column, tag=tag) or EMPTY_CLAUSE
-        query = {
-            'select': {
-                'data': {
-                    'name': 'R.relname',
-                    'index': 'IR.relname',
-                    'type': 'IA.amname',
-                    'primary': 'I.indisprimary',
-                    'unique': 'I.indisunique',
-                    'def': {
-                        'pg_get_indexdef': 'I.indexrelid'
-                    }
-                },
-                'from': {'R': 'pg_class'},
-                'join': [{
-                    'to': 'pg_index',
-                    'as': 'I',
-                    'on': {'=': ['R.oid', 'I.indrelid']}
-                }, {
-                    'to': 'pg_class',
-                    'as': 'IR',
-                    'on': {'=': ['IR.oid', 'I.indexrelid']}
-                }, {
-                    'to': 'pg_namespace',
-                    'as': 'N',
-                    'on': {'=': ['N.oid', 'R.relnamespace']}
-                }, {
-                    'type': 'left',
-                    'to': 'pg_am',
-                    'as': 'IA',
-                    'on': {'=': ['IA.oid', 'IR.relam']}
-                }],
-                'where': {
-                    'and': [
-                        {'=': ['N.nspname', f'"{namespace}"']},
-                        {'=': ['R.relkind', '`r`']},
-                        where
-                    ]
-                }
-            }
-        }
-        return query
-
-    @staticmethod
-    def get_table_constraints_query(namespace, include, tag=None):
-        table = "R"
-        column = "relname"
-        where = PostgresBackend.get_include_preql(
-            include, table, column, tag=tag
-        ) or EMPTY_CLAUSE
-        query = {
-            'select': {
-                'data': {
-                    'name': 'R.relname',
-                    'constraint': 'C.conname',
-                    'deferrable': 'C.condeferrable',
-                    'deferred': 'C.condeferred',
-                    'type': {
-                        'case': [{
-                            'when': {'=': ['C.contype', "`c`"]},
-                            'then': "`check`"
-                        }, {
-                            'when': {'=': ['C.contype', "`f`"]},
-                            'then': "`foreign`"
-                        }, {
-                            'when': {'=': ['C.contype', "`p`"]},
-                            'then': "`primary`"
-                        }, {
-                            'when': {'=': ['C.contype', "`u`"]},
-                            'then': "`unique`"
-                        }, {
-                            'when': {'=': ['C.contype', "`t`"]},
-                            'then': "`trigger`"
-                        }, {
-                            'else': "`exclude`"
-                        }]
-                    },
-                    'related_name': 'F.relname',
-                    'check': 'C.consrc',
-                    'related_columns': 'Rel.attname',
-                    'columns': 'A.attname'
-                },
-                'from': {
-                    'R': 'pg_class'
-                },
-                'join': [{
-                    'to': 'pg_constraint',
-                    'as': 'C',
-                    'on': {'=': ['C.conrelid', 'R.oid']}
-                }, {
-                    'to': 'pg_namespace',
-                    'as': 'N',
-                    'on': {'=': ['N.oid', 'R.relnamespace']}
-                }, {
-                    'type': 'left',
-                    'to': 'pg_class',
-                    'as': 'F',
-                    'on': {'=': ['F.oid', 'C.confrelid']}
-                }, {
-                    'type': 'left',
-                    'to': 'pg_attribute',
-                    'as': 'Rel',
-                    'on': {
-                        'and': [{
-                            '=': ['F.oid', 'Rel.attrelid']
-                        }, {
-                            '=': ['Rel.attnum', {'any': 'C.confkey'}]
-                        }]
-                    }
-                }, {
-                    'type': 'left',
-                    'to': 'pg_attribute',
-                    'as': 'A',
-                    'on': {
-                        'and': [{
-                            '=': ['R.oid', 'A.attrelid']
-                        }, {
-                            '=': ['A.attnum', {'any': 'C.conkey'}]
-                        }]
-                    }
-                }],
-                'where': {
-                    'and': [
-                        {'=': ['N.nspname', f'"{namespace}"']},
-                        {'=': ['R.relkind', '`r`']},
-                        where
-                    ]
-                }
-            }
-        }
-        return query
-
-    @staticmethod
-    def get_table_columns_query(namespace, include, tag=None):
-        table = "R"
-        column = "relname"
-        where = PostgresBackend.get_include_preql(
-            include, table, column, tag=tag
-        ) or EMPTY_CLAUSE
-        query = {
-            'select': {
-                'data': {
-                    'name': 'R.relname',
-                    'kind': {
-                        'case': [{
-                            'when': {'=': ['R.relkind', '`r`']},
-                            'then': '`table`'
-                        }, {
-                            'when': {'=': ['R.relkind', '`S`']},
-                            'then': '`sequence`'
-                        }, {
-                            'else': '`other`'
-                        }]
-                    },
-                    'column': 'A.attname',
-                    'type': {
-                        'pg_catalog.format_type': ['A.atttypid', 'A.atttypmid']
-                    },
-                    'default': {
-                        'pg_get_expr': ['D.adbin', 'D.adrelid']
-                    },
-                    'null': {
-                        'not': 'A.attnotnull'
-                    }
-                },
-                'from': {
-                    'A': 'pg_attribute'
-                },
-                'join': [{
-                    'to': 'pg_class',
-                    'as': 'R',
-                    'on': {'=': ['R.oid', 'A.attrelid']}
-                }, {
-                    'to': 'pg_namespace',
-                    'as': 'N',
-                    'on': {'=': ['R.relnamespace', 'N.oid']}
-                }, {
-                    'to': 'pg_attrdef',
-                    'type': 'left',
-                    'as': 'D',
-                    'on': {
-                        'and': [{
-                            '=': ['A.atthasdef', True]
-                        }, {
-                            '=': ['D.adrelid', 'R.oid']
-                        }, {
-                            '=': ['D.adnum', 'A.attnum']
-                        }]
-                    }
-                }],
-                'where': {
-                    'and': [{
-                        '=': ['N.nspname', f'"{namespace}"']
-                    }, {
-                        '>': ['A.attnum', 0]
-                    }, {
-                        'or': [{
-                            '=': ['R.relkind', '`r`']
-                        }, {
-                            '=': ['R.relkind', '`S`']
-                        }]
-                    }, {
-                        'not': 'A.attisdropped'
-                    }, where]
-                }
-            }
-        }
-        return query
-
-    @staticmethod
-    async def create_pool(*args, **kwargs):
+    async def create_pool(self, url, **kwargs):
         if 'init' not in kwargs:
             # initialize connection with json loading
             kwargs['init'] = PostgresBackend.initialize
@@ -714,9 +522,9 @@ class PostgresBackend(DatabaseBackend):
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
             kwargs['ssl'] = ctx
+            kwargs['dsn'] = url
         else:
-            dsn = kwargs.get('dsn', None)
-            if dsn and 'sslrootcert' in dsn:
+            if url and 'sslrootcert' in url:
                 # asyncpg bug: the rootcert must be passed as a relative path
                 # e.g. sslrootcert=rds-bundle.pem will not attempt to use the
                 # rds-bundle.pem file from the current directory
@@ -730,8 +538,10 @@ class PostgresBackend(DatabaseBackend):
                     # assume relative if starting with normal character
                     cafile = f'./{cafile}'
                 ctx = ssl.create_default_context(cafile=cafile)
-                kwargs['dsn'] = dsn
+                kwargs['dsn'] = url
                 kwargs['ssl'] = ctx
+            else:
+                kwargs['dsn'] = url
         return await create_pool(*args, **kwargs)
 
     @staticmethod
@@ -739,9 +549,3 @@ class PostgresBackend(DatabaseBackend):
         await connection.set_type_codec(
             "json", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
         )
-
-    @staticmethod
-    async def connect(*args, **kwargs):
-        connection = await connect(*args, **kwargs)
-        await PostgresBackend.initialize(connection)
-        return connection

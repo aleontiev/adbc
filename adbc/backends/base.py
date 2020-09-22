@@ -61,3 +61,9 @@ class DatabaseBackend(object):
         else:
             return None
 
+    @classmethod
+    async def connect(cls, *args, **kwargs):
+        connection = await connect(*args, **kwargs)
+        if hasattr(cls, 'initialize'):
+            await cls.initialize(connection)
+        return connection

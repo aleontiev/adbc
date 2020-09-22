@@ -1,4 +1,4 @@
 from .sql import SQLParser
 
-class PostgresParser(SQLParser):
+class SqliteParser(SQLParser):
     pass

@@ -373,6 +373,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
         source_info, target_info, data_diff = await self.diff(
             target, scope=scope, info=True, exclude=exclude
         )
+        # fks = await self.drop_all_foreign_keys(target, target_info)
         data_changes = await self.copy_data(
             target,
             source_info,
@@ -381,7 +382,9 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             scope=scope,
             check_all=check_all,
         )
-        # TODO: drop and add the FK constraints before/after copy_data
+        # await self.reset_sequences()
+        # await self.add_all_foreign_keys(target, fks)
+
         if final_diff:
             final_diff = await self.diff(target, scope=scope, exclude=exclude)
         return {

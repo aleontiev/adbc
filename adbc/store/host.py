@@ -1,7 +1,7 @@
 from urllib.parse import urlparse
 from cached_property import cached_property
 
-from adbc.backends.postgres import PostgresBackend
+from adbc.backends import get_backend
 from adbc.logging import Loggable
 from adbc.scope import WithScope
 from adbc.cache import WithCache
@@ -19,10 +19,24 @@ class Host(Loggable, WithScope):
     ):
         self.url = url
         self.parsed_url = urlparse(url)
-        self.dbname = self.parsed_url.path.replace('/', '')
-        self.name = self.parsed_url.netloc
+        self.scheme = self.parsed_url.scheme
+        if self.scheme == 'file' or self.scheme == 'file+sqlite':
+            self.scheme = 'sqlite'
+
+        self.path = self.parsed_url.path
+        self.dbname = self.parsed_url.path.split('/')[-1]
+        netloc = self.parsed_url.netloc
+        if netloc:
+            # for network hosts
+            # set name to the host name, e.g. localhost
+            # remove username/password from netloc if present
+            self.name = netloc.split('@')[-1]
+        else:
+            # for local hosts
+            # set name to the path name, e.g. /path/to/db.sqlite
+            self.name = self.path
         self.scope = scope
-        self._backend = PostgresBackend()
+        self._backend = get_backend(self.scheme)
 
     async def get_children(self, scope=None):
         scope = scope or self.scope

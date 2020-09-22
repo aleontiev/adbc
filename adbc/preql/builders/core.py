@@ -6,8 +6,6 @@ class Builder(Validator):
     IDENTIFIER_SPLIT_CHARACTER = '.'
     WHITESPACE_CHARACTER = ' '
     WILDCARD_CHARACTER = '*'
-    IDENTIFIER_QUOTE_CHARACTER = '"'
-    LITERAL_QUOTE_CHARACTER = "'"
     QUOTE_CHARACTERS = {'"', "'", '`'}
     RAW_QUOTE_CHARACTER = '`'
     COMMANDS = {

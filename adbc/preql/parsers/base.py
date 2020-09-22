@@ -1,9 +1,11 @@
 from ..dialect import Backend
 from .postgres import PostgresParser
+from .sqlite import SqliteParser
 
 
 parsers = {
     Backend.POSTGRES: PostgresParser(),
+    Backend.SQLITE: SqliteParser()
 }
 
 
