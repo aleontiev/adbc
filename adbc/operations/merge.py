@@ -96,6 +96,9 @@ class WithMerge(WithAlterPreQL):
                         to
                     )
             return new
+        elif isinstance(d, list):
+            assert len(d) == 2
+            return [self._translate_tables(d[0], scope, to), self._translate_tables(d[1], scope, to)]
         raise NotImplementedError()
 
     def _translate(self, level, d, scope, to=None):

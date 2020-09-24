@@ -1,4 +1,4 @@
-from adbc.preql.dialect import ParameterStyle, get_default_style
+from adbc.zql.dialect import ParameterStyle, get_default_style
 import re
 import copy
 from collections import defaultdict
@@ -19,6 +19,8 @@ def add_key(d, k, v):
 
 
 class SQLBuilder(Builder):
+    AUTOINCREMENT = None
+    INLINE_PRIMARY_KEYS = False
     CONSTRAINT_ABBREVIATIONS = {
         "primary": "pk",
         "foreign": "fk",
@@ -1611,51 +1613,8 @@ class SQLBuilder(Builder):
         return f"{table_name}__{column_name}__{suffix}"
 
     def get_auto_sequence_queries(self, table_name: str, columns: List[dict], style):
-        queries = []
-        for column in columns:
-            name = column.get("name")
-            sequence = column.get("sequence")
-            if sequence:
-                if not isinstance(sequence, str):
-                    sequence = self.get_auto_sequence_name(table_name, name)
-
-                sequence_name = sequence
-                sequence = {
-                    "name": sequence_name,
-                    "maybe": True,
-                    "owned_by": f"{table_name}.{name}",
-                }
-                # CREATE SEQUENCE IF NOT EXISTS ...
-                queries.extend(
-                    self.build(
-                        {
-                            "create": {
-                                "sequence": {
-                                    "name": sequence_name,
-                                    "maybe": True,
-                                    "owned_by": f"{table_name}.{name}",
-                                }
-                            },
-                        },
-                        style,
-                    )
-                )
-                # ALTER TABLE ... ALTER COLUMN ... DEFAULT nextval(...)
-                queries.extend(
-                    self.build(
-                        {
-                            "alter": {
-                                "column": {
-                                    "name": name,
-                                    "on": table_name,
-                                    "default": {"nextval": f"`{sequence_name}`"},
-                                }
-                            }
-                        },
-                        style,
-                    )
-                )
-        return queries
+        """override to create sequences for new tables"""
+        return []
 
     def get_subquery(self, data, style, params, depth=0) -> str:
         result = self.build(data, style, depth=depth + 1, params=params)
@@ -2019,6 +1978,9 @@ class SQLBuilder(Builder):
     ) -> str:
         name = constraint.get("name")
         type = constraint.get("type")
+        if self.INLINE_PRIMARY_KEYS and type == 'primary':
+            return None
+
         indent = self.get_indent(depth)
 
         if not name:
@@ -2066,11 +2028,17 @@ class SQLBuilder(Builder):
 
         deferrable = constraint.get("deferrable", False)
         deferred = constraint.get("deferred", False)
-        deferrable = "DEFERRABLE" if deferrable else "NOT DEFERRABLE"
-        deferred = "INITIALLY DEFERRED" if deferred else "INITIALLY IMMEDIATE"
+        if self.can_defer(constraint):
+            deferrable = " DEFERRABLE " if deferrable else " NOT DEFERRABLE "
+            deferred = "INITIALLY DEFERRED" if deferred else "INITIALLY IMMEDIATE"
+        else:
+            deferrable = deferred = ''
         name = self.format_identifier(name)
         type = type.upper()  # cosmetic
-        return f"{indent}{name} {type}{check}{columns}{related} {deferrable} {deferred}"
+        return f"{indent}{name} {type}{check}{columns}{related}{deferrable}{deferred}"
+
+    def can_defer(self, constraint):
+        return True
 
     def get_alter_constraint(
         self,
@@ -2195,7 +2163,20 @@ class SQLBuilder(Builder):
 
         # null, default are optional
         null = column.get("null", True)
+        sequence = column.get('sequence', False)
         default = column.get("default", None)
+        # either AUTO_INCREMENT (MySQL) or AUTOINCREMENT (SQLite) or not supported (Postgres)
+        autoincrement = self.AUTOINCREMENT
+        # sometimes we want to "inline" the PK definition onto the column
+        # this is not ideal because the constraint name is implicit with this variation
+        # but need to do it for SQLite support
+        pk = (
+            ' PRIMARY KEY' if self.INLINE_PRIMARY_KEYS and column.get('primary', False)
+            else ''
+        )
+        if not sequence:
+            autoincrement = False
+        autoincrement = f' {autoincrement}' if autoincrement else ''
         null = " NOT NULL" if not null else ""  # null is default
         if default is None:
             default = ""
@@ -2206,7 +2187,7 @@ class SQLBuilder(Builder):
             default = f" DEFAULT {default}"
 
         name = self.format_identifier(name)
-        return f"{indent}{name} {type}{null}{default}"
+        return f"{indent}{name} {type}{pk}{autoincrement}{null}{default}"
 
     def get_create_table_items(
         self,
@@ -2228,6 +2209,9 @@ class SQLBuilder(Builder):
         if constraints:
             for c in constraints:
                 c = self.get_create_constraint(c, style, params, depth=0)
-                items.append(f"{indent}CONSTRAINT {c}")
+                if c:
+                    # may return None e.g. if we want to skip this constraint
+                    # for some reason like inlining primary keys
+                    items.append(f"{indent}CONSTRAINT {c}")
 
         return self.combine(items, separator=",\n")

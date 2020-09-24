@@ -3,7 +3,7 @@ class WithDropPreQL(object):
         return {'drop': {'database': name}}
 
     def get_drop_schema_query(self, name):
-        return {'drop': {'schema': name}}
+        return {'drop': {'schema': name, 'cascade': True}}
 
     def get_drop_table_query(self, table, schema=None):
         table = f'{schema}.{table}' if schema else table

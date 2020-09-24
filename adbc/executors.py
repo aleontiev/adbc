@@ -155,7 +155,7 @@ class QueryExecutor(object):
             count: ?string
                 if set, return count of rows instead of records
             connection: ?connection
-            preql: if True, return the PreQL query instead of executing it
+            zql: if True, return the zql query instead of executing it
 
         Return:
             List of records: if no key is specified
@@ -168,7 +168,7 @@ class QueryExecutor(object):
         source = query.data('source')
         database = self.database
         table = await database.get_table(source, scope=self.scope)
-        preql = kwargs.get('preql', False)
+        zql = kwargs.get('zql', False)
         count = kwargs.get('count', False)
         select = self.get_select(table, query, count=count)
         if count or (field and key):
@@ -180,7 +180,7 @@ class QueryExecutor(object):
         else:
             method = 'query'
 
-        if preql:
+        if zql:
             return select
 
         return await getattr(self.database, method)(
@@ -264,10 +264,10 @@ class QueryExecutor(object):
         Returns:
             numbers of records modified
         """
-        # TODO: convert to PreQL
+        # TODO: convert to zql
         values = query.data('values')
         connection = kwargs.get('connection')
-        preql = kwargs.get('preql', False)
+        zql = kwargs.get('zql', False)
         # TODO: support ON CONFLICT
         # upsert = kwargs.get('upsert', True)
 
@@ -290,7 +290,7 @@ class QueryExecutor(object):
                 'values': values
             }
         }
-        if preql:
+        if zql:
             return query
         if returning:
             method = 'query' if rows > 1 else 'query_one_row'
@@ -316,11 +316,11 @@ class QueryExecutor(object):
         Returns:
             number of records updated
         """
-        # TODO: convert to PreQL
+        # TODO: convert to zql
         field = query.data('field')
         values = query.data('values')
         connection = kwargs.get('connection')
-        preql = kwargs.get('preql', False)
+        zql = kwargs.get('zql', False)
         assert(values)
         if not field:
             # values must be a dict with values
@@ -343,7 +343,7 @@ class QueryExecutor(object):
                 'return': returning
             }
         }
-        if preql:
+        if zql:
             return query
         method = 'query' if returning else 'execute'
         result = await getattr(self.database, method)(
@@ -365,7 +365,7 @@ class QueryExecutor(object):
         Returns:
             number of records deleted
         """
-        # TODO: convert to PreQL
+        # TODO: convert to zql
         connection = kwargs.get('connection')
         source = query.data('source')
         table = await self.database.get_table(source, scope=self.scope)
@@ -399,7 +399,7 @@ class QueryExecutor(object):
         Returns:
             True
         """
-        # TODO: convert to PreQL
+        # TODO: convert to zql
         connection = kwargs.get('connection')
         source = query.data('source')
         table = await self.database.get_table(source, scope=self.scope)

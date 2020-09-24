@@ -2,39 +2,66 @@ import re
 import json
 import ssl
 
-from adbc.utils import raise_not_implemented
-
+from adbc.utils import raise_not_implemented, parse_create_table
 try:
-    import sqliteschema
-    from aiosqlite import connect
+    from aiosqlite import connect, Row
 except ImportError:
     # this backend will fail
     # but allows import to succeed
     connect = raise_not_implemented('install aiosqlite')
-    sqliteschema = raise_not_implemented('install sqliteschema')
+    Row = raise_not_implemented('install aiosqlite')
 
 from typing import Union
 from .base import DatabaseBackend
 from cached_property import cached_property
 from urllib.parse import urlparse, parse_qs, urlencode
-from adbc.preql.dialect import Dialect, Backend, ParameterStyle
-from adbc.preql import parse, build
+from adbc.zql.dialect import Dialect, Backend, ParameterStyle
+from adbc.zql import parse, build
+from adbc.utils import aecho
 
 
 EMPTY_CLAUSE = {'=': [1, 1]}
 TAGGED_NUMBER_REGEX = re.compile(r'[a-zA-Z]+ ([0-9]+)')
 
 
-class SqlitePool():
-    def __init__(self, url, **kwargs):
-        self.url = url
-        self.kwargs = kwargs
 
-    async def acquire(self):
-        url = self.url
-        if not url:
-            raise ValueError('acquire: url is required')
-        return await connect(url)
+class SqlitePoolContext(object):
+    def __init__(self, url):
+        self.url = url
+        self.connection = None
+        self.closed = False
+
+    async def __aenter__(self):
+        self.connection = await SqliteBackend.connect(self.url)
+        return self.connection
+
+    async def __aexit__(self, *args):
+        await self.close()
+
+    async def close(self):
+        if self.connection and not self.closed:
+            await self.connection.close()
+            self.connection = None
+            self.closed = True
+
+
+class SqlitePool:
+    # naive pool
+    def __init__(self, url):
+        self.url = url
+        self.acquired = []
+
+    def acquire(self):
+        context = SqlitePoolContext(self.url)
+        self.acquired.append(context)
+        return context
+
+    async def close(self):
+        # close any contexts
+        for acquired in self.acquired:
+            await acquired.close()
+        self.acquired = []
+
 
 
 class SqliteBackend(DatabaseBackend):
@@ -50,8 +77,16 @@ class SqliteBackend(DatabaseBackend):
         return build(query, dialect=self.dialect)
 
     def parse_expression(self, expression: str):
-        """Return parsed PreQL expression"""
+        """Return parsed zql expression"""
         return parse(expression, Backend.SQLITE)
+
+    @staticmethod
+    async def connect(*args, **kwargs):
+        if 'uri' not in kwargs:
+            kwargs['uri'] = True
+        db = await connect(*args, **kwargs)
+        db.row_factory = Row
+        return db
 
     async def copy_to_table(self, connection, table_name, **kwargs):
         # sqlite copy-to-table: use insert
@@ -77,8 +112,8 @@ class SqliteBackend(DatabaseBackend):
 
     async def fetch(self, connection, query, params=None):
         params = params or []
-        cursor = await connection.execute(query, params)
-        return cursor.fetchall()
+        async with connection.execute(query, params) as cursor:
+            return await cursor.fetchall()
 
     @staticmethod
     def get_databases_query(include, tag=None):
@@ -93,13 +128,38 @@ class SqliteBackend(DatabaseBackend):
         return {'select': {'data': {'version': {'sqlite_version': []}}}}
 
     @staticmethod
-    async def create_pool(url, **kwargs):
-        return await SqlitePool(url, **kwargs)
+    async def get_tables(namespace, scope):
+        # use DdlParse package + sqlite_master table
+        tables = []
+        query = {
+            'select': {
+                'data': ['tbl_name', 'sql'],
+                'from': 'sqlite_master',
+                'where': {'=': ['type', '`table`']}
+            }
+        }
+        database = namespace.database
+        for row in await database.query(query):
+            name = row['tbl_name']
+            sql = row['sql']
+            columns, constraints, indexes = parse_create_table(sql)
+            try:
+                table = namespace.get_table(
+                    name,
+                    type='table',
+                    columns=columns,
+                    constraints=constraints,
+                    indexes=indexes,
+                    scope=scope
+                )
+            except NotIncluded:
+                pass
+            else:
+                tables.append(table)
+
+        return tables
 
     @staticmethod
-    def get_tables(namespace, scope):
-        # use sqliteschema package
-        extractor = sqliteschema.SQLiteSchemaExtractor(namespace.database.host.path)
-        schema = extractor.fetch_database_schema_as_dict()
-        return schema
-
+    async def create_pool(url, **kwargs):
+        # ignore kwargs
+        return SqlitePool(url)

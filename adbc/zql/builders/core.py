@@ -1,4 +1,4 @@
-from adbc.preql.validator import Validator
+from adbc.zql.validator import Validator
 
 
 class Builder(Validator):

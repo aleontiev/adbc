@@ -2,6 +2,7 @@ import re
 import inspect
 import asyncio
 import collections
+from ddlparse import DdlParse
 from cached_property import cached_property  # noqa
 
 
@@ -247,3 +248,35 @@ def raise_not_implemented(message):
     def inner(*args, **kwargs):
         raise NotImplementedError(message)
     return inner
+
+
+def print_query(query, params, sep='\n-----\n'):
+    if not params:
+        return query
+    else:
+        args = '\n'.join([f'${i+1}: {a}' for i, a in enumerate(params)])
+        return f'{query}{sep}{args}'
+
+
+def parse_create_table(statement: str):
+    """useful for sqlite DDL parsing"""
+    columns = []
+    constraints = []
+    indexes = []
+    parsed = DdlParse().parse(statement)
+    for name, column in parsed.columns.items():
+        column_ = {}
+        column_['type'] = column.data_type
+        column_['null'] = not column.not_null
+        # TODO: support parsing default from SQL to zQL
+        column_['default'] = column.default
+        column_['primary'] = column.primary_key
+        column_['unique'] = column.unique
+        column_['sequence'] = column.auto_increment
+        column_['name'] = name
+        columns.append(column_)
+        # TODO: support foreign keys
+        # TODO: support indexes
+    result = columns, constraints, indexes
+    print('parse create table', result)
+    return result

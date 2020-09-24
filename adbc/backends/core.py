@@ -4,6 +4,5 @@ from .sqlite import SqliteBackend
 def get_backend(scheme):
     if scheme == 'postgres':
         return PostgresBackend()
-    elif scheme == 'sqlite':
+    elif scheme == 'sqlite' or scheme == 'file':
         return SqliteBackend()
-

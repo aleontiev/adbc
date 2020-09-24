@@ -9,7 +9,7 @@ class DatabaseBackend(object):
         return getattr(cls, method)(*args, **kwargs)
 
     @staticmethod
-    def get_include_preql(include, table, column, tag=None):
+    def get_include_zql(include, table, column, tag=None):
         clauses = []
         column = f'{table}.{column}'
         if not include or include is True:
@@ -61,9 +61,6 @@ class DatabaseBackend(object):
         else:
             return None
 
-    @classmethod
-    async def connect(cls, *args, **kwargs):
-        connection = await connect(*args, **kwargs)
-        if hasattr(cls, 'initialize'):
-            await cls.initialize(connection)
-        return connection
+    @staticmethod
+    async def initialize(database):
+        pass

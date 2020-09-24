@@ -114,11 +114,7 @@ class Table(WithScope, Loggable):
         # - unique: based on unique constraints
         # - related: based on foreign key constraints
         constraints = self.constraints
-        pks = self.pks = get_pks(constraints) or self.column_names
-        if len(self.pks) == 1:
-            self.pk = next(iter(self.pks))
-        else:
-            self.pk = None
+        pks = self.pks = get_pks(constraints) or {}
         uniques = self.uniques = get_uniques(constraints)
         fks = self.fks = get_fks(constraints)
 
@@ -189,6 +185,14 @@ class Table(WithScope, Loggable):
                     }
             else:
                 column['related'] = fks.get(name, None)
+            if not pks:
+                self.pks = {
+                    name: True for name in self.column_names
+                }
+            if len(self.pks) == 1:
+                self.pk = next(iter(self.pks))
+            else:
+                self.pk = None
 
     def __str__(self):
         return f"{self.namespace}.{self.name}"

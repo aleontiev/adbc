@@ -2,10 +2,9 @@ import io
 from math import ceil
 from asyncio import gather
 from jsondiff.symbols import insert, delete
-from adbc.sql import print_query
-from adbc.utils import AsyncBuffer, aecho, confirm
+from adbc.utils import AsyncBuffer, aecho, confirm, print_query
 from adbc.constants import SEP, SEPN
-from adbc.preql import build
+from adbc.zql import build
 from .merge import WithMerge
 from .drop import WithDrop
 from .create import WithCreate
@@ -72,7 +71,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
                     target_model.table.columns.keys()
                 )
                 # copy from source to buffer
-                source_query = await source_query.get(preql=True)
+                source_query = await source_query.get(zql=True)
                 if self.parallel_copy:
                     buffer = AsyncBuffer()
                     copy_from, copy_to = await gather(
@@ -410,7 +409,7 @@ class WithCopy(WithMerge, WithDrop, WithCreate, WithDiff):
             if not query:
                 raise NotImplementedError("table or query is required")
             if isinstance(query, (list, dict)):
-                # compile from PreQL
+                # compile from zQL
                 query, params = build(query, dialect=self.backend.dialect, combine=True)
 
             target_label = print_query(query, params)

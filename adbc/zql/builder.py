@@ -1,4 +1,4 @@
-"""preql compiler"""
+"""zql compiler"""
 from typing import List, Dict, Union
 from .dialect import Dialect
 from .builders import get_builder

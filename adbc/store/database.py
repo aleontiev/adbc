@@ -3,20 +3,18 @@ from cached_property import cached_property
 from pprint import pformat
 from adbc.exceptions import NotIncluded
 from adbc.scope import WithScope
-from adbc.utils import get_version_number, confirm, aecho
+from adbc.utils import get_version_number, confirm, aecho, print_query
 from adbc.model import Model
-from adbc.sql import print_query
-from adbc.operations.copy import WithCopy
 from adbc.operations.apply import WithApply
 from adbc.logging import Loggable
 from adbc.constants import SEP, SEPN
-from adbc.preql import build
+from adbc.zql import build
 from .namespace import Namespace
 
 SKIP_CA_CHECK = os.environ.get('ADBC_SKIP_CA_CHECK') == '1'
 
 
-class Database(Loggable, WithCopy, WithScope, WithApply):
+class Database(Loggable, WithApply, WithScope):
     child_key = "schemas"
 
     def __init__(
@@ -131,7 +129,7 @@ class Database(Loggable, WithCopy, WithScope, WithApply):
 
     async def stream(self, query, params=None, transaction=True, connection=None):
         if isinstance(query, (dict, list)):
-            # build PreQL
+            # build zql
             queries = build(query, dialect=self.backend.dialect)
         else:
             queries = [(query, params)]
@@ -158,7 +156,7 @@ class Database(Loggable, WithCopy, WithScope, WithApply):
 
     async def execute(self, query, params=None, connection=None, transaction=False):
         if isinstance(query, (dict, list)):
-            # build PreQL query
+            # build zql query
             query, params = build(query, dialect=self.backend.dialect, combine=True)
 
         pool = await self.pool
@@ -191,7 +189,7 @@ class Database(Loggable, WithCopy, WithScope, WithApply):
         connection = aecho(connection) if connection else pool.acquire()
 
         if isinstance(query, (dict, list)):
-            # build PreQL
+            # build zql
             queries = build(query, dialect=self.backend.dialect)
         else:
             queries = [(query, params)]

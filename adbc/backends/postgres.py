@@ -2,6 +2,7 @@ import re
 import json
 import ssl
 
+from adbc.exceptions import NotIncluded
 from typing import Union
 from collections import defaultdict
 from .base import DatabaseBackend
@@ -15,8 +16,8 @@ except ImportError:
     connect = raise_not_implemented('install async')
 
 from urllib.parse import urlparse, parse_qs, urlencode
-from adbc.preql.dialect import Dialect, Backend, ParameterStyle
-from adbc.preql import parse, build
+from adbc.zql.dialect import Dialect, Backend, ParameterStyle
+from adbc.zql import parse, build
 
 
 EMPTY_CLAUSE = {'=': [1, 1]}
@@ -37,7 +38,7 @@ class PostgresBackend(DatabaseBackend):
         return build(query, dialect=self.dialect)
 
     def parse_expression(self, expression: str):
-        """Return parsed PreQL expression"""
+        """Return parsed zql expression"""
         return parse(expression, Backend.POSTGRES)
 
     async def copy_to_table(self, connection, table_name, **kwargs):
@@ -100,7 +101,7 @@ class PostgresBackend(DatabaseBackend):
         table = "pg_database"
         column = "datname"
 
-        where = PostgresBackend.get_include_preql(
+        where = PostgresBackend.get_include_zql(
             include, table, column, tag=tag
         ) or EMPTY_CLAUSE
         return {
@@ -119,7 +120,7 @@ class PostgresBackend(DatabaseBackend):
     def get_tables_query(namespace, include, tag=None):
         table = "R"
         column = "relname"
-        where = PostgresBackend.get_include_preql(
+        where = PostgresBackend.get_include_zql(
             include, table, column, tag=tag
         ) or EMPTY_CLAUSE
 
@@ -504,7 +505,7 @@ class PostgresBackend(DatabaseBackend):
     def get_namespaces_query(include, tag=None):
         table = "pg_namespace"
         column = "nspname"
-        where = PostgresBackend.get_include_preql(
+        where = PostgresBackend.get_include_zql(
             include, table, column, tag=tag
         )
         query = {
@@ -524,7 +525,7 @@ class PostgresBackend(DatabaseBackend):
     async def create_pool(url, **kwargs):
         if 'init' not in kwargs:
             # initialize connection with json loading
-            kwargs['init'] = PostgresBackend.initialize
+            kwargs['init'] = PostgresBackend.initialize_connection
         if kwargs.pop('skip_ca_check', False):
             ctx = ssl.create_default_context(cafile='')
             ctx.check_hostname = False
@@ -553,7 +554,7 @@ class PostgresBackend(DatabaseBackend):
         return await create_pool(**kwargs)
 
     @staticmethod
-    async def initialize(connection):
+    async def initialize_connection(connection):
         await connection.set_type_codec(
             "json", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
         )

@@ -1,5 +1,5 @@
-from adbc.preql import build
-from adbc.preql.dialect import Dialect, Backend, ParameterStyle
+from adbc.zql import build
+from adbc.zql.dialect import Dialect, Backend, ParameterStyle
 
 
 def get_dialect():

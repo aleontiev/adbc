@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Union
+from typing import Union, List
 from .sql import SQLBuilder
 
 
@@ -304,3 +304,50 @@ class PostgresBuilder(SQLBuilder):
         if len(normalized) == 1:
             normalized = normalized[0]
         return {"alter": normalized}
+
+    def get_auto_sequence_queries(self, table_name: str, columns: List[dict], style):
+        queries = []
+        for column in columns:
+            name = column.get("name")
+            sequence = column.get("sequence")
+            if sequence:
+                if not isinstance(sequence, str):
+                    sequence = self.get_auto_sequence_name(table_name, name)
+
+                sequence_name = sequence
+                sequence = {
+                    "name": sequence_name,
+                    "maybe": True,
+                    "owned_by": f"{table_name}.{name}",
+                }
+                # CREATE SEQUENCE IF NOT EXISTS ...
+                queries.extend(
+                    self.build(
+                        {
+                            "create": {
+                                "sequence": {
+                                    "name": sequence_name,
+                                    "maybe": True,
+                                    "owned_by": f"{table_name}.{name}",
+                                }
+                            },
+                        },
+                        style,
+                    )
+                )
+                # ALTER TABLE ... ALTER COLUMN ... DEFAULT nextval(...)
+                queries.extend(
+                    self.build(
+                        {
+                            "alter": {
+                                "column": {
+                                    "name": name,
+                                    "on": table_name,
+                                    "default": {"nextval": f"`{sequence_name}`"},
+                                }
+                            }
+                        },
+                        style,
+                    )
+                )
+        return queries
