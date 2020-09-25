@@ -8,7 +8,7 @@ from pyparsing import (
 
 
 
-class SQLParser(ParserBase):
+class SQLParser():
     """General SQL Parser
 
     Based on and inspired by ddlparser

@@ -17,7 +17,7 @@ except ImportError:
 
 from urllib.parse import urlparse, parse_qs, urlencode
 from adbc.zql.dialect import Dialect, Backend, ParameterStyle
-from adbc.zql import parse, build
+from adbc.zql import parse_expression, build
 
 
 EMPTY_CLAUSE = {'=': [1, 1]}
@@ -39,7 +39,7 @@ class PostgresBackend(DatabaseBackend):
 
     def parse_expression(self, expression: str):
         """Return parsed zql expression"""
-        return parse(expression, Backend.POSTGRES)
+        return parse_expression(expression, Backend.POSTGRES)
 
     async def copy_to_table(self, connection, table_name, **kwargs):
         result = await connection.copy_to_table(table_name, **kwargs)

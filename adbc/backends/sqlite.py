@@ -2,7 +2,7 @@ import re
 import json
 import ssl
 
-from adbc.utils import raise_not_implemented, parse_create_table
+from adbc.utils import raise_not_implemented
 try:
     from aiosqlite import connect, Row
 except ImportError:
@@ -16,7 +16,7 @@ from .base import DatabaseBackend
 from cached_property import cached_property
 from urllib.parse import urlparse, parse_qs, urlencode
 from adbc.zql.dialect import Dialect, Backend, ParameterStyle
-from adbc.zql import parse, build
+from adbc.zql import parse_expression, parse_statement, build
 from adbc.utils import aecho
 
 
@@ -78,7 +78,10 @@ class SqliteBackend(DatabaseBackend):
 
     def parse_expression(self, expression: str):
         """Return parsed zql expression"""
-        return parse(expression, Backend.SQLITE)
+        return parse_expression(expression, Backend.SQLITE)
+
+    def parse_statement(self, statement: str):
+        return parse_statement(statement, Backend.SQLITE)
 
     @staticmethod
     async def connect(*args, **kwargs):
