@@ -6,4 +6,4 @@ def parse(
     backend: Backend
 ):
     parser = get_parser(backend)
-    return parser.parse(expression)
+    return parser.parse_expression(expression)

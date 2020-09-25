@@ -18,7 +18,6 @@ dataclasses_json = "^0.5.2"
 aiosqlite = {version = "^0", extras = ["sqlite"]}
 aiomysql = {version = "^0", extras = ["mysql"]}
 asyncpg = {version = "^0", extras = ["postgres"]}
-ddlparse = "^1.8.0"
 
 [tool.poetry.dev-dependencies]
 pytest = "^5.0"
