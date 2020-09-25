@@ -2,6 +2,7 @@ import re
 import json
 import ssl
 
+from adbc.exceptions import NotIncluded
 from adbc.utils import raise_not_implemented
 try:
     from aiosqlite import connect, Row
@@ -68,70 +69,80 @@ class SqliteBackend(DatabaseBackend):
     """Sqlite backend based on aiosqlite"""
 
     default_schema = 'main'
+    type = Backend.SQLITE
     dialect = Dialect(
-        backend=Backend.SQLITE,
+        backend=type,
         style=ParameterStyle.QUESTION_MARK
     )
 
-    def build(self, query: Union[dict, list]):
-        return build(query, dialect=self.dialect)
+    @classmethod
+    def build(cls, query: Union[dict, list]):
+        return build(query, dialect=cls.dialect)
 
-    def parse_expression(self, expression: str):
+    @classmethod
+    def parse_expression(cls, expression: str):
         """Return parsed zql expression"""
-        return parse_expression(expression, Backend.SQLITE)
+        return parse_expression(expression, cls.type)
 
-    def parse_statement(self, statement: str):
-        return parse_statement(statement, Backend.SQLITE)
+    @classmethod
+    def parse_statement(cls, statement: str):
+        return parse_statement(statement, cls.type)
 
-    @staticmethod
-    async def connect(*args, **kwargs):
+    @classmethod
+    async def connect(cls, *args, **kwargs):
         if 'uri' not in kwargs:
             kwargs['uri'] = True
         db = await connect(*args, **kwargs)
         db.row_factory = Row
         return db
 
-    async def copy_to_table(self, connection, table_name, **kwargs):
+    @classmethod
+    async def copy_to_table(cls, connection, table_name, **kwargs):
         # sqlite copy-to-table: use insert
         return 'todo'
 
-    async def copy_from_table(self, connection, table_name, **kwargs):
+    @classmethod
+    async def copy_from_table(cls, connection, table_name, **kwargs):
         # sqlite copy-from-table: use select
         return 'todo'
 
-    async def copy_from_query(self, connection, query, params=None, **kwargs):
+    @classmethod
+    async def copy_from_query(cls, connection, query, params=None, **kwargs):
         # sqlite copy-from-query: use select
         return 'todo'
 
-    async def execute(self, connection, query, params=None):
+    @classmethod
+    async def execute(cls, connection, query, params=None):
         params = params or []
         return await connection.execute(query, params)
 
-    async def cursor(self, connection, query, params=None):
+    @classmethod
+    async def cursor(cls, connection, query, params=None):
         params = params or []
         async with connection.execute(query, params) as cursor:
             async for row in cursor:
                 yield row
 
-    async def fetch(self, connection, query, params=None):
+    @classmethod
+    async def fetch(cls, connection, query, params=None):
         params = params or []
         async with connection.execute(query, params) as cursor:
             return await cursor.fetchall()
 
-    @staticmethod
-    def get_databases_query(include, tag=None):
+    @classmethod
+    def get_databases_query(cls, include, tag=None):
         return {'select': {'data': "'main'"}}
 
-    @staticmethod
-    def get_namespaces_query(include, tag=None):
+    @classmethod
+    def get_namespaces_query(cls, include, tag=None):
         return {'select': {'data': "'main'"}}
 
-    @staticmethod
+    @classmethod
     def get_version_query():
         return {'select': {'data': {'version': {'sqlite_version': []}}}}
 
-    @staticmethod
-    async def get_tables(namespace, scope):
+    @classmethod
+    async def get_tables(cls, namespace, scope):
         # use DdlParse package + sqlite_master table
         tables = []
         query = {
@@ -145,14 +156,16 @@ class SqliteBackend(DatabaseBackend):
         for row in await database.query(query):
             name = row['tbl_name']
             sql = row['sql']
-            columns, constraints, indexes = parse_create_table(sql)
+            statement = cls.parse_statement(sql)
+            print(statement)
+            data = statement['create']['table']
             try:
                 table = namespace.get_table(
                     name,
                     type='table',
-                    columns=columns,
-                    constraints=constraints,
-                    indexes=indexes,
+                    columns=data.get('columns'),
+                    constraints=data.get('constraints'),
+                    indexes=data.get('indexes'),
                     scope=scope
                 )
             except NotIncluded:
@@ -160,9 +173,11 @@ class SqliteBackend(DatabaseBackend):
             else:
                 tables.append(table)
 
+        import pprint
+        pprint.pprint(tables)
         return tables
 
-    @staticmethod
-    async def create_pool(url, **kwargs):
+    @classmethod
+    async def create_pool(cls, url, **kwargs):
         # ignore kwargs
         return SqlitePool(url)

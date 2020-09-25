@@ -94,7 +94,7 @@ class SQLParser():
                         Regex(r"(?!--)", re.IGNORECASE)
                         + Group(
                             Optional(Regex(r"\b(?:NOT\s+)NULL?\b", re.IGNORECASE))("null")
-                            & Optional(Regex(r"\bAUTO(?:_)INCREMENT\b", re.IGNORECASE))("auto_increment")
+                            & Optional(Regex(r"\bAUTO(?:[_])INCREMENT\b", re.IGNORECASE))("auto_increment")
                             & Optional(Regex(r"\b(UNIQUE|PRIMARY)(?:\s+KEY)?\b", re.IGNORECASE))("key")
                             & Optional(Regex(
                                 r"\bDEFAULT\b\s+(?:((?:[A-Za-z0-9_\.\'\" -\{\}]|[^\x01-\x7E])*\:\:(?:character varying)?[A-Za-z0-9\[\]]+)|(?:\')((?:\\\'|[^\']|,)+)(?:\')|(?:\")((?:\\\"|[^\"]|,)+)(?:\")|([^,\s]+))",
@@ -149,9 +149,9 @@ class SQLParser():
 
     def get_column_definition(self, column):
         result = {}
-        result['type'] = column['type']
-        result['default'] = column['default']
-        result['null'] = 'NOT NULL' not in column['null'].upper()
+        result['type'] = column['type']['type_name']
+        result['default'] = column.get('default')
+        result['null'] = 'NOT NULL' not in column.get('null', '').upper()
         constraint = column.get('constraint', {})
         result['primary'] = constraint.get('type', '').upper() == 'PRIMARY KEY'
         result['unique'] = constraint.get('type', '').upper() in {'UNIQUE', 'UNIQUE KEY'}
@@ -176,8 +176,10 @@ class SQLParser():
 
         parsed = self.PARSE.parseString(sql)
         result = {}
-        schema = parsed['schema']
-        table = parsed['name']
+        if 'table' not in parsed:
+            raise ValueError(f'failed to parse SQL: "{sql}"')
+        table = parsed['table']
+        schema = parsed.get('schema')
         result['name'] = f'{schema}.{table}' if schema else table
         result['temporary'] = "temporary" in parsed
         result['maybe'] = 'maybe' in parsed
@@ -202,4 +204,7 @@ class SQLParser():
                     elif type == "NOT NULL":
                         column['null'] = False
 
+        print(sql)
+        print(parsed)
+        print(parsed['columns'])
         return {'create': {'table': result}}
