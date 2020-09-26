@@ -59,4 +59,7 @@ async def test_apply():
                 columns['id']['default'] = {
                     'nextval': "'main.test__id__seq'"
                 }
+            elif type == 'sqlite':
+                columns = deepcopy(columns)
+                columns['id']['primary'] = True
             assert table.columns == columns

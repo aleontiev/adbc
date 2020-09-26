@@ -157,7 +157,6 @@ class SqliteBackend(DatabaseBackend):
             name = row['tbl_name']
             sql = row['sql']
             statement = cls.parse_statement(sql)
-            print(statement)
             data = statement['create']['table']
             try:
                 table = namespace.get_table(
@@ -173,8 +172,6 @@ class SqliteBackend(DatabaseBackend):
             else:
                 tables.append(table)
 
-        import pprint
-        pprint.pprint(tables)
         return tables
 
     @classmethod

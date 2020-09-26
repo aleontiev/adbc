@@ -117,7 +117,6 @@ class Table(WithScope, Loggable):
         pks = self.pks = get_pks(constraints) or {}
         uniques = self.uniques = get_uniques(constraints)
         fks = self.fks = get_fks(constraints)
-
         for name, column in self.columns.items():
             if "default" in column:
                 default = column["default"]

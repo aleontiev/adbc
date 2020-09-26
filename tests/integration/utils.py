@@ -16,6 +16,9 @@ URLS = {
     'sqlite': 'file:test.sqlite'
 }
 
+def get_uid():
+    pass
+
 class setup_test_database(object):
     def __init__(self, name=None, type='postgres', verbose=False):
         self.type = type
@@ -37,7 +40,7 @@ class setup_test_database(object):
         )
         self.host = self.root.host
         if self.host.file:
-            # for file hosts (sqlite), use this same database
+            # for file hosts (sqlite), make a temp copy of this database
             self.db = self.root
             self.db.prompt = PROMPT
             self.db.verbose = self.verbose

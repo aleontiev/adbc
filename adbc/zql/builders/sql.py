@@ -2158,9 +2158,8 @@ class SQLBuilder(Builder):
         type = column.get("type")
         if not name:
             raise ValueError("column must have name")
-        if not type:
-            raise ValueError(f'column "{name}" must have type')
 
+        type = f' {type}' if type else ''
         # null, default are optional
         null = column.get("null", True)
         sequence = column.get('sequence', False)
@@ -2187,7 +2186,7 @@ class SQLBuilder(Builder):
             default = f" DEFAULT {default}"
 
         name = self.format_identifier(name)
-        return f"{indent}{name} {type}{pk}{autoincrement}{null}{default}"
+        return f"{indent}{name}{type}{pk}{autoincrement}{null}{default}"
 
     def get_create_table_items(
         self,

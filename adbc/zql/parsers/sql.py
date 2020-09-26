@@ -80,7 +80,7 @@ class SQLParser():
                 |
                 Group(
                     ((SUPPRESS_QUOTE + Word(alphanums + " _")("name") + SUPPRESS_QUOTE) ^ (Optional(SUPPRESS_QUOTE) + Word(alphanums + "_")("name") + Optional(SUPPRESS_QUOTE)))
-                    + Group(
+                    + Optional(Group(
                         Group(
                             Word(alphanums + "_")
                             + Optional(CaselessKeyword("WITHOUT TIME ZONE") ^ CaselessKeyword("WITH TIME ZONE") ^ CaselessKeyword("PRECISION") ^ CaselessKeyword("VARYING"))
@@ -88,13 +88,13 @@ class SQLParser():
                         + Optional(LPAR + Regex(r"[\d\*]+\s*,*\s*\d*")("length") + Optional(CHAR_SEMANTICS | BYTE_SEMANTICS)("semantics") + RPAR)
                         + Optional(TYPE_UNSIGNED)("unsigned")
                         + Optional(TYPE_ZEROFILL)("zerofill")
-                    )("type")
+                    )("type"))
                     + Optional(Word(r"\[\]"))("array_brackets")
                     + Optional(
                         Regex(r"(?!--)", re.IGNORECASE)
                         + Group(
                             Optional(Regex(r"\b(?:NOT\s+)NULL?\b", re.IGNORECASE))("null")
-                            & Optional(Regex(r"\bAUTO(?:[_])INCREMENT\b", re.IGNORECASE))("auto_increment")
+                            & Optional(Regex(r"\bAUTO(?:_)?INCREMENT\b", re.IGNORECASE))("auto_increment")
                             & Optional(Regex(r"\b(UNIQUE|PRIMARY)(?:\s+KEY)?\b", re.IGNORECASE))("key")
                             & Optional(Regex(
                                 r"\bDEFAULT\b\s+(?:((?:[A-Za-z0-9_\.\'\" -\{\}]|[^\x01-\x7E])*\:\:(?:character varying)?[A-Za-z0-9\[\]]+)|(?:\')((?:\\\'|[^\']|,)+)(?:\')|(?:\")((?:\\\"|[^\"]|,)+)(?:\")|([^,\s]+))",
@@ -147,15 +147,46 @@ class SQLParser():
             result = self.parse_literal(expression)
         return result
 
+    def get_column_type(self, type, brackets=None):
+        if not type:
+            # typeless, e.g. SQLite
+            return None
+        if 'type_name' not in type:
+            raise ValueError(f'{type}: missing type name')
+        type_name = type['type_name'][0]
+        length = type.get('length')
+        semantics = type.get('semantics')
+        unsigned = type.get('unsigned')
+        zerofill = type.get('zerofill')
+        optionals = []
+        if length:
+            if semantics:
+                optionals.append(f'({length} {semantics})')
+            else:
+                optionals.append(f'({length})')
+        if unsigned:
+            optionals.append(unsigned)
+        if zerofill:
+            optionals.append(zerofill)
+        if optionals:
+            type_name += ' '.join(optionals)
+        if brackets:
+            type_name += brackets
+        # e.g. character varying (10)
+        return type_name
+
     def get_column_definition(self, column):
         result = {}
-        result['type'] = column['type']['type_name']
+
+        result['name'] = column['name']
+        result['type'] = self.get_column_type(column.get('type'), column.get('array_brackets'))
         result['default'] = column.get('default')
-        result['null'] = 'NOT NULL' not in column.get('null', '').upper()
         constraint = column.get('constraint', {})
-        result['primary'] = constraint.get('type', '').upper() == 'PRIMARY KEY'
-        result['unique'] = constraint.get('type', '').upper() in {'UNIQUE', 'UNIQUE KEY'}
-        result['sequence'] = constraint.get('auto_increment', False)
+        result['null'] = 'NOT NULL' not in constraint.get('null', '').upper()
+        key = constraint.get('key', '')
+        result['primary'] = key.upper() == 'PRIMARY KEY'
+        result['unique'] = key.upper() in {'UNIQUE', 'UNIQUE KEY'}
+        result['sequence'] = 'auto_increment' in constraint
         return result
 
     def parse_statement(self, sql=None):
@@ -204,7 +235,5 @@ class SQLParser():
                     elif type == "NOT NULL":
                         column['null'] = False
 
-        print(sql)
-        print(parsed)
-        print(parsed['columns'])
+        result['columns'] = list(result['columns'].values())
         return {'create': {'table': result}}
