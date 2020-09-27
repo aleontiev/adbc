@@ -7,6 +7,7 @@ from collections import defaultdict
 from adbc.exceptions import NotIncluded
 from adbc.logging import Loggable
 from adbc.scope import WithScope
+from adbc.generators import G
 from adbc.constants import SEQUENCE, TABLE, PRIMARY, UNIQUE, FOREIGN
 from cached_property import cached_property
 from adbc.utils import get_first
@@ -140,10 +141,10 @@ class Table(WithScope, Loggable):
                         else f"{self.name}__{name}__pk"
                     )
                     pks[name] = constraint_name
-                    constraints[constraint_name] = {
-                        "type": PRIMARY,
-                        "columns": [name],
-                    }
+                    constraints[constraint_name] = G('constraint',
+                        type=PRIMARY,
+                        columns=[name]
+                    )
             else:
                 column["primary"] = pks.get(name, False)
             if column.get("unique"):
@@ -153,10 +154,10 @@ class Table(WithScope, Loggable):
                         unique if isinstance(unique, str) else f"{self.name}__{name}__uk"
                     )
                     uniques[name] = constraint_name
-                    constraints[constraint_name] = {
-                        "type": UNIQUE,
-                        "columns": [name],
-                    }
+                    constraints[constraint_name] = G('constraint',
+                        type=UNIQUE,
+                        columns=[name]
+                    )
             else:
                 column["unique"] = uniques.get(name, False)
 
@@ -467,19 +468,27 @@ class Table(WithScope, Loggable):
         columns = self.order_by_alias(columns)
         # concatenate values together 
         aggregate = [f"T.{c}" for c in columns]
-        aggregate = {'json_build_array': aggregate}
+        aggregate = {'json_array': aggregate}
 
         output = []
         pk = pks[0]
 
-        md5 = {
-            'md5': {
-                'array_to_string': [
-                    {'array_agg': aggregate},
-                    '`,`'
-                ]
-            }
-        } if md5 else None
+        if md5:
+            if self.database.backend.has_function('array_agg'):
+                md5 = {
+                    'md5': {
+                        'array_to_string': [
+                            {'array_agg': aggregate},
+                            '`,`'
+                        ]
+                    }
+                }
+            else:
+                md5 = {
+                    'md5': {
+                        'group_concat': aggregate
+                    }
+                }
 
         count = {'count': '*'}
         max_pk = {'max': pk} if max_pk else None
@@ -622,7 +631,8 @@ class Table(WithScope, Loggable):
             return dict(result)
         else:
             result = defaultdict(dict)
-            for key, value in row.items():
+            for key in row.keys():
+                value = row[key]
                 type = key[0:3]
                 key = key[4:]
                 result[key][type] = value

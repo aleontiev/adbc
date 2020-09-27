@@ -1,6 +1,7 @@
 import re
 import json
 import ssl
+import hashlib
 
 from adbc.exceptions import NotIncluded
 from adbc.utils import raise_not_implemented
@@ -24,6 +25,11 @@ from adbc.utils import aecho
 EMPTY_CLAUSE = {'=': [1, 1]}
 TAGGED_NUMBER_REGEX = re.compile(r'[a-zA-Z]+ ([0-9]+)')
 
+
+
+def md5sum(t):
+    t = str(t).encode('utf-8')
+    return hashlib.md5(t).hexdigest()
 
 
 class SqlitePoolContext(object):
@@ -68,6 +74,9 @@ class SqlitePool:
 class SqliteBackend(DatabaseBackend):
     """Sqlite backend based on aiosqlite"""
 
+    FUNCTIONS = {
+        'group_concat'
+    }
     default_schema = 'main'
     type = Backend.SQLITE
     dialect = Dialect(
@@ -92,7 +101,11 @@ class SqliteBackend(DatabaseBackend):
     async def connect(cls, *args, **kwargs):
         if 'uri' not in kwargs:
             kwargs['uri'] = True
+        if 'isolation_level' not in kwargs:
+            # autocommit
+            kwargs['isolation_level'] = None
         db = await connect(*args, **kwargs)
+        await db.create_function('md5', 1, md5sum)
         db.row_factory = Row
         return db
 
@@ -114,7 +127,11 @@ class SqliteBackend(DatabaseBackend):
     @classmethod
     async def execute(cls, connection, query, params=None):
         params = params or []
-        return await connection.execute(query, params)
+        await connection.execute(query, params)
+        # get changes
+        async with connection.execute('select changes()') as cursor:
+            row = await cursor.fetchone()
+            return row[0]
 
     @classmethod
     async def cursor(cls, connection, query, params=None):

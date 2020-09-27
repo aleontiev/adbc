@@ -28,6 +28,9 @@ TAGGED_NUMBER_REGEX = re.compile(r'[a-zA-Z]+ ([0-9]+)')
 class PostgresBackend(DatabaseBackend):
     """Postgres backend based on asyncpg"""
 
+    FUNCTIONS = {
+        'array_agg',
+    }
     default_schema = 'public'
     dialect = Dialect(
         backend=Backend.POSTGRES,

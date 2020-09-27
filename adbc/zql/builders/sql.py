@@ -21,6 +21,8 @@ def add_key(d, k, v):
 class SQLBuilder(Builder):
     AUTOINCREMENT = None
     INLINE_PRIMARY_KEYS = False
+    OPERATOR_RENAMES = {}
+    FUNCTION_RENAMES = {}
     CONSTRAINT_ABBREVIATIONS = {
         "primary": "pk",
         "foreign": "fk",
@@ -398,6 +400,9 @@ class SQLBuilder(Builder):
     def get_returning(
         self, returning: Union[list, str, dict], style, params, prefix=True
     ):
+        if not returning:
+            return None
+        # otherwise, bail
         raise NotImplementedError()
 
     def get_values(self, values, style, params, depth=0):
@@ -1836,8 +1841,10 @@ class SQLBuilder(Builder):
                     # {"contains": ["a", "'c'"]}
                     # -> {"like": ["a", "'%c%'"]}
 
-                operator = self.get_operator(key)
+                if key in self.OPERATOR_RENAMES:
+                    key = self.OPERATOR_RENAMES[key]
 
+                operator = self.get_operator(key)
                 if operator:
                     # operator expression, e.g. {"+": [1, 2]} -> 1 + 2
                     if not isinstance(value, list):
@@ -1929,6 +1936,9 @@ class SQLBuilder(Builder):
                 # functions can be qualified by a schema
                 if not self.validate_function(key):
                     raise ValueError(f'"{key}" is not a valid function')
+
+                if key in self.FUNCTION_RENAMES:
+                    key = self.FUNCTION_RENAMES[key]
 
                 newline = newline_indent = ""
                 if not value:

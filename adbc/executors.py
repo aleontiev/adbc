@@ -206,13 +206,18 @@ class QueryExecutor(object):
 
     def get_added_rows(self, result, rows=None):
         regex = self.ADDED_ROWS_REGEX
-        return self._get_changed_rows(regex, result, rows)
+        try:
+            return self._get_changed_rows(regex, result, rows)
+        except Exception:
+            return rows
 
     def get_changed_rows(self, result, rows=None):
         regex = self.CHANGED_ROWS_REGEX
         return self._get_changed_rows(regex, result, rows)
 
     def _get_changed_rows(self, regex, result, rows):
+        if isinstance(result, int):
+            return result
         match = regex.match(result)
         return int(match.group(1)) if match else rows
 

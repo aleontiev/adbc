@@ -21,6 +21,7 @@ class Builder(Validator):
         'explain',
         'set'
     }
+    OPERATOR_REWRITES = {}
     OPERATORS = {
         'not': 1,
         '!!': 1,

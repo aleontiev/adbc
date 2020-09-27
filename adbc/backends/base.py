@@ -1,4 +1,6 @@
 class DatabaseBackend(object):
+    FUNCTIONS = {}
+
     @classmethod
     def has(cls, feature):
         return getattr(cls, f'has_{feature}', False)
@@ -7,6 +9,9 @@ class DatabaseBackend(object):
     def get_query(cls, name, *args, **kwargs):
         method = f'get_{name}_query'
         return getattr(cls, method)(*args, **kwargs)
+
+    def has_function(cls, fn):
+        return fn in cls.FUNCTIONS
 
     @staticmethod
     def get_include_zql(include, table, column, tag=None):
