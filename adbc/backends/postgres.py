@@ -341,7 +341,14 @@ class PostgresBackend(DatabaseBackend):
                                     }
                                 },
                                 "`related_name`",
-                                'F.relname',
+                                {
+                                    'case': [{
+                                        'when': {'is not null': 'F.relname'},
+                                        'then': {'concat': ['FN.nspname', '`.`', 'F.relname']}
+                                    }, {
+                                        'else': {'null': None}
+                                    }]
+                                },
                                 "`check`",
                                 'C.consrc'
                             ]
@@ -369,6 +376,11 @@ class PostgresBackend(DatabaseBackend):
                     'to': 'pg_class',
                     'as': 'F',
                     'on': {'=': ['F.oid', 'C.confrelid']}
+                }, {
+                    'type': 'left',
+                    'to': 'pg_namespace',
+                    'as': 'FN',
+                    'on': {'=': ['F.relnamespace', 'FN.oid']}
                 }],
                 'where': {
                     'and': [{

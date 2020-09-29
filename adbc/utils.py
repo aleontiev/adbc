@@ -2,6 +2,7 @@ import re
 import inspect
 import asyncio
 import collections
+from copy import deepcopy
 from cached_property import cached_property  # noqa
 
 
@@ -255,3 +256,14 @@ def print_query(query, params, sep='\n-----\n'):
     else:
         args = '\n'.join([f'${i+1}: {a}' for i, a in enumerate(params)])
         return f'{query}{sep}{args}'
+
+
+def named_dict_to_list(data, name='name'):
+    result = []
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            raise ValueError(f'expecting {value} to be a dict')
+        value = deepcopy(value)
+        value[name] = key
+        result.append(value)
+    return result

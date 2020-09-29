@@ -70,6 +70,7 @@ class Table(WithScope, Loggable):
         tag=None,
         alias=None,
         type=None,
+        backend=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -84,6 +85,7 @@ class Table(WithScope, Loggable):
         self.parent = self.namespace = namespace
         self.alias = alias or name
         self.tag = tag
+        self._backend = backend
 
         self.on_create = self.scope.get("on_create", None)
         self.on_update = self.scope.get("on_update", None)
@@ -91,7 +93,6 @@ class Table(WithScope, Loggable):
         self.immutable = self.scope.get(
             "immutable", not (bool(self.on_update) or bool(self.on_delete))
         )
-
         self.columns = self.get_children("columns", columns)
         self.column_names = list(self.columns.keys())
         self.constraints = self.get_children("constraints", constraints or [])
@@ -111,6 +112,10 @@ class Table(WithScope, Loggable):
     def database(self):
         return self.namespace.database
 
+    @property
+    def backend(self):
+        return self.database.backend if not self._backend else self._backend
+
     def init_table(self):
         """Normal table initializer"""
         # in one loop, create a two-way values binding for these properties:
@@ -124,9 +129,8 @@ class Table(WithScope, Loggable):
         fks = self.fks = get_fks(constraints)
         for name, column in self.columns.items():
             if "default" in column:
-                default = column["default"]
-                default = column['default'] = self.database.backend.parse_expression(
-                    default
+                default = column['default'] = self.backend.parse_expression(
+                    column['default']
                 )
                 if isinstance(default, dict) and 'nextval' in default:
                     # TODO: move nextval into backend, non-standard SQL
@@ -478,7 +482,7 @@ class Table(WithScope, Loggable):
         pk = pks[0]
 
         if md5:
-            if self.database.backend.has_function('array_agg'):
+            if self.backend.has_function('array_agg'):
                 md5 = {
                     'md5': {
                         'array_to_string': [

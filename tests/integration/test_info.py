@@ -13,9 +13,15 @@ async def test_info():
         type='unique',
         columns=['name']
     )
+    related_definition = {
+        "columns": {
+            "id": G('column', type='integer', primary=True, sequence=True)
+        }
+    }
     table_definition_ = {
         "columns": {
             "id": G('column', type='integer', primary='test__id__pk', sequence=True),
+            "related_id": G('column', type='integer', null=True, related={'to': 'main.related', 'by': ['id']}),
             "name": G('column', type='text', null=True)
         },
         "constraints": {
@@ -23,6 +29,7 @@ async def test_info():
                 type='primary',
                 columns=['id']
             )
+            # FK for "related_id" intentionally omitted
         }
     }
     scope = {"schemas": {"main": True}}
@@ -36,6 +43,7 @@ async def test_info():
                 # sqlite does not support create schema and has a default schema "main"
                 await source.create_schema("main")
 
+            await source.create_table("related", related_definition, schema="main")
             await source.create_table("test", table_definition, schema="main")
 
             # 3. get/add/edit/delete data
@@ -45,6 +53,7 @@ async def test_info():
             assert table is not None
             assert table.pk == 'id'
 
+            table_definition['columns']['related_id']['related']['name'] = 'test__related_id__fk'
             if type == 'postgres':
                 table_definition['columns']['id']['sequence'] = 'main.test__id__seq'
                 table_definition['columns']['id']['default'] = {
@@ -52,6 +61,7 @@ async def test_info():
                 }
             if type == 'sqlite':
                 table_definition['columns']['id']['primary'] = True
+                table_definition['columns']['related_id']['related']['to'] = 'related'
 
             assert table.columns == table_definition['columns']
             # add (INSERT)
@@ -76,8 +86,8 @@ async def test_info():
             assert count == 2
             results = await query.sort("id").get()
             assert len(results) == 2
-            assert dict(results[0]) == {"id": 1, "name": "Jay"}
-            assert dict(results[1]) == {"id": 3, "name": None}
+            assert dict(results[0]) == {"id": 1, "name": "Jay", 'related_id': None}
+            assert dict(results[1]) == {"id": 3, "name": None, 'related_id': None}
 
             # UPDATE
             # TODO: use where(id=3) to test where in set
@@ -92,6 +102,13 @@ async def test_info():
             info = await source.get_info(scope=scope)
             expect_schema = table_definition
             actual_schema = info["main"]["test"]
+            expect_schema['constraints']['test__related_id__fk'] = G(
+                'constraint',
+                type='foreign',
+                columns=['related_id'],
+                related_name='main.related' if type != 'sqlite' else 'related',
+                related_columns=['id']
+            )
             if type == 'postgres':
                 seq = info['main']['test__id__seq']
                 assert seq == {'value': 3, 'type': 'sequence'}
@@ -131,8 +148,7 @@ async def test_info():
             assert expect_schema["constraints"] == actual_schema["constraints"]
             assert actual_data["count"] == 4
             assert actual_data["range"] == {"id": {"min": 1, "max": 6}}
-            if type == 'sqlite':
-                assert actual_data['hashes'] == {1: '566991d4b9cf37367cab89ab93b74a3d'}
+            assert actual_data['hashes'] == {1: '79bf96eadff2c10ee9c81356d53ef51e'}
 
             # 9. test exclusion: ignore certain fields
             excludes = ['unique', 'primary', 'related', 'type']

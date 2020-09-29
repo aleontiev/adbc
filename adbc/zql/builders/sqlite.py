@@ -15,6 +15,12 @@ class SqliteBuilder(SQLBuilder):
         'ilike': 'like'
     }
 
+    def get_references_identifier(self, name):
+        # FK constraint references should not include the schema name
+        unpacked = self.unpack_identifier(name)
+        name = unpacked[-1]  # get table name
+        return self.format_identifier(name)  # format table name
+
     def can_defer(self, constraint):
         # only FK constraints can be deferred in SQLite
         return constraint['type'] == 'foreign'

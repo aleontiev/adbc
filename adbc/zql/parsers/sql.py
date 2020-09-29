@@ -1,6 +1,7 @@
 import re
 
-
+from adbc.store.table import Table
+from adbc.utils import named_dict_to_list
 from pyparsing import (
     CaselessKeyword, Forward, Word, Regex, alphanums,
     delimitedList, Suppress, Optional, Group, OneOrMore
@@ -26,6 +27,7 @@ class SQLParser():
 
     FUNCTION_REGEX = re.compile(r'^([a-zA-Z][0-9a-zA-Z._]*)\(([^)]*)\)$')
 
+    INITIALLY_DEFERRED, INITIALLY_IMMEDIATE, DEFERRABLE, NOT_DEFERRABLE = map(CaselessKeyword, "INITIALLY DEFERRED, INITIALLY IMMEDIATE, DEFERRABLE, NOT DEFERRABLE".replace(", ", ",").split(","))
     LPAR, RPAR, COMMA, SEMICOLON, DOT, DOUBLEQUOTE, BACKQUOTE, SPACE = map(Suppress, "(),;.\"` ")
     CREATE, TABLE, TEMP, CONSTRAINT, NOT_NULL, PRIMARY_KEY, UNIQUE, UNIQUE_KEY, FOREIGN_KEY, REFERENCES, KEY, CHAR_SEMANTICS, BYTE_SEMANTICS = \
         map(CaselessKeyword, "CREATE, TABLE, TEMP, CONSTRAINT, NOT NULL, PRIMARY KEY, UNIQUE, UNIQUE KEY, FOREIGN KEY, REFERENCES, KEY, CHAR, BYTE".replace(", ", ",").split(","))
@@ -75,6 +77,8 @@ class SQLParser():
                                 # + Optional(FK_ON_UPDATE)("references_fk_on_update")  # MySQL
                             )
                         )
+                        & Optional(NOT_DEFERRABLE ^ DEFERRABLE)("deferrable")  # Postgres, Oracle
+                        & Optional(INITIALLY_DEFERRED ^ INITIALLY_IMMEDIATE)("deferred")  # Postgres, Oracle
                     )
                 )("constraint")
                 |
@@ -211,7 +215,7 @@ class SQLParser():
         if key == 'FOREIGN KEY':
             result['related'] = {
                 'to': constraint['references_table'],
-                'by': constraint['references_columns']
+                'by': self.get_columns(constraint['references_columns'])
             }
         result['sequence'] = 'auto_increment' in constraint
         result['related'] = None
@@ -220,16 +224,23 @@ class SQLParser():
     def get_constraint_type(self, type):
         return type.lower().replace('key', '').strip()
 
+    def get_columns(self, columns):
+        if columns is None:
+            return None
+        return columns.asList()
+
     def get_constraint_definition(self, constraint):
         result = {}
 
-        result['name'] = column['name']
+        result['name'] = constraint['name']
         result['type'] = self.get_constraint_type(constraint.get('type'))
-        result['deferrable'] = column.get('deferrable', False)
-        result['deferred'] = column.get('deferred', False)
-        result['check'] = column.get('check', None)
-        result['related_name'] = column.get('references_table', None)
-        result['related_columns'] = column.get('references_columns', None)
+        result['deferrable'] = constraint.get('deferrable', False)
+        result['deferred'] = constraint.get('deferred', '').upper() == 'INITIALLY DEFERRED'
+        result['deferrable'] = constraint.get('deferrable', '').upper() == 'DEFERRABLE'
+        result['check'] = constraint.get('check', None)
+        result['columns'] = self.get_columns(constraint.get('constraint_columns'))
+        result['related_name'] = constraint.get('references_table', None)
+        result['related_columns'] = self.get_columns(constraint.get('references_columns'))
         return result
 
     def parse_statement(self, sql=None):
@@ -271,7 +282,8 @@ class SQLParser():
                 constraints.append(self.get_constraint_definition(item))
 
         # use adbc.store.Table to update the constraints/columns
-        table = Table(columns=columns, constraints=constraints)
-        result['columns'] = list(table.columns.values())
-        result['constraints'] = list(table.constraints.values())
+        name = table
+        table = Table(name, backend=self, columns=columns, constraints=constraints)
+        result['columns'] = named_dict_to_list(table.columns)
+        result['constraints'] = named_dict_to_list(table.constraints)
         return {'create': {'table': result}}

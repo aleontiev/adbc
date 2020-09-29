@@ -25,6 +25,7 @@ class Builder(Validator):
     OPERATORS = {
         'not': 1,
         '!!': 1,
+        'is': 2,
         'is null': {
             'arguments': 1,
             'binds': 'right'

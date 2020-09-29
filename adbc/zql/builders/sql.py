@@ -1390,7 +1390,7 @@ class SQLBuilder(Builder):
                     "constraint",
                     type="foreign",
                     columns=[column_name],
-                    related_name=[to],
+                    related_name=to,
                     related_columns=[by],
                 )
                 constraint["name"] = name
@@ -1979,6 +1979,9 @@ class SQLBuilder(Builder):
 
         raise ValueError(f"cannot format expression {expression}")
 
+    def get_references_identifier(self, name):
+        return self.format_identifier(name)
+
     def get_create_constraint(
         self,
         constraint: dict,
@@ -2030,7 +2033,7 @@ class SQLBuilder(Builder):
                     f'"{type}" constraint must have "related_columns" and "related_name"'
                 )
 
-            related_name = self.format_identifier(related_name)
+            related_name = self.get_references_identifier(related_name)
             related_columns = self.combine(
                 [self.format_identifier(c) for c in related_columns], separator=", "
             )
