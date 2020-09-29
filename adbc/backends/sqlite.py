@@ -32,6 +32,10 @@ def md5sum(t):
     return hashlib.md5(t).hexdigest()
 
 
+def json_build_array(*args):
+    return json.dumps(args)
+
+
 class SqlitePoolContext(object):
     def __init__(self, url):
         self.url = url
@@ -106,6 +110,7 @@ class SqliteBackend(DatabaseBackend):
             kwargs['isolation_level'] = None
         db = await connect(*args, **kwargs)
         await db.create_function('md5', 1, md5sum)
+        await db.create_function('json_build_array', -1, json_build_array)
         db.row_factory = Row
         return db
 

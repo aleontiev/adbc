@@ -127,23 +127,23 @@ async def test_info():
             if type != 'sqlite':
                 # expect unique to be set 
                 expect_schema['columns']['name']['unique'] = 'unique_name'
-            else:
-                expect_schema['columns']['created']['type'] = 'timestamp'
             assert expect_schema["columns"] == actual_schema["columns"]
             assert expect_schema["constraints"] == actual_schema["constraints"]
             assert actual_data["count"] == 4
             assert actual_data["range"] == {"id": {"min": 1, "max": 6}}
-            assert actual_data['hashes'] == {1: '566991d4b9cf37367cab89ab93b74a3d'}
+            if type == 'sqlite':
+                assert actual_data['hashes'] == {1: '566991d4b9cf37367cab89ab93b74a3d'}
 
             # 9. test exclusion: ignore certain fields
-            excludes = ['unique', 'primary', 'related']
+            excludes = ['unique', 'primary', 'related', 'type']
             info = await source.get_info(
                 scope=alias_scope,
                 hashes=True,
                 exclude={'columns': excludes}
             )
             actual_schema = info['main']['test']
-            for name, column in expect_schema['columns'].items():
+            expected = deepcopy(expect_schema)
+            for name, column in expected['columns'].items():
                 for exclude in excludes:
                     column.pop(exclude)
-            assert expect_schema['columns'] == actual_schema['columns']
+            assert expected['columns'] == actual_schema['columns']

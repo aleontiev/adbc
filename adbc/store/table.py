@@ -82,7 +82,6 @@ class Table(WithScope, Loggable):
         self.name = name
         self.verbose = verbose
         self.parent = self.namespace = namespace
-        self.database = namespace.database
         self.alias = alias or name
         self.tag = tag
 
@@ -107,6 +106,11 @@ class Table(WithScope, Loggable):
     def init_sequence(self):
         pass
 
+
+    @property
+    def database(self):
+        return self.namespace.database
+
     def init_table(self):
         """Normal table initializer"""
         # in one loop, create a two-way values binding for these properties:
@@ -115,7 +119,7 @@ class Table(WithScope, Loggable):
         # - unique: based on unique constraints
         # - related: based on foreign key constraints
         constraints = self.constraints
-        pks = self.pks = get_pks(constraints) or {}
+        self.pks = get_pks(constraints) or {}
         uniques = self.uniques = get_uniques(constraints)
         fks = self.fks = get_fks(constraints)
         for name, column in self.columns.items():
@@ -133,20 +137,20 @@ class Table(WithScope, Loggable):
                     column["sequence"] = column.get("sequence", False)
 
             if column.get("primary"):
-                if name not in pks:
+                if name not in self.pks:
                     primary = column.get("primary")
                     constraint_name = (
                         primary
                         if isinstance(primary, str)
                         else f"{self.name}__{name}__pk"
                     )
-                    pks[name] = constraint_name
+                    self.pks[name] = constraint_name
                     constraints[constraint_name] = G('constraint',
                         type=PRIMARY,
                         columns=[name]
                     )
             else:
-                column["primary"] = pks.get(name, False)
+                column["primary"] = self.pks.get(name, False)
             if column.get("unique"):
                 if name not in uniques:
                     unique = column.get("unique")
@@ -185,14 +189,14 @@ class Table(WithScope, Loggable):
                     }
             else:
                 column['related'] = fks.get(name, None)
-            if not pks:
-                self.pks = {
-                    name: True for name in self.column_names
-                }
-            if len(self.pks) == 1:
-                self.pk = next(iter(self.pks))
-            else:
-                self.pk = None
+        if not self.pks:
+            self.pks = {
+                name: True for name in self.column_names
+            }
+        if len(self.pks) == 1:
+            self.pk = next(iter(self.pks))
+        else:
+            self.pk = None
 
     def __str__(self):
         return f"{self.namespace}.{self.name}"
@@ -468,7 +472,7 @@ class Table(WithScope, Loggable):
         columns = self.order_by_alias(columns)
         # concatenate values together 
         aggregate = [f"T.{c}" for c in columns]
-        aggregate = {'json_array': aggregate}
+        aggregate = {'json_build_array': aggregate}
 
         output = []
         pk = pks[0]
@@ -594,7 +598,7 @@ class Table(WithScope, Loggable):
 
     async def get_range(self, keys=None):
         if keys is None:
-            keys = copy(self.pks) if len(self.pks) == 1 else []
+            keys = list(self.pks.keys())
             if self.on_create:
                 keys.append(self.on_create)
             if self.on_update:
@@ -602,6 +606,10 @@ class Table(WithScope, Loggable):
             keys = list(set(keys))
 
         if not keys:
+            print(f'{self.name}: no keys')
+            if self.name == 'test':
+                import pdb
+                pdb.set_trace()
             return None
 
         query = self.get_range_query(keys)

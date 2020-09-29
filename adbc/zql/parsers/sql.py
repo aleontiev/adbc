@@ -95,7 +95,28 @@ class SQLParser():
                         + Group(
                             Optional(Regex(r"\b(?:NOT\s+)NULL?\b", re.IGNORECASE))("null")
                             & Optional(Regex(r"\bAUTO(?:_)?INCREMENT\b", re.IGNORECASE))("auto_increment")
-                            & Optional(Regex(r"\b(UNIQUE|PRIMARY)(?:\s+KEY)?\b", re.IGNORECASE))("key")
+                            & (
+                                Optional(Regex(r"\b(UNIQUE|PRIMARY)(?:\s+KEY)?\b", re.IGNORECASE))("key")
+                                | (
+                                    (FOREIGN_KEY)("type")
+                                    + LPAR + Group(delimitedList(Optional(SUPPRESS_QUOTE) + Word(alphanums + "_") + Optional(SUPPRESS_QUOTE)))("constraint_columns") + RPAR
+                                    + Optional(
+                                        Suppress(REFERENCES) +
+                                        Optional(SUPPRESS_QUOTE) +
+                                        Word(alphanums + "_")("references_table") +                 
+                                        Optional(SUPPRESS_QUOTE) +
+                                        LPAR +
+                                        Group(
+                                            delimitedList(
+                                                Optional(SUPPRESS_QUOTE) + 
+                                                Word(alphanums + "_") + 
+                                                Optional(SUPPRESS_QUOTE)
+                                            )
+                                        )("references_columns") +
+                                        RPAR
+                                    )
+                                )
+                            )
                             & Optional(Regex(
                                 r"\bDEFAULT\b\s+(?:((?:[A-Za-z0-9_\.\'\" -\{\}]|[^\x01-\x7E])*\:\:(?:character varying)?[A-Za-z0-9\[\]]+)|(?:\')((?:\\\'|[^\']|,)+)(?:\')|(?:\")((?:\\\"|[^\"]|,)+)(?:\")|([^,\s]+))",
                                 re.IGNORECASE))("default")
@@ -110,7 +131,7 @@ class SQLParser():
                 |
                 COMMENT
             )
-        )("columns")
+        )("items")
 
     PARSE = Forward()
     PARSE << OneOrMore(COMMENT | CREATE_TABLE_STATEMENT)
@@ -153,7 +174,8 @@ class SQLParser():
             return None
         if 'type_name' not in type:
             raise ValueError(f'{type}: missing type name')
-        type_name = type['type_name'][0]
+
+        type_name = ' '.join(type['type_name']).lower()
         length = type.get('length')
         semantics = type.get('semantics')
         unsigned = type.get('unsigned')
@@ -186,7 +208,28 @@ class SQLParser():
         key = constraint.get('key', '')
         result['primary'] = key.upper() == 'PRIMARY KEY'
         result['unique'] = key.upper() in {'UNIQUE', 'UNIQUE KEY'}
+        if key == 'FOREIGN KEY':
+            result['related'] = {
+                'to': constraint['references_table'],
+                'by': constraint['references_columns']
+            }
         result['sequence'] = 'auto_increment' in constraint
+        result['related'] = None
+        return result
+
+    def get_constraint_type(self, type):
+        return type.lower().replace('key', '').strip()
+
+    def get_constraint_definition(self, constraint):
+        result = {}
+
+        result['name'] = column['name']
+        result['type'] = self.get_constraint_type(constraint.get('type'))
+        result['deferrable'] = column.get('deferrable', False)
+        result['deferred'] = column.get('deferred', False)
+        result['check'] = column.get('check', None)
+        result['related_name'] = column.get('references_table', None)
+        result['related_columns'] = column.get('references_columns', None)
         return result
 
     def parse_statement(self, sql=None):
@@ -214,26 +257,21 @@ class SQLParser():
         result['name'] = f'{schema}.{table}' if schema else table
         result['temporary'] = "temporary" in parsed
         result['maybe'] = 'maybe' in parsed
-        result['columns'] = {}
+        columns = []
+        constraints = []
 
-        for column in parsed["columns"]:
-            if column.getName() == "column":
+        for item in parsed["items"]:
+            if item.getName() == "column":
                 # add column
-                result['columns'][column['name']] = self.get_column_definition(column)
+                # may have attached constraint
+                columns.append(self.get_column_definition(item))
 
-            elif column.getName() == "constraint":
-                # set column constraint
-                constraint = column
-                type = constraint['type'].upper()
-                for column in constraint["constraint_columns"]:
-                    column = result['columns'][column]
-                    if type == "PRIMARY KEY":
-                        column['null'] = False
-                        column['primary'] = True
-                    elif type in {"UNIQUE", "UNIQUE KEY"}:
-                        column['unique'] = True
-                    elif type == "NOT NULL":
-                        column['null'] = False
+            elif item.getName() == "constraint":
+                # add constraint
+                constraints.append(self.get_constraint_definition(item))
 
-        result['columns'] = list(result['columns'].values())
+        # use adbc.store.Table to update the constraints/columns
+        table = Table(columns=columns, constraints=constraints)
+        result['columns'] = list(table.columns.values())
+        result['constraints'] = list(table.constraints.values())
         return {'create': {'table': result}}

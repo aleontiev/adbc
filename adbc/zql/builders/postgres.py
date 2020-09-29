@@ -6,9 +6,6 @@ from .sql import SQLBuilder
 class PostgresBuilder(SQLBuilder):
     IDENTIFIER_QUOTE_CHARACTER = '"'
     LITERAL_QUOTE_CHARACTER = "'"
-    FUNCTION_RENAMES = {
-        'json_array': 'json_build_array'
-    }
     def get_returning(
         self, returning: Union[list, str, dict], style, params, prefix=True
     ):
