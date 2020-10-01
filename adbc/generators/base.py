@@ -28,7 +28,7 @@ class Constraint(Generator):
     deferrable: bool = False
     deferred: bool = False
     check: str = None
-    related_columns: List[str] = field(default_factory=list)
+    related_columns: List[str] = None
     related_name: str = None
 
 
