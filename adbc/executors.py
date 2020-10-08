@@ -190,6 +190,9 @@ class QueryExecutor(object):
 
     def quote(self, value):
         # add literal quoting, unless it is not a string
+        # in which case return it directly
+        # this allows us to pass in expressions as objects
+        # or pass in normal strings
         return f"'{value}'" if isinstance(value, str) else value
 
     def get_set(self, values):

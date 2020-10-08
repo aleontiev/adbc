@@ -18,6 +18,7 @@ class Column(Generator):
     primary: Union[bool, str] = False
     unique: Union[bool, str] = False
     related: dict = None
+    choices: list = None
 
 
 @dataclass_json

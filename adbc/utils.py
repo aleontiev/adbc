@@ -2,6 +2,7 @@ import re
 import inspect
 import asyncio
 import collections
+from urllib.parse import urlparse
 from copy import deepcopy
 from cached_property import cached_property  # noqa
 
@@ -267,3 +268,12 @@ def named_dict_to_list(data, name='name'):
         value[name] = key
         result.append(value)
     return result
+
+
+def is_url(value):
+    try:
+        result = urlparse(value)
+    except Exception:
+        return False
+    else:
+        return result.scheme and result.netloc

@@ -14,10 +14,11 @@ class WorkflowEngine(object):
         if not workflow:
             raise ValueError(f'no workflow {name} in config')
 
+        steps = workflow.get('steps')
         workflow = Workflow(
             name,
-            workflow,
-            databases,
+            steps=steps,
+            databases=databases,
             verbose=self.verbose
         )
         return await workflow.execute()

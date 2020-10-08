@@ -29,7 +29,7 @@
 ## Getting Started
 
 `adbc` provides abstractions at several levels:
-- [PreQL](docs/preql.md): compile JSON queries into SQL
+- [ZQL](docs/zql.md): compile JSON queries into SQL
 - [Databases](#databases): executing queries, copying data, introspection
 - [Workflows](#workflows): querying, diffing, copying, and reading statistics from databases
 
@@ -64,9 +64,9 @@ workflows:                              # workflow definitions
     name:                                   # workflow name
         verbose: ?[boolean, integer]            # verbosity
         steps:                                  # step list
-        - type: query                             # run a SQL/PreQL query
+        - type: query                             # run a SQL/ZQL query
           source: string                            # database name
-          query: [string, object, list]             # query string or PreQL object or list
+          query: [string, object, list]             # query string or ZQL object or list
         - type: info                              # get info about a database
           source: string                            # database name
           scope: ?object                            # scope the data
@@ -122,7 +122,7 @@ They provide the following features:
     print(value) #  "jay"
 
 ```
-  - PreQL queries
+  - ZQL (JSON) queries
 ``` python
     query = {
         "select": {
@@ -147,13 +147,13 @@ They provide the following features:
     }
 
     # execute
-    value = await database.execute(preql=query)
+    value = await database.execute(zql=query)
     print(value) #  [{"name": "jay"}]
 
     # stream, query_one_row, query_one_value
-    # ... (same, as execute, pass in preql=query)
+    # ... (same, as execute, pass in zql=query)
 ```
-  - model-oriented queries
+  - model queries
 ``` python
     # get_model
     model = await database.get_model('users')

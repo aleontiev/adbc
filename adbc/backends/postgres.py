@@ -248,50 +248,57 @@ class PostgresBackend(DatabaseBackend):
                                 },
                                 "`related_columns`",
                                 {
-                                    'array_to_json': {
-                                        'array': {
-                                            'select': {
-                                                'data': 'attname',
-                                                'from': 'pg_attribute',
-                                                'join': {
-                                                    'to': {
-                                                        'select': {
-                                                            'data': ['a', 'b'],
-                                                            'from': {
-                                                                'x': {
-                                                                    'select': {
-                                                                        'data': {
-                                                                            'a': {
-                                                                                'unnest': 'C.confkey'
-                                                                            },
-                                                                            'b': {
-                                                                                'generate_series': [
-                                                                                    1,
-                                                                                    {
-                                                                                        'array_length': ['C.confkey', 1]
+                                    'case': [{
+                                        'when': {'is not null': 'F.relname'},
+                                        'then': {
+                                            'array_to_json': {
+                                                'array': {
+                                                    'select': {
+                                                        'data': 'attname',
+                                                        'from': 'pg_attribute',
+                                                        'join': {
+                                                            'to': {
+                                                                'select': {
+                                                                    'data': ['a', 'b'],
+                                                                    'from': {
+                                                                        'x': {
+                                                                            'select': {
+                                                                                'data': {
+                                                                                    'a': {
+                                                                                        'unnest': 'C.confkey'
+                                                                                    },
+                                                                                    'b': {
+                                                                                        'generate_series': [
+                                                                                            1,
+                                                                                            {
+                                                                                                'array_length': ['C.confkey', 1]
+                                                                                            }
+                                                                                        ]
                                                                                     }
-                                                                                ]
+                                                                                }
                                                                             }
                                                                         }
                                                                     }
                                                                 }
-                                                            }
-                                                        }
-                                                    },
-                                                    'as': 'ord',
-                                                    'on': {'=': ['ord.a', 'pg_attribute.attnum']}
-                                                },
-                                                'where': {
-                                                    'and': [{
-                                                        '=': ['pg_attribute.attnum', {'any': 'C.confkey'}]
-                                                    }, {
-                                                        '=': ['pg_attribute.attrelid', 'F.oid']
-                                                    }]
-                                                },
-                                                'order': 'ord.b'
+                                                            },
+                                                            'as': 'ord',
+                                                            'on': {'=': ['ord.a', 'pg_attribute.attnum']}
+                                                        },
+                                                        'where': {
+                                                            'and': [{
+                                                                '=': ['pg_attribute.attnum', {'any': 'C.confkey'}]
+                                                            }, {
+                                                                '=': ['pg_attribute.attrelid', 'F.oid']
+                                                            }]
+                                                        },
+                                                        'order': 'ord.b'
+                                                    }
+                                                }
                                             }
                                         }
-                                    }
+                                    }, {
+                                        'else': {'null': None}
+                                    }]
                                 },
                                 "`columns`",
                                 {

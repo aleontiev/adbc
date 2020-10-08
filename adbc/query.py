@@ -174,7 +174,8 @@ class Query(object):
     def validate_sort(self, level, query):
         return True
 
-    def simple_expression(self, simple, join='and'):
+    @classmethod
+    def _simple_expression(cls, simple, join='and'):
         expr = []
         for key, value in simple.items():
             key = key.split('__')
@@ -208,7 +209,7 @@ class Query(object):
             query = args[1]
 
         if not query and kwargs:
-            query = self.simple_expression(kwargs)
+            query = self._simple_expression(kwargs)
 
         if not query:
             raise ValueError('no query arguments defined')
@@ -274,3 +275,17 @@ class Query(object):
 
     def __getitem__(self, key):
         return self._state[key]
+
+
+class TableModel(Query):
+    def __init__(self, table=None, **kwargs):
+        self.table = table
+        if 'state' not in kwargs:
+            kwargs['state'] = {
+                'source': [table.namespace.name, table.name]
+            }
+
+        super().__init__(**kwargs)
+
+    def __str__(self):
+        return f'TableModel({self.table})'

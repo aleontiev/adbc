@@ -155,7 +155,7 @@ class SQLParser():
     def parse_expression(self, expression: str):
         # TODO: replace with real SQL parsing
         # this is super hacky
-        if expression is None:
+        if expression is None or not isinstance(expression, str):
             return expression
 
         if '(' in expression:

@@ -1,17 +1,17 @@
-## PreQL
+## ZQL
 
-In order to support different database backends and allow for user generation of safe queries, `adbc` includes a query compiler that converts from PreQL-formatted JSON into SQL.
+In order to support different database backends and allow for user generation of safe queries, `adbc` includes a query compiler that converts from ZQL-formatted JSON into SQL.
 
-PreQL is similar in function to SQLAlchemy but is easier to port across languages and generate with various tools because it is based on JSON.
+ZQL is similar in function to SQLAlchemy but is easier to port across languages and generate with various tools because it is based on JSON.
 
 ### Definitions
 
-- A PreQL **backend** is an RDBMS-specific compiler that renders PreQL into SQL and parameters
-- A PreQL **style** is a setting that determins how parameterized queries should be constructed
-- A PreQL **dialect** is a combination of backend and style which can be used by a specific downstream RDBMS driver
-- A **statement** is a PreQL object that represents a SQL statement, e.g. an entire SELECT statement with all of its clauses
-- A **clause** is a PreQL object or array that represents a part of a statement, e.g. the FROM clause in a SELECT statement
-- An **expression** is a PreQL object that represents a SQL expression more complicated than a literal or identifier
+- A ZQL **backend** is an RDBMS-specific compiler that renders ZQL into SQL and parameters
+- A ZQL **style** is a setting that determins how parameterized queries should be constructed
+- A ZQL **dialect** is a combination of backend and style which can be used by a specific downstream RDBMS driver
+- A ZQL **statement** is a object that represents a SQL statement, e.g. an entire SELECT statement with all of its clauses
+- A ZQL **clause** is an object or array that represents part of a statement, e.g. the FROM clause in a SELECT statement
+- An **expression** is a ZQL object that represents a SQL expression more complicated than a literal or identifier, e.g. a function call or operator
 - A **literal** refers to a SQL literal: string, boolean, or number
 - An **identifier** is a string that represents a column, table, schema, database, constraint, index, or user
 
@@ -23,7 +23,7 @@ PreQL is similar in function to SQLAlchemy but is easier to port across language
 
 ### Supported Styles
 
-PreQL supports many parameter styles to accomodate all of the different SQL drivers (e.g. `asyncpg`, `psycopg2`, `libmysql`, `sqlite3`)
+ZQL supports many parameter styles to accomodate all of the different SQL drivers (e.g. `asyncpg`, `psycopg2`, `libmysql`, `sqlite3`)
 
 - Numeric (e.g. "SELECT * FROM user WHERE id = :1")
 - Dollar Numeric (e.g. "SELECT * FROM user WHERE id = $1")
@@ -34,7 +34,7 @@ PreQL supports many parameter styles to accomodate all of the different SQL driv
 
 ### Structure
 
-The intuition behind the structure of a PreQL query is to consider an infix representation of a SQL query:
+The intuition behind the structure of a ZQL query is to consider an infix representation of a SQL query:
 
 - The query is represented as a single-key object (SKO) with the name of a command (e.g. `SELECT`, `UPDATE`, `INSERT`, `DELETE`, `ALTER TABLE`, etc)
 - This query object can have other objects inside that represents expressions, including clauses, sub-queries, functions, keywords, operators, identifiers, and literals
@@ -51,42 +51,56 @@ The intuition behind the structure of a PreQL query is to consider an infix repr
 
 ### Caveats
 
-- Some PreQL queries may actually require multiple SQL queries (e.g. `alter` or `create` with array arguments), so PreQL always returns an array of query results (even though this is not very intuitive for `select`)
-- Even though all queries produced by PreQL will be valid SQL, not all queries will execute on all backends; for a trivial example, consider a custom user-defined function "foo" which is valid to specify in PreQL/SQL but will not successfully execute elsewhere unless "foo" is defined there as well
+- Some ZQL queries may actually require multiple SQL queries (e.g. `alter` or `create` with array arguments), so ZQL always returns an array of query results (even though this is not very intuitive for `select`)
+- Even though all queries produced by ZQL will be valid SQL, not all queries will execute on all backends; for a trivial example, consider a custom user-defined function "foo" which is valid to specify in ZQL/SQL but will not successfully execute elsewhere unless "foo" is defined there as well
 
 ### SQL Injection
 
-To provide safety from SQL injection, PreQL ensures the following:
+To provide safety from SQL injection, ZQL ensures the following:
 - Identifiers are always escaped with identifier quote characters (e.g. `"` in Postgres)
-- Normal literal strings are not escaped by PreQL and will instead by returned separately as parameters to later be interpretted by a SQL driver
-- Escaped literal strings are escaped by PreQL using SQL-standard escaping (doubling quote characters inside the literal)
+- Normal literal strings are not escaped by ZQL and will instead by returned separately as parameters to later be interpretted by a SQL driver
+- Escaped literal strings are escaped by ZQL using SQL-standard escaping (doubling quote characters inside the literal)
 - The names of all keywords and functions are validated for alphanumeric characters
 - The names of operators are validated by cross-checking a known list
-- It is not possible to add arbitrary and unvalidated raw SQL in PreQL
+- It is not possible to add arbitrary and unvalidated raw SQL in ZQL
 
-This means that, even if working with unvalidated user input, PreQL queries should be protected from injection.
+This means that, even if working with unvalidated user input, ZQL queries should be protected from injection.
 
 ### Statements
 
 #### alter database
 
+TODO
+
 #### alter schema
+
+TODO
 
 #### alter table
 
+TODO
+
 #### alter sequence
+
+TODO
 
 #### alter column
 
+TODO
+
 #### alter constraint
 
+TODO
+
 #### alter index
+
+TODO
 
 #### create database
 
 Represents a CREATE DATABASE statement
 
-PreQL:
+ZQL:
 ```
 {       
     "create": {
@@ -111,7 +125,7 @@ SQL (Postgres):
 
 Represents a CREATE SCHEMA statement
 
-PreQL:
+ZQL:
 ```
 {
     "create": {
@@ -134,7 +148,7 @@ SQL (Postgres):
 
 Represents a CREATE TABLE statement
 
-PreQL:
+ZQL:
 ```
 {
     "create": {
@@ -177,7 +191,7 @@ SQL (Postgres):
 
 Represents one or more CREATE SEQUENCE statements
 
-PreQL:
+ZQL:
 ```
 {
     "create": {
@@ -205,7 +219,7 @@ SQL (Postgres)
 
 Represents one or more CREATE INDEX statements
 
-PreQL:
+ZQL:
 ```
 {
     "create": {
@@ -231,7 +245,7 @@ SQL (Postgres):
 
 Represents a ALTER TABLE statement with ADD COLUMN
 
-PreQL:
+ZQL:
 ```
 {
     "create": {
@@ -256,10 +270,10 @@ SQL (Postgres):
 It is possible to create many schematic elements at once by passing an array of objects to `create`.
 Each element in this array is expected to match one of the above.
 
-PreQL will automatically normalize the query into a minimum number of DDL statements necessary to execute the intent on the given backend.
+ZQL will automatically normalize the query into a minimum number of DDL statements necessary to execute the intent on the given backend.
 For example, creating two columns on the same table will produce a single ALTER TABLE statement for most backends (unless they do not support it)
 
-PreQL:
+ZQL:
 ```
 {
     "create": [{
@@ -327,7 +341,7 @@ TODO
 
 Represents a SELECT statement
 
-PreQL:
+ZQL:
 ```
 {
     "select": {
@@ -400,7 +414,7 @@ TODO
 
 Represents an INSERT statement
 
-PreQL:
+ZQL:
 ```
 {
     "insert": {
@@ -419,7 +433,7 @@ TODO
 
 Represents an UPDATE statement
 
-PreQL:
+ZQL:
 ```
 {
     "update": {
@@ -442,7 +456,7 @@ TODO
 
 Represents a DELETE statement
 
-PreQL:
+ZQL:
 ```
 {
     "delete": {
@@ -461,7 +475,7 @@ TODO
 
 Represents a TRUNCATE statement
 
-PreQL:
+ZQL:
 ```
 {
     "truncate": "user"

@@ -6,37 +6,42 @@ from .copy import CopyStep
 from .info import InfoStep
 from .query import QueryStep
 
+from adbc.utils import is_url
 from adbc.store import Database
 
 
 class Workflow(Loggable):
-    def __init__(self, name, config, databases, verbose=False):
+    def __init__(self, name, steps=None, databases=None, verbose=False, logger=None):
         self.name = name
-        self.config = config
-        self.databases = databases
+        self.databases = databases or {}
+        self.steps = steps or []
         self.verbose = verbose
+        self.logger = logger
         self._databases = {}
-        steps = config.get("steps", [])
-        if not steps:
-            raise ValueError(f'workflow "{name}" has no steps')
-        self.steps = [AutoStep(self, step, i+1) for i, step in enumerate(steps)]
+        self._steps = [AutoStep(self, step, i+1) for i, step in enumerate(steps)]
 
     def get_database(self, name, tag=None):
         key = (name, tag)
         if key not in self._databases:
-            if name not in self.databases:
-                raise Exception(
-                    f'cannot find database "{name}" in workflow config'
-                )
-            config = self.databases[name]
-            if isinstance(config, dict):
-                prompt = config.get('prompt', False)
-                scope = config.get('scope', None)
-                url = config.get('url')
-            else:
-                url = config
+            if is_url(name):
+                # use the entire URL as the name and key
+                url = name
                 scope = None
                 prompt = False
+            else:
+                if name not in self.databases:
+                    raise Exception(
+                        f'cannot find database "{name}" in workflow config'
+                    )
+                config = self.databases[name]
+                if isinstance(config, dict):
+                    prompt = config.get('prompt', False)
+                    scope = config.get('scope', None)
+                    url = config.get('url')
+                else:
+                    url = config
+                    scope = None
+                    prompt = False
 
             self._databases[key] = Database(
                 name=name,
@@ -45,6 +50,7 @@ class Workflow(Loggable):
                 url=url,
                 scope=scope,
                 verbose=self.verbose,
+                logger=self.logger
             )
         return self._databases[key]
 
@@ -56,7 +62,7 @@ class Workflow(Loggable):
     async def execute(self):
         results = []
         # execute all steps
-        for step in self.steps:
+        for step in self._steps:
             results.append(await step.execute())
 
         # close all databases
@@ -74,11 +80,11 @@ class AutoStep(Loggable):
             if type.startswith("?"):
                 debug = True
                 type = type[1:]
-            if type == "copy":
+            if type == "copy" or type == 'sync':
                 step = CopyStep(workflow, config, num)
-            elif type == "diff":
+            elif type == "diff" or type == 'compare':
                 step = DiffStep(workflow, config, num)
-            elif type == "info":
+            elif type == "info" or type == 'inspect':
                 step = InfoStep(workflow, config, num)
             elif type == "query" or type == "sql":
                 step = QueryStep(workflow, config, num)

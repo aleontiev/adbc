@@ -119,7 +119,7 @@ class Table(WithScope, Loggable):
     def init_table(self):
         """Normal table initializer"""
         # in one loop, create a two-way values binding for these properties:
-        # - sequence: based on auto-increment (MySQL) or nextval (Postgres)
+        # - sequence: based on auto-increment (MySQL, SQLite) or nextval (Postgres)
         # - primary: based on primary constraint or index
         # - unique: based on unique constraints
         # - related: based on foreign key constraints
@@ -155,6 +155,11 @@ class Table(WithScope, Loggable):
                     )
             else:
                 column["primary"] = self.pks.get(name, False)
+
+            if not column.get('choices'):
+                # TODO: support getting choices from passed-in scope
+                # rather than column definition
+                column['choices'] = None
             if column.get("unique"):
                 if name not in uniques:
                     unique = column.get("unique")
@@ -610,10 +615,6 @@ class Table(WithScope, Loggable):
             keys = list(set(keys))
 
         if not keys:
-            print(f'{self.name}: no keys')
-            if self.name == 'test':
-                import pdb
-                pdb.set_trace()
             return None
 
         query = self.get_range_query(keys)

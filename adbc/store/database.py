@@ -4,7 +4,7 @@ from pprint import pformat
 from adbc.exceptions import NotIncluded
 from adbc.scope import WithScope
 from adbc.utils import get_version_number, confirm, aecho, print_query
-from adbc.model import Model
+from adbc.query import TableModel
 from adbc.operations.apply import WithApply
 from adbc.logging import Loggable
 from adbc.constants import SEP, SEPN
@@ -19,6 +19,7 @@ class Database(Loggable, WithApply, WithScope):
 
     def __init__(
         self,
+        *args,
         name=None,
         host=None,
         url=None,
@@ -31,7 +32,7 @@ class Database(Loggable, WithApply, WithScope):
         max_pool_size=20,
         **kwargs
     ):
-        super().__init__(**kwargs)
+        super().__init__(*args, **kwargs)
 
         self.scope = scope
 
@@ -84,7 +85,7 @@ class Database(Loggable, WithApply, WithScope):
 
     async def _get_model(self, table_name, schema=None, scope=None):
         table = await self.get_table(table_name, schema=schema, scope=scope)
-        return Model(database=self, table=table)
+        return TableModel(database=self, table=table)
 
     async def get_table(self, table_name, schema=None, scope=None):
         scope = scope or self.scope
