@@ -60,13 +60,13 @@ class QueryExecutor(object):
             data = self.get_columns(table, query)
         return data
 
-    def get_select(self, table, query, count=False):
+    def get_select(self, table, query, count=False, json=False):
         data = self.get_data(table, query, count=count)
         from_ = self.get_from(table, query)
         order = self.get_order(table, query)
         limit = self.get_limit(table, query)
         where = self.get_where(table, query)
-        return {
+        base = {
             'select': {
                 'data': data,
                 'from': from_,
@@ -75,6 +75,34 @@ class QueryExecutor(object):
                 'limit': limit
             }
         }
+        if json:
+            if count or not isinstance(data, (list, dict)):
+                return base
+            inner = []
+            if isinstance(data, list):
+                # fieldA -> fieldA
+                for d in data:
+                    inner.extend([f'`{d}`', d])
+            else:
+                for k, v in data.items():
+                    inner.extend([f'`{k}`', v])
+
+            # return the entire response as json
+            return {
+                'select': {
+                    'data': {
+                        'result': {
+                            "json_aggregate": {
+                                "json_build_object": inner
+                            }
+                        }
+                    },
+                    'from': {
+                        'T': base
+                    }
+                }
+            }
+        return base
 
     def get_where(self, table, query):
         args = []
@@ -137,7 +165,13 @@ class QueryExecutor(object):
         return await self.get(query, **kwargs)
 
     async def one(self, query, **kwargs):
+        json = kwargs.get('json', False)
         result = await self.get(query, **kwargs)
+        if json:
+            if result[0] != '[' and result[1] != ']':
+                raise ValueError('expecting result to be a JSON-encoded array')
+            return result[1:-1]
+
         if isinstance(result, list):
             num = len(result)
             if num != 1:
@@ -156,6 +190,7 @@ class QueryExecutor(object):
                 if set, return count of rows instead of records
             connection: ?connection
             zql: if True, return the zql query instead of executing it
+            json: if True, return entire response as a single JSON value
 
         Return:
             List of records: if no key is specified
@@ -170,8 +205,10 @@ class QueryExecutor(object):
         table = await database.get_table(source, scope=self.scope)
         zql = kwargs.get('zql', False)
         count = kwargs.get('count', False)
-        select = self.get_select(table, query, count=count)
-        if count or (field and key):
+        json = kwargs.get('json', False)
+        select = self.get_select(table, query, count=count, json=json)
+
+        if json or count or (field and key):
             method = 'query_one_value'
         elif key:
             method = 'query_one_row'
@@ -181,6 +218,7 @@ class QueryExecutor(object):
             method = 'query'
 
         if zql:
+            # return the query instead of executing it
             return select
 
         return await getattr(self.database, method)(

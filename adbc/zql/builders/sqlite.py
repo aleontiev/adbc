@@ -14,6 +14,10 @@ class SqliteBuilder(SQLBuilder):
     OPERATOR_RENAMES = {
         'ilike': 'like'
     }
+    FUNCTION_RENAMES = {
+        'json_aggregate': 'json_group_array',
+        'json_build_object': 'json_object'
+    }
 
     def get_references_identifier(self, name):
         # FK constraint references should not include the schema name

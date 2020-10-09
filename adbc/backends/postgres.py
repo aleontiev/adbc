@@ -83,12 +83,22 @@ class PostgresBackend(DatabaseBackend):
         query = namespace.get_query("tables", scope=scope)
         database = namespace.database
         async for row in database.stream(query):
+            columns = row[1]
+            constraints = row[2]
+            indexes = row[3]
+            if isinstance(columns, str):
+                columns = json.loads(columns)
+            if isinstance(constraints, str):
+                constraints = json.loads(constraints)
+            if isinstance(indexes, str):
+                indexes = json.loads(indexes)
+
             try:
                 table = namespace.get_table(
                     row[0],
-                    columns=row[1],
-                    constraints=row[2],
-                    indexes=row[3],
+                    columns=columns,
+                    constraints=constraints,
+                    indexes=indexes,
                     type=row[4],
                     scope=scope
                 )
@@ -577,6 +587,12 @@ class PostgresBackend(DatabaseBackend):
 
     @staticmethod
     async def initialize_connection(connection):
-        await connection.set_type_codec(
-            "json", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
-        )
+        pass
+        # for automatic JSON loading
+        # await connection.set_type_codec(
+        #    "json", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+        # )
+        # this can be useful, but
+        # 1) it is not cross-backend (e.g. cant do this in sqlite)
+        # 2) client requests for in-database JSON aggregation would be decoded,
+        # which defeats the purpose

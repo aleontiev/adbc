@@ -1,4 +1,5 @@
 import pytest
+import json
 from .utils import setup_test_database
 from copy import deepcopy
 from adbc.generators import G
@@ -88,6 +89,13 @@ async def test_info():
             assert len(results) == 2
             assert dict(results[0]) == {"id": 1, "name": "Jay", 'related_id': None}
             assert dict(results[1]) == {"id": 3, "name": None, 'related_id': None}
+
+            json_results = await query.sort('id').get(json=True)
+            # cast to normal dict to ensure json.dumps can handle
+            assert json.dumps(json.loads(json_results)) == json.dumps([dict(r) for r in results])
+
+            json_result = await model.key(3).one(json=True)
+            assert json.loads(json_result) == {'id': 3, 'name': None, 'related_id': None}
 
             # UPDATE
             # TODO: use where(id=3) to test where in set
