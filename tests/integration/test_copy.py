@@ -2,7 +2,7 @@ import pytest
 import copy
 from datetime import datetime
 
-from .utils import setup_test_database
+from adbc.testing import setup_test_database
 
 from adbc.generators import G
 from adbc.symbols import delete, insert

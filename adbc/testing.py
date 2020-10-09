@@ -21,14 +21,15 @@ def get_uid(size=3):
 
 
 class setup_test_database(object):
-    def __init__(self, name=None, type='postgres', verbose=False):
+    def __init__(self, name=None, type='postgres', verbose=False, url=None):
         self.type = type
         assert type in URLS
         self.name = name
+        self.url = url
         self.verbose = verbose
 
     def get_url(self):
-        return URLS[self.type]
+        return self.url if self.url else URLS[self.type]
 
     async def __aenter__(self):
         self.uid = get_uid()
@@ -38,7 +39,8 @@ class setup_test_database(object):
         if url.startswith('file:'):
             # for file hosts (sqlite), make a temp copy of this database
             # do this by appending the uid to the base name
-            url = f'{url}-{self.uid}'
+            # ... but only if url was not passed explicitly
+            url = url if self.url else f'{url}-{self.uid}'
             self.root = self.db = Database(
                 url=url, prompt=PROMPT, verbose=self.verbose, tag=self.name
             )

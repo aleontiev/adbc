@@ -1,5 +1,5 @@
 import pytest
-from .utils import setup_test_database
+from adbc.testing import setup_test_database
 from copy import deepcopy
 from adbc.generators import G
 

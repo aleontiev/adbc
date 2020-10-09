@@ -1,7 +1,7 @@
 import pytest
 import copy
 
-from .utils import setup_test_database
+from adbc.testing import setup_test_database
 
 from adbc.generators import G
 from adbc.workflow import WorkflowEngine

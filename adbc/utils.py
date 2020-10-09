@@ -270,10 +270,13 @@ def named_dict_to_list(data, name='name'):
     return result
 
 
-def is_url(value):
+def is_url(value, local=True):
     try:
         result = urlparse(value)
     except Exception:
         return False
     else:
-        return result.scheme and result.netloc
+        return (result.scheme and result.netloc) or (
+            local and result.scheme == 'file' and result.path
+            # consider file:path acceptable URL if local=True
+        )

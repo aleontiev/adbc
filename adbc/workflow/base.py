@@ -23,7 +23,7 @@ class Workflow(Loggable):
     def get_database(self, name, tag=None):
         key = (name, tag)
         if key not in self._databases:
-            if is_url(name):
+            if is_url(name) and name not in self.databases:
                 # use the entire URL as the name and key
                 url = name
                 scope = None
