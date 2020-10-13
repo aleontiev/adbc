@@ -181,12 +181,12 @@ class Table(WithScope, Loggable):
                         related if isinstance(related, str) else f"{self.name}__{name}__fk"
                     )
                     by = related['by']
-                    to = related['to'],
+                    to = related['to']
                     if not isinstance(by, list):
                         by = [by]
 
                     fks[name] = {
-                        'to': related['to'],
+                        'to': to,
                         'by': by,
                         'name': constraint_name
                     }
