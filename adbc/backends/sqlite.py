@@ -165,7 +165,6 @@ class SqliteBackend(DatabaseBackend):
 
     @classmethod
     async def get_tables(cls, namespace, scope):
-        # use DdlParse package + sqlite_master table
         tables = []
         query = {
             'select': {

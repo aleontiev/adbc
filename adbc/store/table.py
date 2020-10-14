@@ -192,6 +192,8 @@ class Table(WithScope, Loggable):
                     }
                     constraints[constraint_name] = {
                         "type": FOREIGN,
+                        "deferred": False,
+                        "deferrable": False,
                         "columns": [name],
                         "related_name": to,
                         "related_columns": by

@@ -152,7 +152,6 @@ class WithMerge(WithAlterPreQL):
             # -> copy by dropping all in target not in source
             # and creating all in source not in target
             create, drop = diff
-
             create = self._translate(plural, create, scope)
             drop = self._translate(plural, drop, scope)
 

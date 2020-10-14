@@ -1386,16 +1386,17 @@ class SQLBuilder(Builder):
                 else:
                     name = self.get_auto_constraint_name(table, column_name, "foreign")
 
-                constraint = G(
-                    "constraint",
-                    type="foreign",
-                    columns=[column_name],
-                    related_name=to,
-                    related_columns=[by],
-                )
-                constraint["name"] = name
-                constraints.append(constraint)
-                constraint_names.add(name)
+                if name not in constraint_names:
+                    constraint = G(
+                        "constraint",
+                        type="foreign",
+                        columns=[column_name],
+                        related_name=to,
+                        related_columns=[by],
+                    )
+                    constraint["name"] = name
+                    constraints.append(constraint)
+                    constraint_names.add(name)
 
         return constraints
 
