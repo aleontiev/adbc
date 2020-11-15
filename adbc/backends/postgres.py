@@ -367,7 +367,9 @@ class PostgresBackend(DatabaseBackend):
                                     }]
                                 },
                                 "`check`",
-                                'C.consrc'
+                                {
+                                    'pg_get_expr': ['C.conbin', 'R.oid']
+                                }
                             ]
                         }
                     }
