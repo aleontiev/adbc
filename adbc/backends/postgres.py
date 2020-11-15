@@ -587,6 +587,10 @@ class PostgresBackend(DatabaseBackend):
                 kwargs['dsn'] = url
         return await create_pool(**kwargs)
 
+    @classmethod
+    async def connect(cls, url, **kwargs):
+        return await connect(dsn=url, **kwargs)
+
     @staticmethod
     async def initialize_connection(connection):
         pass
