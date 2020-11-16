@@ -1,6 +1,7 @@
 from adbc.zql.dialect import ParameterStyle, get_default_style
 import re
 import copy
+import datetime
 from collections import defaultdict
 from typing import List, Union, Optional
 from .core import Builder
@@ -1761,6 +1762,13 @@ class SQLBuilder(Builder):
         if isinstance(expression, (int, float, bool)):
             # literal, cast to string
             result = str(expression)
+            return f"{indent}{result}"
+
+        if isinstance(expression, (datetime.date, datetime.time, datetime.datetime)):
+            # literal date/time/datetime, add as parameter
+            # TODO: is it better to string-cast in case driver doesnt support these types?
+            # most Python drivers like asyncpg will support these common types
+            result = self.add_parameter(expression, style, params)
             return f"{indent}{result}"
 
         if expression is None:
