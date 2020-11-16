@@ -6,6 +6,7 @@ class Step(Loggable):
     _log_name = "adbc.workflow"
 
     def __init__(self, workflow, config, num, **kwargs):
+        self.name = f'{workflow.name}#{num}'
         super().__init__(**kwargs)
         self.num = num
         self.workflow = workflow

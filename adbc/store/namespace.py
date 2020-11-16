@@ -28,8 +28,8 @@ class Namespace(Loggable, WithScope, WithInfo):
         alias=None,
         **kwargs,
     ):
-        super().__init__(**kwargs)
         self.name = name
+        super().__init__(**kwargs)
         self.parent = self.database = database
         self.scope = scope
         self.alias = alias or name

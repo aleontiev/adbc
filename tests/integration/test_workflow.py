@@ -1,4 +1,5 @@
 import pytest
+import os
 import copy
 
 from adbc.testing import setup_test_database
@@ -7,6 +8,7 @@ from adbc.generators import G
 from adbc.workflow import WorkflowEngine
 from adbc.symbols import delete, insert
 
+VERBOSE = os.environ.get('TEST_VERBOSE', 0)
 
 @pytest.mark.asyncio
 async def test_workflow():
@@ -37,8 +39,8 @@ async def test_workflow():
             'action_id': G('constraint', type='primary', columns=['id'])
         }
     )
-    async with setup_test_database('main') as main:
-        async with setup_test_database('aux') as aux:
+    async with setup_test_database('main', verbose=VERBOSE) as main:
+        async with setup_test_database('aux', verbose=VERBOSE) as aux:
             migrate = (
                 'WITH users AS (select * from migrate.user) '
                 "UPDATE action "

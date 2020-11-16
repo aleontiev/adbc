@@ -73,6 +73,7 @@ class Table(WithScope, Loggable):
         backend=None,
         **kwargs,
     ):
+        self.name = name
         super().__init__(**kwargs)
         if not isinstance(scope, dict):
             self.scope = {}
@@ -80,7 +81,6 @@ class Table(WithScope, Loggable):
             self.scope = scope
 
         self.type = type or TABLE
-        self.name = name
         self.verbose = verbose
         self.parent = self.namespace = namespace
         self.alias = alias or name

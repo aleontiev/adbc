@@ -35,6 +35,9 @@ class Host(Loggable, WithScope):
             # set name to the host name, e.g. localhost
             # remove username/password from netloc if present
             self.name = self.parsed_url.netloc.split('@')[-1]
+
+        # setup logging after self.name is set
+        super().__init__()
         self.scope = scope
         self._backend = get_backend(self.scheme)
 

@@ -20,6 +20,8 @@ class Workflow(Loggable):
         self._databases = {}
         self._steps = [AutoStep(self, step, i+1) for i, step in enumerate(steps)]
 
+        super().__init__()
+
     def get_database(self, name, tag=None):
         key = (name, tag)
         if key not in self._databases:

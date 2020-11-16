@@ -1,5 +1,6 @@
 import pytest
 import copy
+import os
 from datetime import datetime
 
 from adbc.testing import setup_test_database
@@ -7,6 +8,7 @@ from adbc.testing import setup_test_database
 from adbc.generators import G
 from adbc.symbols import delete, insert
 
+VERBOSE = os.environ.get('TEST_VERBOSE', False)
 
 @pytest.mark.asyncio
 async def test_copy():
@@ -83,8 +85,8 @@ async def test_copy():
     }
 
     # 1. setup test databases
-    async with setup_test_database("source", verbose=True) as source:
-        async with setup_test_database("target", verbose=True) as target:
+    async with setup_test_database("source", verbose=VERBOSE) as source:
+        async with setup_test_database("target", verbose=VERBOSE) as target:
             # 2. create test schematic elements: table in source and target
             # the table called "copy" will remain the same on both source/target after initial setup
             # the table called "test" will change on source during the test

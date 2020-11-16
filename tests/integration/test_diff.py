@@ -1,9 +1,11 @@
 import pytest
+import os
 import copy
 from adbc.generators import G
 from adbc.symbols import insert, delete
 from adbc.testing import setup_test_database
 
+VERBOSE = os.environ.get('TEST_VERBOSE', 0)
 
 @pytest.mark.asyncio
 async def test_diff():
@@ -60,8 +62,8 @@ async def test_diff():
     }
 
     # 1. setup test databases
-    async with setup_test_database("source", verbose=True) as source:
-        async with setup_test_database("target", verbose=True) as target:
+    async with setup_test_database("source", verbose=VERBOSE) as source:
+        async with setup_test_database("target", verbose=VERBOSE) as target:
             # 2. create test schematic elements: table in both source and target
             # the table called "copy" will remain the same on both source/target after initial setup
             # the table called "test" will change on both source/target throughout the test

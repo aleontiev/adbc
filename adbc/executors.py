@@ -139,6 +139,7 @@ class QueryExecutor(object):
 
     def get_order(self, table, query):
         sort = query.data('sort')
+        order = None
         if sort:
             order = []
             for column in sort:
@@ -150,7 +151,7 @@ class QueryExecutor(object):
                     'by': column,
                     'desc': desc
                 })
-        return None
+        return order
 
     def get_limit(self, table, query):
         if query.data('key'):

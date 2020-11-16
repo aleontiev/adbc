@@ -1,9 +1,12 @@
 import pytest
 import json
+import os
 from adbc.testing import setup_test_database
 from copy import deepcopy
 from adbc.generators import G
 
+
+VERBOSE = os.environ.get('TEST_VERBOSE', 0)
 
 @pytest.mark.asyncio
 async def test_info():
@@ -37,7 +40,7 @@ async def test_info():
     alias_scope = {"schemas": {"main": {"source": "main"}}}
     # 1. setup test database
     for type in ('postgres', 'sqlite'):
-        async with setup_test_database("source", type=type, verbose=True) as source:
+        async with setup_test_database("source", type=type, verbose=VERBOSE) as source:
             table_definition = deepcopy(table_definition_)
             # 2. create test schematic elements: schema and table
             if type != 'sqlite':

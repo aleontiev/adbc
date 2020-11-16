@@ -32,10 +32,6 @@ class Database(Loggable, WithApply, WithScope):
         max_pool_size=20,
         **kwargs
     ):
-        super().__init__(*args, **kwargs)
-
-        self.scope = scope
-
         if url and not host:
             from .host import Host
 
@@ -43,11 +39,15 @@ class Database(Loggable, WithApply, WithScope):
             if not name:
                 name = host.dbname
 
+        self.name = name
+        # setup logging after self.name is set
+        super().__init__(*args, **kwargs)
+
+        self.scope = scope
         self.min_pool_size = min_pool_size
         self.max_pool_size = max_pool_size
         self.url = url
         self.prompt = prompt
-        self.name = name
         self.alias = alias or name
         self.parent = self.host = host
         self.verbose = verbose

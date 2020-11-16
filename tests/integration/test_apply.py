@@ -1,7 +1,11 @@
 import pytest
+import os
 from adbc.testing import setup_test_database
 from copy import deepcopy
 from adbc.generators import G
+
+
+VERBOSE = os.environ.get('TEST_VERBOSE', False)
 
 
 @pytest.mark.asyncio
@@ -40,7 +44,7 @@ async def test_apply():
     }
     # 1. setup test database
     for type in ('postgres', 'sqlite'):
-        async with setup_test_database("source", type=type, verbose=True) as source:
+        async with setup_test_database("source", type=type, verbose=VERBOSE) as source:
             # 2. create test schematic elements using Database.apply
 
             await source.apply(schema, scope=scope)
