@@ -57,7 +57,7 @@ class QueryExecutor(object):
         elif field is not None:
             data = field
         else:
-            data = self.get_columns(table, query)
+            data = query.data('take') or self.get_columns(table, query)
         return data
 
     def get_select(self, table, query, count=False, json=False):
@@ -65,10 +65,12 @@ class QueryExecutor(object):
         from_ = self.get_from(table, query)
         order = self.get_order(table, query)
         limit = self.get_limit(table, query)
+        join = self.get_join(table, query)
         where = self.get_where(table, query)
         base = {
             'select': {
                 'data': data,
+                'join': join,
                 'from': from_,
                 'where': where,
                 'order': order,
@@ -103,6 +105,9 @@ class QueryExecutor(object):
                 }
             }
         return base
+
+    def get_join(self, table, query):
+        return query.data('join')
 
     def get_where(self, table, query):
         args = []

@@ -1,11 +1,11 @@
 [tool.poetry]
 name = "adbc"
-version = "0.3.3"
+version = "0.3.4"
 description = ""
 authors = ["aleontiev <alonetiev@gmail.com>"]
 
 [tool.poetry.dependencies]
-python = "^3.7"
+python = "^3.6"
 cached_property = "^1.5.1"
 ipython = "^7.6.1"
 cleo = "^0.7.6"
