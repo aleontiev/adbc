@@ -15,14 +15,14 @@ aiobotocore = "^0.12.0"
 uvloop = "^0.14.0"
 blessings = "^1.7"
 dataclasses_json = "^0.5.2"
-aiosqlite = "*"
-aiomysql = "*"
-asyncpg = "*"
 
 [tool.poetry.dev-dependencies]
 pytest = "^5.0"
 ipython = "^7.13.0"
 pytest-asyncio = "^0.14.0"
+aiosqlite = "*"
+aiomysql = "*"
+asyncpg = "*"
 
 [tool.poetry.scripts]
 adbc = "adbc.cli:main"

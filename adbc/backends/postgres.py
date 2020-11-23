@@ -571,7 +571,7 @@ class PostgresBackend(DatabaseBackend):
                 # asyncpg bug: the rootcert must be passed as a relative path
                 # e.g. sslrootcert=rds-bundle.pem will not attempt to use the
                 # rds-bundle.pem file from the current directory
-                parsed = urlparse(dsn)
+                parsed = urlparse(url)
                 query = parse_qs(parsed.query)
                 cafile = query.pop('sslrootcert')[0]
                 query = urlencode(query)
