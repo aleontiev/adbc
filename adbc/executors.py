@@ -1,3 +1,4 @@
+from adbc.zql import literal
 import re
 
 
@@ -121,12 +122,12 @@ class QueryExecutor(object):
                 assert(len(key) == len(pks))
                 ands = []
                 for i, pk in enumerate(pks):
-                    ands.append({'=': [pk, key[i]]})
+                    ands.append({'=': [pk, literal(key[i])]})
 
                 where = {'and': ands}
             else:
                 pk = pks[0]
-                where = {'=': [pk, key]}
+                where = {'=': [pk, literal(key)]}
 
         # add user filters
         wheres = query.data('where')

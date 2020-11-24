@@ -3,6 +3,7 @@ from typing import List, Dict, Union
 from .dialect import Dialect
 from .builders import get_builder
 
+
 def build(
     query: dict,
     dialect: Dialect,
