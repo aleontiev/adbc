@@ -88,7 +88,7 @@ class QueryExecutor(object):
                     inner.extend([f'`{d}`', d])
             else:
                 for k, v in data.items():
-                    inner.extend([f'`{k}`', v])
+                    inner.extend([f'`{k}`', k])
 
             # return the entire response as json
             return {

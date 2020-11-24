@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "adbc"
-version = "0.3.4.3"
+version = "0.3.4.4"
 description = ""
 authors = ["aleontiev <alonetiev@gmail.com>"]
 

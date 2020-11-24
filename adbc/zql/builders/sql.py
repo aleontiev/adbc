@@ -757,11 +757,14 @@ class SQLBuilder(Builder):
         if not join:
             return None
 
-        if isinstance(join, list):
-            return self.combine(
-                [self.get_select_join(j, style, params, depth=depth) for j in join],
-                separator="\n",
-            )
+        if isinstance(join, (list, tuple)):
+            if len(join) > 1:
+                return self.combine(
+                    [self.get_select_join(j, style, params, depth=depth) for j in join],
+                    separator="\n",
+                )
+            join = join[0]
+
         if isinstance(join, dict):
             to = join.get("to")
             is_subquery = False
