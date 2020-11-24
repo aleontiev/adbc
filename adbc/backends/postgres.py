@@ -581,7 +581,7 @@ class PostgresBackend(DatabaseBackend):
                     # assume relative if starting with normal character
                     cafile = f'./{cafile}'
                 ctx = ssl.create_default_context(cafile=cafile)
-                kwargs['dsn'] = url
+                kwargs['dsn'] = dsn
                 kwargs['ssl'] = ctx
             else:
                 kwargs['dsn'] = url
