@@ -93,9 +93,15 @@ class Table(WithScope, Loggable):
         self.immutable = self.scope.get(
             "immutable", not (bool(self.on_update) or bool(self.on_delete))
         )
+        self.sequences_enabled = self.scope.get('sequences', True)
         self.columns = self.get_children("columns", columns)
         self.column_names = list(self.columns.keys())
-        self.constraints = self.get_children("constraints", constraints or [])
+        constraint_types = self.scope.get('constraint_types', None)
+        self.constraints = self.get_children(
+            "constraints",
+            constraints or [],
+            type=self.scope.get('constraint_types', None)
+        )
         self.indexes = self.get_children("indexes", indexes or [])
 
         if self.type == SEQUENCE:
@@ -134,11 +140,14 @@ class Table(WithScope, Loggable):
                 )
                 if isinstance(default, dict) and 'nextval' in default:
                     # TODO: move nextval into backend, non-standard SQL
-                    column["sequence"] = column.get(
-                        "sequence", default['nextval'][1:-1]
-                    )
+                    if not self.sequences_enabled:
+                        column['default'] = None
+                    else:
+                        column["sequence"] = column.get(
+                            "sequence", default['nextval'][1:-1]
+                        )
                 else:
-                    column["sequence"] = column.get("sequence", False)
+                    column["sequence"] = column.get("sequence", False) if self.sequences_enabled else False
 
             if column.get("primary"):
                 if name not in self.pks:
@@ -212,14 +221,21 @@ class Table(WithScope, Loggable):
     def __str__(self):
         return f"{self.namespace}.{self.name}"
 
-    def get_children(self, child_key: str, children: list):
+    def get_children(self, child_key: str, children: list, type=None):
         result = {}
         translation = self.get_scope_translation(
             self.scope, from_=self.tag, child_key=child_key
         )
         translate = lambda x: translation.get(x, x)
         scope = self.scope
+        if type:
+            type = set(type)
+
         for child in sorted(children, key=lambda c: translate(c["name"])):
+            if type and child['type'] not in type:
+                # ignore on request
+                continue
+
             # real schema name
             name = child.pop("name")
             # alias name

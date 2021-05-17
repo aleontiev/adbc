@@ -1759,6 +1759,7 @@ class SQLBuilder(Builder):
         allow_subquery: bool = True,
         indent=True,
         parens=False,
+        raw=False,
         depth: int = 0,
     ) -> str:
         indent = self.get_indent(depth if indent else 0)
@@ -1793,7 +1794,7 @@ class SQLBuilder(Builder):
                 # if quotes with ' or " or ` assume this is a literal
                 char = expression[0]
                 result = expression[1:-1]
-                if expression[0] == self.RAW_QUOTE_CHARACTER:
+                if expression[0] == self.RAW_QUOTE_CHARACTER or raw:
                     # add inline
                     result = self.escape_literal(result)
                 else:
@@ -1872,6 +1873,7 @@ class SQLBuilder(Builder):
                                     style,
                                     params,
                                     allow_subquery=allow_subquery,
+                                    raw=raw,
                                     indent=False,
                                     parens=True,
                                     depth=depth,
@@ -1888,6 +1890,7 @@ class SQLBuilder(Builder):
                             style,
                             params,
                             allow_subquery=allow_subquery,
+                            raw=raw,
                             indent=False,
                             parens=True,
                             depth=depth,
@@ -1964,6 +1967,7 @@ class SQLBuilder(Builder):
                                     style,
                                     params,
                                     allow_subquery=allow_subquery,
+                                    raw=raw,
                                     indent=False,
                                     depth=depth,
                                 )
@@ -1983,6 +1987,7 @@ class SQLBuilder(Builder):
                             value,
                             style,
                             params,
+                            raw=raw,
                             indent=False,
                             allow_subquery=allow_subquery,
                             depth=depth,
@@ -2206,7 +2211,7 @@ class SQLBuilder(Builder):
             default = ""
         else:
             default = self.get_expression(
-                default, style, params, indent=False, allow_subquery=False
+                default, style, params, indent=False, allow_subquery=False, raw=True
             )
             default = f" DEFAULT {default}"
 
