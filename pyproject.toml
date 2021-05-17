@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "adbc"
-version = "0.3.4.4"
+version = "0.3.5"
 description = ""
 authors = ["aleontiev <alonetiev@gmail.com>"]
 
@@ -13,6 +13,7 @@ jsondiff = "^1.2.0"
 pyaml = "*"
 aiobotocore = "^0.12.0"
 uvloop = "^0.14.0"
+pyparsing = "^2.4.7"
 blessings = "^1.7"
 dataclasses_json = "^0.5.2"
 
