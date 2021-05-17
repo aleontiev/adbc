@@ -46,7 +46,7 @@ class QueryStep(Step):
                 raise ValueError('must pass [schema.]table.column to split.on')
 
             model = await self.source.get_model(table, schema=schema)
-            data_range = await model.table.get_data_range([column])
+            data_range = await model.table.get_range([column])
             data_min = data_range[column]['min']
             data_max = data_range[column]['max']
 
