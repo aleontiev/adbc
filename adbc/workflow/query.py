@@ -28,10 +28,12 @@ class QueryStep(Step):
                 on = split
                 size = QUERY_SPLIT_SIZE
                 skip = 0
+                after = {}
             else:
                 on = split['on']
                 size = split.get('size', QUERY_SPLIT_SIZE)
                 skip = split.get('skip', 0)
+                after = split.get('after', {})
             # assumption: split field is given with the original table name
             # so that we can look up the table with get_model
             # also assume that we can only split on integer IDs for now
@@ -45,6 +47,11 @@ class QueryStep(Step):
             else:
                 raise ValueError('must pass [schema.]table.column to split.on')
 
+            every = after.get('every')
+            if isinstance(every, (bool, str)):
+                # convert to integer
+                every = int(every)
+            after_query = after.get('query')
             model = await self.source.get_model(table, schema=schema)
             data_range = await model.table.get_range([column])
             data_min = data_range[column]['min']
@@ -66,10 +73,18 @@ class QueryStep(Step):
                 # TODO: this is a big hack, would be easier with PreQL
                 # to do this properly in SQL requires a full SQL parser
                 query = f'{base_query} AND {on} >= $1 AND {on} < $2'
-                query = (query, cursor, min(cursor + size, data_max + 1))
-                result = await getattr(self.source, method)(*query)
+                params = (cursor, min(cursor + size, data_max + 1))
+                result = await getattr(self.source, method)(query, params=params)
                 results.append(result)
                 shard += 1
+
+                if every and after_query:
+                    # just ran the query and has after-query
+                    if shard % every == 0:
+                        # after query should be triggered based on "every"
+                        result = await self.source.execute(after_query)
+                        results.append(result)
+
                 if self.verbose:
                     sys.stdout.write(f'query: finished shard {shard} of {shards}    \r')
                     sys.stdout.flush()
