@@ -1,6 +1,21 @@
 from .step import Step
 import sys
+import datetime
 from adbc.constants import QUERY_SPLIT_SIZE
+
+
+def subtract(x, y):
+    result = x - y
+    if isinstance(x, datetime.datetime):
+        result = result.total_seconds()
+    return result
+
+
+def add(x, y):
+    # add two integers, or an integer and a # of seconds
+    if isinstance(x, datetime.datetime):
+        return x + datetime.timedelta(0, y)
+    return x + y
 
 
 class QueryStep(Step):
@@ -22,8 +37,7 @@ class QueryStep(Step):
         split = self.split
         base_query = self.query
         if split:
-            # TODO: remove the hacks and make this more
-            # more generally
+            # TODO: make this more robust with zQL
             if isinstance(split, str):
                 on = split
                 size = QUERY_SPLIT_SIZE
@@ -60,20 +74,20 @@ class QueryStep(Step):
             cursor = data_min
             results = []
             shard = 0
-            shards = int(round((data_max - data_min) / size, 0))
+            shards = int(round(subtract(data_max, data_min) / size, 0))
             while cursor <= data_max:
                 if shard < skip:
                     if self.verbose:
                         sys.stdout.write(f'query: skipped shard {shard} of {shards}    \r')
                         sys.stdout.flush()
                     shard += 1
-                    cursor += size
+                    cursor = add(cursor, size)
                     continue
 
                 # TODO: this is a big hack, would be easier with PreQL
                 # to do this properly in SQL requires a full SQL parser
                 query = f'{base_query} AND {on} >= $1 AND {on} < $2'
-                params = (cursor, min(cursor + size, data_max + 1))
+                params = (cursor, min(add(cursor, size), add(data_max, 1)))
                 result = await getattr(self.source, method)(query, params=params)
                 results.append(result)
                 shard += 1
@@ -88,7 +102,8 @@ class QueryStep(Step):
                 if self.verbose:
                     sys.stdout.write(f'query: finished shard {shard} of {shards}    \r')
                     sys.stdout.flush()
-                cursor += size
+
+                cursor = add(cursor, size)
             return results
         else:
             result = await getattr(self.source, method)(base_query)

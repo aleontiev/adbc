@@ -103,6 +103,9 @@ class SQLBuilder(Builder):
             raise NotImplementedError(f"unknown style {style}")
 
     def extend_parameters(self, params, other):
+        if not other:
+            return params
+
         if isinstance(params, list):
             return params.extend(other)
         if isinstance(params, dict):
